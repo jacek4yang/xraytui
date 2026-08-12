@@ -22,7 +22,10 @@ percent-encoding = { workspace = true }
 tracing = { workspace = true }
 qrcode = { workspace = true }
 image = { workspace = true }
+# Normal dependency, not dev: `qr::decode_png` is part of the library API, so the
+# decoder has to be present in ordinary builds.
+rqrr = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-rqrr = { workspace = true }
+tempfile = { workspace = true }

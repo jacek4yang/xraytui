@@ -194,10 +194,31 @@ const LONG_PATH_SEGMENT: usize = 24;
 /// replaces long opaque path segments.
 ///
 /// Falls back to a scheme-and-host summary when the input does not parse.
+/// Longest token handed to the URL parser. Anything longer is summarised
+/// instead, so a pathological log line cannot become a parsing cost.
+const MAX_URL_BYTES: usize = 4096;
+
+/// Fallback for a URL-shaped token that could not be parsed.
+///
+/// Returns the scheme and nothing else. This must **not** delegate to
+/// [`redact_text`]: that function routes URL-shaped tokens back here, and the two
+/// would recurse until the stack was exhausted. A malformed URL in a log line is
+/// exactly the input that triggers it, so the bug would have been reachable from
+/// any subscription body.
+fn summarise_unparseable(input: &str) -> String {
+    match input.split_once("://") {
+        Some((scheme, _)) if scheme.len() <= 32 => format!("{scheme}://{REDACTED}"),
+        _ => REDACTED.to_owned(),
+    }
+}
+
 #[must_use]
 pub fn redact_url(input: &str) -> String {
+    if input.len() > MAX_URL_BYTES {
+        return summarise_unparseable(input);
+    }
     let Ok(mut url) = url::Url::parse(input) else {
-        return redact_text(input);
+        return summarise_unparseable(input);
     };
 
     if !url.username().is_empty() {
@@ -326,7 +347,63 @@ mod tests {
         let b = Secret::new("b");
         assert_eq!(a.fingerprint(), Secret::new("a").fingerprint());
         assert_ne!(a.fingerprint(), b.fingerprint());
-        assert!(!a.fingerprint().contains('a'));
+    }
+
+    #[test]
+    fn fingerprint_is_fixed_width_hex_and_hides_its_input() {
+        // A hex digest may legitimately contain any hex character, so "does not
+        // contain a byte of the input" is not a meaningful property. What matters
+        // is that the output is a fixed-width digest rather than the value.
+        for secret in ["a", "", "hunter2", &"x".repeat(4096), "香港-01"] {
+            let fingerprint = Secret::new(secret).fingerprint();
+            assert_eq!(fingerprint.len(), 16, "{secret:?} -> {fingerprint}");
+            assert!(fingerprint.chars().all(|c| c.is_ascii_hexdigit()), "{fingerprint}");
+            assert_ne!(fingerprint, secret);
+        }
+    }
+
+    #[test]
+    fn malformed_urls_terminate_instead_of_recursing() {
+        // Regression: `redact_url` used to fall back to `redact_text`, which
+        // routes URL-shaped tokens straight back into `redact_url`. Any log line
+        // holding a malformed URL then exhausted the stack, and a subscription
+        // body is exactly the input that produces one. Found by the
+        // `xraytui-import` property tests.
+        for input in [
+            "http://[[[[[[[[",
+            "https://[",
+            "http://%%%",
+            "http://:::::",
+            "https://host:99999999",
+            "http://",
+        ] {
+            let redacted = redact_url(input);
+            assert!(redacted.contains(REDACTED), "{input} -> {redacted}");
+            let via_text = redact_text(&format!("fetching {input} now"));
+            assert!(via_text.starts_with("fetching "), "{via_text}");
+            assert!(via_text.ends_with(" now"), "{via_text}");
+        }
+    }
+
+    #[test]
+    fn very_long_tokens_are_summarised_rather_than_parsed() {
+        let long = format!("https://example.com/{}", "a".repeat(8192));
+        let redacted = redact_url(&long);
+        assert!(redacted.len() < 64, "{redacted}");
+        assert!(redacted.starts_with("https://"), "{redacted}");
+    }
+
+    #[test]
+    fn hostile_text_always_terminates() {
+        for input in [
+            "[".repeat(4096),
+            format!("http://{}", "[".repeat(4096)),
+            format!("{}://x", "a".repeat(64)),
+            "\u{1}\u{2}".repeat(100),
+            "vless://".repeat(500),
+        ] {
+            let _ = redact_text(&input);
+        }
     }
 
     #[test]

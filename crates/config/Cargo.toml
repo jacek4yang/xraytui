@@ -20,7 +20,7 @@ thiserror = { workspace = true }
 directories = { workspace = true }
 tracing = { workspace = true }
 time = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["process", "fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

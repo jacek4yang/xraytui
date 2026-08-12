@@ -11,18 +11,18 @@ repository.workspace = true
 unsafe_code = "forbid"
 
 [dependencies]
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "router"] }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net", "time", "rt", "macros"] }
 tokio-stream = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 hyper-util = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 http = { workspace = true }
 
 [build-dependencies]
@@ -30,3 +30,5 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+serde_json = { workspace = true }
