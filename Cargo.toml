@@ -1,0 +1,159 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/domain",
+    "crates/secrets",
+    "crates/config",
+    "crates/import",
+    "crates/subscription",
+    "crates/xray-model",
+    "crates/xray-compiler",
+    "crates/xray-api",
+    "crates/state-store",
+    "crates/daemon-ipc",
+    "crates/netd-protocol",
+    "crates/linux-net",
+    "crates/controller",
+    "crates/tui",
+    "crates/cli",
+    "crates/test-support",
+    "bins/xraytui",
+    "bins/xraytuid",
+    "bins/xraytui-netd",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/xraytui/xraytui"
+authors = ["xraytui contributors"]
+
+[workspace.dependencies]
+# --- internal ---
+xraytui-domain = { path = "crates/domain", version = "0.1.0" }
+xraytui-secrets = { path = "crates/secrets", version = "0.1.0" }
+xraytui-config = { path = "crates/config", version = "0.1.0" }
+xraytui-import = { path = "crates/import", version = "0.1.0" }
+xraytui-subscription = { path = "crates/subscription", version = "0.1.0" }
+xraytui-xray-model = { path = "crates/xray-model", version = "0.1.0" }
+xraytui-xray-compiler = { path = "crates/xray-compiler", version = "0.1.0" }
+xraytui-xray-api = { path = "crates/xray-api", version = "0.1.0" }
+xraytui-state-store = { path = "crates/state-store", version = "0.1.0" }
+xraytui-ipc = { path = "crates/daemon-ipc", version = "0.1.0" }
+xraytui-netd-protocol = { path = "crates/netd-protocol", version = "0.1.0" }
+xraytui-linux-net = { path = "crates/linux-net", version = "0.1.0" }
+xraytui-controller = { path = "crates/controller", version = "0.1.0" }
+xraytui-tui = { path = "crates/tui", version = "0.1.0" }
+xraytui-cli = { path = "crates/cli", version = "0.1.0" }
+xraytui-test-support = { path = "crates/test-support", version = "0.1.0" }
+
+# --- async / runtime ---
+tokio = { version = "1.47", default-features = false }
+tokio-util = { version = "0.7", default-features = false }
+tokio-stream = { version = "0.1", default-features = false }
+futures-util = { version = "0.3", default-features = false }
+async-trait = "0.1"
+
+# --- serde / encoding ---
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9"
+ciborium = "0.2"
+ciborium-io = "0.2"
+base64 = "0.22"
+hex = "0.4"
+percent-encoding = "2.3"
+url = "2.5"
+
+# --- errors / logging ---
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# --- grpc ---
+tonic = { version = "0.14", default-features = false }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.5", default-features = false }
+http = "1.2"
+prost = "0.14"
+prost-types = "0.14"
+
+# --- linux / syscalls ---
+rustix = { version = "1.0", default-features = false }
+libc = "0.2"
+nix = { version = "0.30", default-features = false }
+socket2 = "0.6"
+
+# --- ui / cli ---
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.5"
+clap_mangen = "0.2"
+nucleo-matcher = "0.3"
+unicode-width = "0.2"
+
+# --- data ---
+rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+ipnet = { version = "2.11", features = ["serde"] }
+regex = "1.11"
+rand = "0.9"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+humantime = "2.1"
+directories = "6.0"
+parking_lot = "0.12"
+bytes = "1.10"
+
+# --- security ---
+secrecy = { version = "0.10", features = ["serde"] }
+zeroize = { version = "1.8", features = ["derive"] }
+
+# --- network clients ---
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls-native-roots",
+    "http2",
+    "gzip",
+    "socks",
+    "stream",
+] }
+
+# --- qr ---
+qrcode = { version = "0.14", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rqrr = "0.9"
+
+# --- dev / test ---
+proptest = "1.5"
+tempfile = "3.14"
+assert_cmd = "2.0"
+predicates = "3.1"
+insta = { version = "1.41", features = ["json"] }
+
+[profile.release]
+# Thin LTO keeps link time reasonable while still removing a large amount of
+# cross-crate dead code from the ratatui/tonic/reqwest dependency graph.
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+opt-level = 3
+
+[profile.release-debug]
+inherits = "release"
+strip = "none"
+debug = 1
+panic = "unwind"
+
+# Fuzzing/property tests are very slow in a pure debug profile.
+[profile.dev.package.proptest]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

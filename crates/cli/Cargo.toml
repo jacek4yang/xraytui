@@ -1,0 +1,38 @@
+[package]
+name = "xraytui-cli"
+description = "clap command surface for xraytui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+xraytui-domain = { workspace = true }
+xraytui-secrets = { workspace = true }
+xraytui-ipc = { workspace = true }
+xraytui-import = { workspace = true }
+xraytui-config = { workspace = true }
+xraytui-tui = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+futures-util = { workspace = true }
+rustix = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }

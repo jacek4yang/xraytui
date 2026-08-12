@@ -1,0 +1,22 @@
+[package]
+name = "xraytui-test-support"
+description = "Mock egress servers, fixtures and helpers for xraytui tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+xraytui-domain = { workspace = true }
+xraytui-secrets = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+rustix = { workspace = true }

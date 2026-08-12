@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.pdb
+.direnv/
+/dist
+/pkg
+/src-pkg
+*.tar.zst
+*.tar.gz
+/tests/netns/artifacts/
+/coverage/
+perf.data*
+flamegraph.svg

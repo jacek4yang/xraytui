@@ -1,0 +1,8 @@
+# Pinned to the current official Rust stable release used for development and
+# release builds. The workspace MSRV is declared separately in Cargo.toml
+# (`workspace.package.rust-version`) and is intentionally lower so distribution
+# packagers can build with a slightly older stable toolchain.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

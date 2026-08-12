@@ -1,0 +1,43 @@
+[package]
+name = "xraytui-controller"
+description = "Desired-state controller, core supervision and reconciliation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+xraytui-domain = { workspace = true }
+xraytui-secrets = { workspace = true }
+xraytui-config = { workspace = true }
+xraytui-import = { workspace = true }
+xraytui-subscription = { workspace = true }
+xraytui-xray-model = { workspace = true }
+xraytui-xray-compiler = { workspace = true }
+xraytui-xray-api = { workspace = true }
+xraytui-state-store = { workspace = true }
+xraytui-ipc = { workspace = true }
+xraytui-netd-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+time = { workspace = true }
+rand = { workspace = true }
+futures-util = { workspace = true }
+rustix = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+proptest = { workspace = true }
