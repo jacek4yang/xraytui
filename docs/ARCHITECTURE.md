@@ -182,6 +182,7 @@ Binaries under `bins/`:
 | `xraytui` | TUI and CLI front end; composes `cli` and `tui`. |
 | `xraytuid` | Per-user desired-state daemon; composes `controller`, `config` and `daemon-ipc`. |
 | `xraytui-netd` | Privileged network helper; composes `netd-protocol` and `linux-net`. |
+| `linux-net` (in `xraytuid`) | The daemon links the same crate, but only for `transport::NetdClient` and the pure planner. It never calls the netlink, TUN, nftables, cgroup or DNS backends: those need privileges it does not have. |
 
 `xtask/` holds build, install and maintenance tasks, invoked through the
 `cargo xtask` alias defined in `.cargo/config.toml`.

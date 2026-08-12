@@ -235,11 +235,48 @@ async fn tun(client: &mut Client, command: TunCommand, format: Format) -> Result
             println!("mode set to off");
             Ok(())
         }
-        TunCommand::Plan => Err(CliError::Other(
-            "`tun plan` needs the privileged helper, which is not part of this build; \
-             see STATUS.md"
-                .to_owned(),
-        )),
+        TunCommand::Plan => {
+            let Response::TunPlan {
+                steps,
+                firewall,
+                from_helper,
+            } = ask(client, Request::TunPlan).await?
+            else {
+                return Err(CliError::Other("unexpected response".into()));
+            };
+            if format == Format::Json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "steps": steps,
+                        "firewall": firewall,
+                        "from_helper": from_helper,
+                    }))
+                    .map_err(|error| CliError::Other(error.to_string()))?
+                );
+                return Ok(());
+            }
+            if from_helper {
+                println!("Plan reported by the privileged helper. Nothing has been changed.");
+            } else {
+                println!(
+                    "Plan rendered locally: no privileged helper is running, so this is what \
+                     it would be asked to do. Nothing has been changed."
+                );
+            }
+            println!();
+            for (index, step) in steps.iter().enumerate() {
+                println!("{:>3}. {step}", index + 1);
+            }
+            if !firewall.trim().is_empty() {
+                println!();
+                println!("nftables ruleset that would be installed:");
+                for line in firewall.lines() {
+                    println!("    {line}");
+                }
+            }
+            Ok(())
+        }
     }
 }
 

@@ -74,7 +74,7 @@ pub enum NetlinkError {
     /// A reply could not be understood.
     #[error("malformed netlink reply: {0}")]
     Malformed(&'static str),
-    /// A reply did not arrive before [`TIMEOUT`].
+    /// A reply did not arrive before the five-second netlink deadline.
     #[error("netlink did not answer within {}s", TIMEOUT.as_secs())]
     Timeout,
     /// The interface named does not exist.

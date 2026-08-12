@@ -144,6 +144,59 @@ Consequences that shaped this project:
 `nonIPQuery` accepts `drop` / `skip` / `reject`, which is how non-A/AAAA queries
 are handled deterministically.
 
+## Verified userland semantics
+
+These are not Xray; they are the userland the privileged helper drives. Each was
+found by running the code against a real kernel in a namespace
+(`scripts/netns-test.sh`), not by reading documentation, and each changed a
+design decision.
+
+### nftables JSON cannot express `socket cgroupv2` (nftables 1.0.9)
+
+`nft -j list` emits the expression as `{"socket": {"key": "cgroupv2"}}` —
+**without the `level`**, so the dump is lossy — and the JSON *parser* rejects
+the same object on input:
+
+```
+internal:0:0-0: Error: Invalid socket key value.
+```
+
+Adding the `level` field does not help; removing it does not help. The native
+syntax works:
+
+```
+add rule inet xraytui u1000-mark socket cgroupv2 level 3 "xraytui.slice/u1000/work" \
+    meta mark set 0x72610001
+```
+
+Matching a cgroup is the mechanism behind per-application routing, so the helper
+generates nftables syntax rather than JSON, behind the character-set gate
+described in `DECISIONS.md` D-015.
+
+### nftables resolves a cgroup path at parse time, against `/sys/fs/cgroup`
+
+`socket cgroupv2 "<path>"` is converted to a cgroup id when the rule is parsed,
+by stating `/sys/fs/cgroup/<path>`. Two consequences: the cgroup must exist
+*before* the rule is added — the helper creates every group a ruleset names
+first — and a cgroup v2 hierarchy mounted anywhere else is invisible to
+nftables. On a machine running cgroup v1 in hybrid mode, with cgroup2 at
+`/sys/fs/cgroup/unified`, `socket cgroupv2` cannot be used at all;
+`--check-capabilities` reports `nft socket cgroupv2  no`.
+
+### `Command::env_clear()` removes the PATH used to resolve the program
+
+Rust resolves a relative program name against the *child's* `PATH`. Clearing the
+environment therefore makes `Command::new("nft").env_clear()` fail with
+`NotFound` on a machine where `nft` is installed. See `DECISIONS.md` D-016.
+
+### A kernel without IPv6 rejects every `AF_INET6` route message
+
+`ipv6.disable=1`, or a kernel built without IPv6, answers `RTM_NEWROUTE` for an
+IPv6 destination with `EOPNOTSUPP` — including a blackhole route, and including
+`ip -6 route add`. The helper checks for `/proc/net/if_inet6` once and installs
+the IPv4 half of the plan, reporting what it left out, rather than treating an
+unusable family as a failure.
+
 ## Features detected dynamically at runtime
 
 | Capability | Detection |

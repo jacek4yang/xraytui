@@ -3622,8 +3622,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ipnet",
  "rustix 1.1.4",
  "tempfile",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3632,6 +3634,8 @@ dependencies = [
  "xraytui-domain",
  "xraytui-import",
  "xraytui-ipc",
+ "xraytui-linux-net",
+ "xraytui-netd-protocol",
  "xraytui-xray-api",
  "xraytui-xray-compiler",
 ]

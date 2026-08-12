@@ -10,6 +10,24 @@ per-scenario state.
 
 ### Added
 
+* `xraytui-linux-net` and `xraytui-netd`: the privileged network backend and the
+  helper that speaks the operation set. A safe rtnetlink client, persistent TUN
+  creation, the project's nftables table, cgroup v2 classification by `pidfd`,
+  systemd-resolved over a minimal D-Bus client, `resolvconf`, leases, capability
+  probing and dry-run planning. Nine tests prove it against a real kernel inside
+  a disposable namespace (`sudo ./scripts/netns-test.sh`), covering acceptance
+  scenarios C, J, K and part of M.
+* `xraytui tun plan`: the exact list of intended changes, and the nftables
+  ruleset verbatim, before anything is applied. Works with or without a helper
+  installed, and says which.
+* Every route and policy rule the helper installs carries routing protocol 114,
+  so cleanup removes only what this project created. A route or rule put in the
+  same table by anything else survives a full teardown, which is asserted by
+  test.
+* `xtask/tests/no_shell.rs`: the threat model's "no shell, one program resolver,
+  unsafe in one module" claims asserted against the source rather than only
+  written down.
+
 * Typed domain model with validated identifiers, secret wrappers that redact in
   `Debug`/`Display`, and a bounded regex engine for group filters.
 * Deterministic Xray configuration compiler: one balancer per egress profile
@@ -33,18 +51,41 @@ per-scenario state.
 * Arch `PKGBUILD`, hardened systemd units, tmpfiles and sysusers fragments, and a
   typed `cargo xtask` installer with `--dry-run` and `DESTDIR` support.
 
+### Fixed
+
+* The privileged helper could not run `nft` at all: `Command::env_clear()` removes
+  the `PATH` Rust uses to resolve a relative program name, so a bare name failed
+  with `NotFound` on machines where the program was installed. Programs are now
+  resolved to an absolute path against a fixed search list.
+* A kernel without IPv6 answers every `AF_INET6` route message with `EOPNOTSUPP`,
+  which turned an ordinary configuration into a rollback. The helper now installs
+  the IPv4 half and reports what it left out.
+
 ### Known limitations
 
-* `xraytui-netd` and `xraytui-linux-net` are stubs: no TUN, routing, nftables,
-  DNS management or cgroup classification.
 * No TUI.
+* Per-profile transparent egress: cgroup classification and marking work, but
+  selecting a different exit per profile needs a `tproxy` inbound per profile.
 * Subscriptions cannot be fetched; nodes can be imported by hand.
 * Runtime history is in memory only.
+* The DNS backends have not been driven against a live resolver.
 
 ### Upstream findings
+
+Against Xray-core:
 
 * Xray rejects a routing rule with no conditions.
 * A balancer `fallbackTag` requires an observatory, or the core will not start.
 * mKCP `header`/`seed` were removed in v26.3.27 in favour of `finalmask`.
 * The commander listens on TCP only; `api.listen` cannot be a Unix socket.
 * Linux Xray cannot consume an inherited TUN file descriptor.
+
+Against the kernel and userland:
+
+* nftables 1.0.9's JSON parser cannot express `socket cgroupv2`; it emits the
+  expression lossily and rejects it on input.
+* nftables resolves a cgroup path at parse time, against `/sys/fs/cgroup` only.
+* `Command::env_clear()` leaves the child with no `PATH`, which Rust uses to
+  resolve a relative program name.
+* A kernel without IPv6 rejects every `AF_INET6` route message, including
+  blackhole routes.

@@ -84,52 +84,93 @@ is why health checks are always L4 or L7 through an outbound and never a ping.
 
 ## Routes, policy rules, marks and table reservation
 
-Defaults come from `[tun]` in `config.toml`:
+Some of these are configured and some are **derived from the credential uid**.
+The distinction matters: anything derived cannot be influenced by what a user
+writes in their own configuration file, which is what stops one user from
+addressing another's resources.
 
-| Resource | Default | Configured by |
+| Resource | Default | Where it comes from |
 |---|---|---|
-| Interface name | `xraytui0` | `tun.name`, constrained to `^xraytui[0-9a-z]{0,8}$` |
+| Interface name | `xraytui<uid>` | **derived**; `tun.name` is advisory and the daemon says so once if they differ |
 | IPv4 address | `198.18.0.1/15` | `tun.ipv4_address` |
 | IPv6 address | `fdfe:dcba:9876::1/126` | `tun.ipv6_address` |
 | MTU | `1500` | `tun.mtu` |
-| Routing table id | `29281` (`0x7261`) | `tun.route_table` |
-| Firewall mark | `29281` (`0x7261`) | `tun.fwmark` |
-| Policy rule priority | `17000` | `tun.rule_priority` |
+| Routing table id | `0x7261 + (uid mod 64)` | **derived**; `tun.route_table` is advisory |
+| Firewall mark | `0x72610000 + (uid mod 4096)` | **derived**; `tun.fwmark` is advisory |
+| Policy rule priority | `17000 + (uid mod 64)` | **derived**; `tun.rule_priority` is advisory |
 
-The interface-name pattern is a security control, not a style rule: netd derives
-ownership decisions from the name, so it must be impossible for a name to contain
-a shell metacharacter, a `/`, or an unexpected prefix. Ownership itself is
-established by `TUNSETOWNER` against the credential uid — netd will not adopt a
-device it does not own.
-
-### Conflict detection
-
-Routing table ids and firewall marks come from a documented reserved range and
-are **probed for conflict before use**. If the table already contains routes, or
-a policy rule at the chosen priority exists and was not created by xraytui, setup
-**fails with a clear error rather than overwriting**. The same applies to the
-nftables table. An administrator's routing policy is never silently replaced.
-
-`xraytui tun plan` prints the exact set of intended changes — device, addresses,
-routes, rules, marks, nft objects, DNS changes — before any of them are made.
-Reading that output is the cheapest way to find a conflict.
+The interface-name pattern is a security control, not a style rule: the helper
+derives ownership decisions from the name, so it must be impossible for a name to
+contain a shell metacharacter, a `/`, or an unexpected prefix. Ownership itself is
+established by `TUNSETOWNER` against the credential uid, so the unprivileged core
+can open the device and nobody else can.
 
 ### Ownership marking
 
-| Object | Naming or marking |
-|---|---|
-| nftables table | `table inet xraytui` — the only table ever created or flushed |
-| nftables chains | `xraytui-u<uid>` |
-| nftables and routing rules | comment `xraytui:<uid>:<gen>` |
-| Routing table id | allocated from the reserved range as `base + uid_slot` |
-| cgroup | under `/sys/fs/cgroup/xraytui.slice` |
+Cleanup is only safe if "this is ours" is decidable without a state file, because
+the state file is exactly what is missing after a crash. Every object therefore
+carries a marker the kernel itself maintains:
 
-Other nftables tables are never read into a generated ruleset and never flushed.
-The generated ruleset is applied atomically through `nft -f -` on stdin, with
-`--check` first; that is the only external binary in the privileged path, invoked
-by absolute path with a fixed argument vector and a ruleset built exclusively
-from validated typed values. Routes, rules, links and addresses are programmed
-over **netlink**, not by shelling out to `ip(8)`.
+| Object | Marker |
+|---|---|
+| Routes | `rtm_protocol = 114`, a value unassigned in `rtnetlink.h` and in iproute2's `rt_protos` |
+| Policy rules | the same protocol number, in `FRA_PROTOCOL` |
+| Interfaces | the `xraytui` name prefix |
+| nftables table | `table inet xraytui` — the only table ever created, flushed or deleted |
+| nftables chains | `u<uid>-mark` and `u<uid>-guard` |
+| cgroups | under `/sys/fs/cgroup/xraytui.slice/u<uid>/` |
+
+**Only objects carrying a marker are ever removed.** A route added to the same
+table by an administrator, a VPN client or a routing daemon has a different
+protocol number and is invisible to every cleanup path here. That is asserted by
+a test — `state_this_project_did_not_create_is_left_alone` in
+`crates/linux-net/tests/netns.rs` puts a `proto static` route and a foreign
+policy rule in place, runs a full teardown, and checks that both survive.
+
+The helper does **not** refuse to start when it finds a table already in use,
+because with per-uid table ids the only thing it would be refusing is its own
+previous run. It reconciles instead: it removes what it owns and leaves the rest.
+
+`xraytui tun plan` prints the exact set of intended changes — device, addresses,
+routes, rules, marks, the nftables ruleset verbatim, DNS changes — before any of
+them are made. It works whether or not a helper is installed: with one, the plan
+is the helper's own account of what it would do; without one, the daemon renders
+it from the same functions and says so. Reading that output is the cheapest way
+to find a conflict.
+
+### What is inside the table
+
+One table per user holds the tunnel's routes, and traffic reaches it through a
+single policy rule matching the user's firewall mark. Inside:
+
+* the `include` prefixes — or the default route, when none are given — point at
+  the tunnel;
+* the `exclude` prefixes, the configured proxy endpoints, and (when
+  `bypass_private_networks` is set) RFC 1918, RFC 4193, link-local, loopback and
+  multicast space become **`throw`** routes, which abandon the table and let the
+  next rule take over, i.e. the machine's ordinary routing.
+
+`throw` is used rather than copying the main table's routes because a copy goes
+stale the moment the physical link changes. The proxy endpoints matter most:
+without those host routes the core's own connection to its proxy would be routed
+into the tunnel the core is providing — a loop that presents as "the tunnel comes
+up and nothing works".
+
+### nftables
+
+The ruleset is applied as one transaction: checked with `nft -c -f -`, then
+committed with `nft -f -`. Both read the ruleset from standard input with a fixed
+argument vector, and both run a program resolved against a fixed search path
+rather than the ambient `PATH`. There is no shell anywhere in the privileged
+path, which `xtask/tests/no_shell.rs` asserts against the source.
+
+The ruleset is nftables' own syntax rather than libnftables JSON, because the
+JSON parser cannot express `socket cgroupv2` — see `DECISIONS.md` D-015. Every
+value that becomes part of the text passes a gate accepting only `[a-z0-9._/-]`;
+a value outside that set is refused and no ruleset is produced at all.
+
+Routes, rules, links and addresses are programmed over **netlink**, not by
+shelling out to `ip(8)`.
 
 ## Failure policy: restore or block
 
@@ -236,28 +277,37 @@ while any non-loopback listener is bound the TUI shows a banner and
 listener is dispatched to that profile by rule 3 of the generated table,
 **whatever the application rules say**.
 
-### 3. cgroup v2 exact-instance routing
+### 3. cgroup v2 exact-instance routing — **partly implemented**
 
-`xraytui exec --transparent` classifies a single process tree into a project
-cgroup, which nftables matches with `socket cgroupv2`, marks with the project
-fwmark, and policy-routes into that profile's transparent inbound.
+`xraytui exec --transparent` is intended to classify a single process tree into a
+project cgroup, which nftables matches with `socket cgroupv2`, marks with the
+profile's fwmark, and policy-routes into that profile's transparent inbound.
 
-- **Exact per instance**: two processes running the same executable can take
-  different profiles, which neither of the other mechanisms can express.
-- Requires netd and cgroup v2.
-- PID reuse is handled without a race: the launcher creates the child **stopped**
-  and opens a `pidfd` for it, then passes the `pidfd` over `SCM_RIGHTS`. netd
-  resolves identity from the pidfd alone, verifies the uid against the peer
-  credential, writes the pid into `cgroup.procs`, and only then does the launcher
-  let the child continue. A recycled PID cannot be reached through a stale
-  pidfd.
+What is implemented and proven in a namespace:
+
+- the cgroup is created under `/sys/fs/cgroup/xraytui.slice/u<uid>/<profile>`;
+- a process is placed in it by `pidfd`, never by pid. The launcher opens a
+  `pidfd` and passes it over `SCM_RIGHTS`; the helper resolves identity from the
+  descriptor alone, checks the owner against the peer credential, and writes the
+  pid into `cgroup.procs`. Holding the descriptor pins the identity, so a
+  recycled pid cannot be reached through a stale one;
+- nftables marks exactly that cgroup's traffic, and accepts the core's own
+  cgroup unmarked first so the core's uplink never enters its own tunnel.
+
+What is **not** implemented: the last link. One user has one routing table and
+one tunnel, so today the mark decides *whether* an application's traffic enters
+the tunnel, not *which exit* it takes. Selecting an exit per profile needs a
+`tproxy` inbound per profile and a policy rule per mark; the tag namespace
+reserves `inbound/profile/{id}/transparent` for it. Until then
+`exec --transparent` refuses with a typed reason rather than silently behaving
+like `exec --profile`. See `STATUS.md`.
 
 ### Choosing between them
 
 | Requirement | Mechanism |
 |---|---|
 | One specific command, right now, no privileges | 2 (`exec --profile`) |
-| Two instances of the same program on different profiles | 3 (`exec --transparent`) |
+| Two instances of the same program on different profiles | 3 (`exec --transparent`) — **not yet available**; see above |
 | Everything a named program does, system-wide, including children you did not launch | 1 (process matcher, with the caveats above) |
 | A program that ignores proxy environment variables | 1 or 3 |
 

@@ -79,8 +79,9 @@ pub struct PersistentTun {
 
 /// Create a persistent TUN device owned by `owner_uid`.
 ///
-/// The device survives this process. It is removed by [`delete`], or by the
-/// lease reaper if the owner goes away.
+/// The device survives this process. It is removed by `RTM_DELLINK` — see
+/// [`crate::netlink::Netlink::link_delete`] — or by the lease reaper if the
+/// owner goes away.
 ///
 /// # Errors
 /// See [`TunError`]. A pre-existing device of the same name that *is* a tun is

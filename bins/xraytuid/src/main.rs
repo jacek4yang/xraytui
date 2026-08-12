@@ -14,6 +14,7 @@
 
 mod daemon;
 mod lock;
+mod netd;
 
 use std::path::PathBuf;
 

@@ -221,13 +221,79 @@ fn the_cli_talks_to_the_daemon_in_every_output_format() {
     let shell = String::from_utf8_lossy(&output.stdout);
     assert!(shell.contains("XRAYTUI_CORE="), "{shell}");
 
-    // Mode round trip.
-    assert!(daemon.cli(&["mode", "set", "direct"]).status.success());
-    let output = daemon.cli(&["mode", "get"]);
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "direct");
-    assert!(daemon.cli(&["mode", "cycle"]).status.success());
+    // Mode. Every mode other than `off` needs a system tunnel, and there is no
+    // privileged helper in a test environment, so the daemon must refuse and
+    // say what to do about it rather than reporting a success that carries no
+    // traffic.
+    let output = daemon.cli(&["mode", "set", "direct"]);
+    assert!(
+        !output.status.success(),
+        "a mode needing a tunnel must not succeed without the helper"
+    );
+    let message = String::from_utf8_lossy(&output.stderr);
+    assert!(message.contains("privileged helper"), "{message}");
+    assert!(message.contains("xraytui-netd.service"), "{message}");
+    assert!(
+        message.contains("SOCKS"),
+        "the refusal must point at what does work: {message}"
+    );
+
+    // The mode is unchanged: a refused request changes nothing.
     let output = daemon.cli(&["mode", "get"]);
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "off");
+
+    // Setting the mode that needs nothing still works.
+    assert!(daemon.cli(&["mode", "set", "off"]).status.success());
+    let output = daemon.cli(&["mode", "get"]);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "off");
+}
+
+#[test]
+fn tun_plan_describes_the_changes_without_making_any() {
+    require_xray!("tun plan");
+    let Some(daemon) = Daemon::start() else {
+        panic!("the daemon did not come up");
+    };
+
+    let before = interfaces();
+    let output = daemon.cli(&["tun", "plan"]);
+    assert!(
+        output.status.success(),
+        "a plan must be available even with no helper installed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Nothing has been changed"), "{text}");
+    assert!(text.contains("create persistent tun"), "{text}");
+    assert!(text.contains("no privileged helper is running"), "{text}");
+
+    // JSON carries the same three fields for scripting.
+    let output = daemon.cli(&["tun", "plan", "--format", "json"]);
+    assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("tun plan --format json must be JSON");
+    assert!(parsed["steps"].as_array().is_some_and(|s| !s.is_empty()));
+    assert_eq!(parsed["from_helper"], false);
+
+    assert_eq!(
+        before,
+        interfaces(),
+        "planning must not create, remove or rename an interface"
+    );
+}
+
+/// The names of the interfaces this machine has, as an independent witness that
+/// planning changed nothing.
+fn interfaces() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
 }
 
 #[test]

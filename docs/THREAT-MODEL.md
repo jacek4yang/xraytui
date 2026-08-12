@@ -97,15 +97,30 @@ cannot be reached through a stale pidfd — the pidfd refers to the original tas
 
 *Risk.* Node names, interface names, domains or rule text reach a shell.
 
-*Mitigations.* No `sh -c` anywhere in the codebase (enforced by a grep test in
-`tests/integration/no_shell.rs`). Routes, rules, links and addresses are programmed
-over **netlink**, not `ip(8)`. nftables changes are applied through a single
-generated ruleset applied atomically via `nft -f -` on stdin with `--check` first —
-the only external binary in the privileged path, invoked by absolute path with a
-fixed argument vector, with a ruleset built exclusively from validated typed
-values (interface names matched against `^xraytui[0-9a-z]{0,10}$`, marks and table
-ids from an integer range, CIDRs from `ipnet` types). DNS uses D-Bus
-(`org.freedesktop.resolve1`), not `resolvectl(8)`.
+*Mitigations.* No `sh -c` anywhere in shipping code, enforced by
+`xtask/tests/no_shell.rs`, which also asserts that every external program the
+privileged backend runs goes through one resolver and that `unsafe` stays in the
+single module that needs it. Routes, rules, links and addresses are programmed
+over **netlink**, not `ip(8)`. nftables changes are applied as one ruleset,
+checked with `nft -c -f -` and then committed with `nft -f -` — both with a fixed
+argument vector, both reading the ruleset from stdin, and both invoked at an
+absolute path resolved against a fixed search directory list rather than the
+ambient `PATH` (`DECISIONS.md` D-016).
+
+The ruleset is nftables syntax rather than libnftables JSON, because the JSON
+parser cannot express `socket cgroupv2` — see `DECISIONS.md` D-015 and
+`docs/UPSTREAM-COMPATIBILITY.md`. What replaces "no syntax anywhere" is a checked
+property rather than an assumed one: every value that becomes part of the text
+passes a gate accepting only `[a-z0-9._/-]`, which contains no quote, brace,
+semicolon, backslash, newline or space. A value outside the set is refused and
+**no ruleset is produced at all**. The values themselves are already
+constrained upstream of the gate: interface names by `^xraytui[0-9a-z]{0,8}$`,
+profile names by the protocol's slug validator, marks and table ids by reserved
+integer ranges, and prefixes by `ipnet` types.
+
+DNS uses D-Bus (`org.freedesktop.resolve1`) through a client written for the four
+calls it makes, not `resolvectl(8)`, and not a general-purpose D-Bus crate that
+would enlarge the privileged dependency set.
 
 ### T5 — Malicious subscription content
 

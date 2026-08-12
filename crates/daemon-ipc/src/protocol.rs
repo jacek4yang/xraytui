@@ -141,6 +141,8 @@ pub enum Request {
     },
     /// The generated Xray configuration for the running generation.
     GetGeneratedConfig,
+    /// Ask what enabling the system tunnel would change. Changes nothing.
+    TunPlan,
     /// Environment and capability report.
     Doctor,
     /// Subscribe to state changes and log lines. Streams until cancelled.
@@ -278,6 +280,16 @@ pub enum Response {
     ///
     /// Only ever sent over the user's own 0700 socket.
     GeneratedConfig(String),
+    /// What enabling the system tunnel would change, and by whose account.
+    TunPlan {
+        /// One line per intended change, in order.
+        steps: Vec<String>,
+        /// The nftables script that would be applied, verbatim.
+        firewall: String,
+        /// Whether the privileged helper produced this, or the daemon rendered
+        /// it locally because no helper is installed.
+        from_helper: bool,
+    },
     /// Environment report.
     Doctor(Box<DoctorReport>),
 }

@@ -23,6 +23,9 @@ pub struct Daemon {
     events: broadcast::Sender<Event>,
     started: std::time::Instant,
     shutdown: Arc<tokio::sync::Notify>,
+    /// The daemon's side of the privilege boundary. Present whether or not a
+    /// helper is installed; asking it is how the daemon finds out.
+    netd: Arc<crate::netd::Netd>,
 }
 
 impl Daemon {
@@ -52,6 +55,9 @@ impl Daemon {
 
         let (events, _) = xraytui_ipc::server::event_channel();
         Ok(Self {
+            netd: Arc::new(crate::netd::Netd::new(std::path::PathBuf::from(
+                xraytui_netd_protocol::DEFAULT_SOCKET,
+            ))),
             paths,
             config,
             engine: Arc::new(Mutex::new(engine)),
@@ -97,13 +103,38 @@ impl Daemon {
         };
 
         let engine = Arc::clone(&self.engine);
+        let netd = Arc::clone(&self.netd);
+        let lease_ttl = self.config.runtime.netd_lease_ttl_secs;
         let handler = Arc::new(self);
         let broadcaster = Arc::clone(&handler);
         let ticker = tokio::spawn(async move { broadcaster.broadcast_state_periodically().await });
+        let heartbeat = tokio::spawn({
+            let netd = Arc::clone(&netd);
+            let engine = Arc::clone(&engine);
+            async move {
+                let mut interval =
+                    tokio::time::interval(crate::netd::heartbeat_interval(lease_ttl));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+                    if !netd.is_active().await {
+                        continue;
+                    }
+                    let generation = engine.lock().await.runtime().generation.0;
+                    netd.heartbeat(generation).await;
+                }
+            }
+        });
 
         server.serve(Arc::clone(&handler), signal).await;
         ticker.abort();
+        heartbeat.abort();
 
+        // Order matters on the way out: give the machine's networking back
+        // before stopping the core, so there is never a window where the
+        // default route points at a tunnel with nothing behind it.
+        tracing::info!("releasing any system tunnel");
+        netd.release().await;
         tracing::info!("stopping the core");
         engine.lock().await.stop_core().await;
         Ok(())
@@ -136,6 +167,18 @@ impl Daemon {
     }
 
     async fn apply(&self, state: DesiredState) -> Result<Response, IpcError> {
+        // A mode that needs a system tunnel is refused up front when no helper
+        // can grant one. Starting a core whose TUN inbound nothing routes to
+        // would report success and carry no traffic, which is the worst of the
+        // available outcomes.
+        if state.mode.needs_tun() && !self.netd.available().await {
+            return Err(IpcError::Invalid(format!(
+                "{} mode needs the privileged helper at {}, which is not running.                  Start it with `sudo systemctl enable --now xraytui-netd.service`, or keep                  mode off and use each profile's SOCKS and HTTP listeners, which need no                  privileges.",
+                state.mode.as_str(),
+                self.netd.socket().display()
+            )));
+        }
+
         let mut engine = self.engine.lock().await;
         let outcome = engine
             .apply(state)
@@ -145,9 +188,56 @@ impl Daemon {
             .compiled()
             .map(|c| c.warnings.clone())
             .unwrap_or_default();
+        let desired = engine.desired().clone();
         drop(engine);
         self.persist().await?;
+        self.reconcile_tunnel(&desired).await?;
         Ok(response_for(outcome, warnings))
+    }
+
+    /// Make the machine's networking match the mode that was just applied.
+    ///
+    /// Called after every desired-state change, so switching profiles or
+    /// editing rules re-applies the routing that depends on them, and switching
+    /// the mode off gives the tunnel back immediately rather than waiting for a
+    /// lease to lapse.
+    async fn reconcile_tunnel(&self, state: &DesiredState) -> Result<(), IpcError> {
+        if !state.mode.needs_tun() {
+            self.netd.release().await;
+            return Ok(());
+        }
+        let request = crate::netd::plan_request(&self.config, state, self.proxy_endpoints(state))
+            .map_err(|error| IpcError::Invalid(error.to_string()))?;
+        match self.netd.establish(&request).await {
+            Ok(interface) => {
+                tracing::info!(interface, mode = state.mode.as_str(), "system tunnel is up");
+                Ok(())
+            }
+            Err(error) => {
+                // The mode is on but the tunnel is not; say so rather than
+                // leaving the user to discover it from a traffic counter.
+                tracing::error!(%error, "the system tunnel could not be brought up");
+                Err(IpcError::Invalid(error.to_string()))
+            }
+        }
+    }
+
+    /// Addresses the core must be able to reach without going through itself.
+    ///
+    /// Only literal addresses are collected: a hostname would have to be
+    /// resolved, and resolving it *here* — before the tunnel is up, with the
+    /// resolver about to change — is exactly when the answer is least
+    /// trustworthy. A node addressed by name is handled by the core's own
+    /// `direct` outbound and the private-network bypass.
+    fn proxy_endpoints(&self, state: &DesiredState) -> Vec<std::net::IpAddr> {
+        let mut out: Vec<std::net::IpAddr> = state
+            .nodes
+            .values()
+            .filter_map(|node| node.endpoint.address.parse().ok())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     async fn doctor(&self) -> DoctorReport {
@@ -229,20 +319,29 @@ impl Daemon {
             }),
         });
 
-        let netd = std::path::Path::new("/run/xraytui/netd.sock");
+        let socket = self.netd.socket().to_path_buf();
+        let reachable = self.netd.available().await;
+        let held = self.netd.interface().await;
         checks.push(DoctorCheck {
             name: "netd".into(),
-            status: if netd.exists() {
+            status: if reachable {
                 CheckStatus::Pass
             } else {
+                // Not a failure: SOCKS and HTTP listeners work without it, and
+                // that is the mode most people use.
                 CheckStatus::Warn
             },
-            detail: if netd.exists() {
-                "privileged helper socket present".into()
-            } else {
-                "privileged helper is not running; TUN modes are unavailable".into()
+            detail: match (reachable, &held) {
+                (true, Some(interface)) => {
+                    format!("the helper is running and holds {interface}")
+                }
+                (true, None) => format!("the helper is running at {}", socket.display()),
+                (false, _) => format!(
+                    "no helper at {}; system TUN modes and `exec --transparent` are unavailable",
+                    socket.display()
+                ),
             },
-            remedy: (!netd.exists())
+            remedy: (!reachable)
                 .then(|| "sudo systemctl enable --now xraytui-netd.service".to_owned()),
         });
 
@@ -551,6 +650,22 @@ impl ServerHandler for Daemon {
                      see STATUS.md for what is implemented"
                         .into(),
                 )),
+
+                Request::TunPlan => {
+                    let state = self.engine.lock().await.desired().clone();
+                    let request = crate::netd::plan_request(
+                        &self.config,
+                        &state,
+                        self.proxy_endpoints(&state),
+                    )
+                    .map_err(|error| IpcError::Invalid(error.to_string()))?;
+                    let (steps, firewall, from_helper) = self.netd.plan(&request).await;
+                    Ok(Response::TunPlan {
+                        steps,
+                        firewall,
+                        from_helper,
+                    })
+                }
 
                 Request::Shutdown => {
                     self.shutdown.notify_waiters();

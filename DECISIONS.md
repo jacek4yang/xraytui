@@ -201,3 +201,63 @@ results are cached with confidence decay, and only prioritised nodes are probed
 outbound list, so a malformed or truncated routing table fails closed rather than
 leaking directly. Routing always ends with an explicit catch-all rule; Xray's
 implicit "first outbound" fallback is never relied on.
+
+---
+
+## D-015 — The nftables ruleset is generated as text, and the text is gated
+
+**Decision.** The privileged helper builds its nftables ruleset as nftables'
+own syntax and feeds it to `nft` on standard input with an argv of exactly
+`["-c", "-f", "-"]` and then `["-f", "-"]`. Every value that becomes part of
+that text passes `Script::push_word`, which accepts only lowercase letters,
+digits, `-`, `_`, `.` and `/`. A value outside that set is refused with
+`NftError::Unsafe` and **no script is produced at all**.
+
+**Why not JSON, as originally decided.** libnftables' JSON parser cannot
+express `socket cgroupv2`. nftables 1.0.9 emits the expression when dumping a
+ruleset — and emits it lossily, dropping the `level` — but rejects it on input
+with "Invalid socket key value". Matching a cgroup is the whole mechanism
+behind per-application routing, so a JSON-only helper could not implement the
+feature it exists for. Found by `crates/linux-net/tests/netns.rs`; recorded in
+`docs/UPSTREAM-COMPATIBILITY.md`.
+
+**Consequences.** The claim "no ruleset syntax exists anywhere in this project"
+is replaced by a narrower one that is *checked* rather than assumed: no value
+that reaches the ruleset can contain a quote, brace, semicolon, backslash,
+newline or space, because those characters are not in the accepted set. The
+only strings involved are an interface name (already `^xraytui[0-9a-z]{0,8}$`),
+a cgroup path derived from the credential UID and a validated slug, and the
+project's own fixed names. `xtask/tests/no_shell.rs` asserts that nothing in
+the workspace spawns a shell and that every external program the helper runs
+goes through one resolver.
+
+---
+
+## D-016 — External programs are resolved against a fixed search path
+
+**Decision.** `xraytui-linux-net` clears the environment of every process it
+starts and gives it `PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin`. The
+program name is resolved to an absolute path against that same list *before*
+the spawn, by `program::resolve`. A relative path containing a separator is
+refused outright.
+
+**Why.** Two reasons, one security and one correctness. An operator's `PATH`
+should not decide which `nft` a root helper executes. And `Command::env_clear()`
+leaves the child with no `PATH` at all, which Rust uses to resolve a relative
+program — so `Command::new("nft").env_clear()` fails with `NotFound` on a
+machine where `nft` is installed and working. The second was found by the
+namespace tests, not by reading the documentation.
+
+---
+
+## D-017 — A mode that needs a tunnel is refused without the helper
+
+**Decision.** `xraytuid` asks the helper before accepting any mode other than
+`off`. If no helper answers, the request is refused with a message naming the
+service to start and the alternative that needs no privileges.
+
+**Why.** The core will happily start with a TUN inbound that nothing routes to.
+Every status indicator would say the mode is on; no traffic would flow through
+it. A refusal that says what to do is strictly better than a success that
+lies. `crates/cli/tests/end_to_end.rs` asserts the refusal, its wording, and
+that the mode is left unchanged.

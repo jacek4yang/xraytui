@@ -16,6 +16,8 @@ unsafe_code = "forbid"
 
 [dependencies]
 xraytui-controller = { workspace = true }
+xraytui-linux-net = { workspace = true }
+xraytui-netd-protocol = { workspace = true }
 xraytui-config = { workspace = true }
 xraytui-ipc = { workspace = true }
 xraytui-domain = { workspace = true }
@@ -28,6 +30,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 rustix = { workspace = true, features = ["process", "fs"] }
+ipnet = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

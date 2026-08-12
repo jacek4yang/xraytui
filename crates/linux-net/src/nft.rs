@@ -17,7 +17,7 @@
 //! rather than assumed:
 //!
 //! * every value that reaches the text is either an integer, or a string that
-//!   [`Script::push_word`] has verified against [`SAFE_WORD`] — lowercase
+//!   [`Script`]'s constructor has verified against [`SAFE_WORD`] — lowercase
 //!   letters, digits, and `-`, `_`, `.`, `/` only;
 //! * that character set contains nothing nftables treats as syntax: no quote,
 //!   brace, semicolon, backslash, newline or space;
@@ -363,15 +363,21 @@ impl Nft {
         Ok(output.trim().to_owned())
     }
 
-    /// Apply a script.
+    /// Apply a script, after checking it.
+    ///
+    /// The check is a second pass with `-c`, which parses and validates without
+    /// committing. `nft -f` is already transactional, so the check is not what
+    /// makes the apply safe — it is what makes a *rejection* cost nothing and
+    /// report the same message it would have reported at apply time.
+    /// `docs/THREAT-MODEL.md` T4 names this pair explicitly.
     ///
     /// # Errors
-    /// [`NftError::Refused`] if nftables rejected it; nothing will have changed,
-    /// because `nft -f` is transactional.
+    /// [`NftError::Refused`] if nftables rejected it; nothing will have changed.
     pub fn apply(&self, script: &Script) -> Result<(), NftError> {
         if script.is_empty() {
             return Ok(());
         }
+        self.check(script)?;
         self.execute(&["-f", "-"], Some(script.as_str()))?;
         Ok(())
     }
