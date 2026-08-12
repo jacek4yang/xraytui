@@ -7,19 +7,18 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-
 [dependencies]
 xraytui-netd-protocol = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["net", "fs", "process", "system"] }
 libc = { workspace = true }
 ipnet = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "rt", "time", "sync"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-time = { workspace = true }
+ciborium = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

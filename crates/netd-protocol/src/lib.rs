@@ -22,7 +22,10 @@
 //! than its own, or modify an interface it did not create.
 
 #![forbid(unsafe_code)]
-#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 #![warn(missing_docs)]
 
 use std::net::IpAddr;
@@ -541,15 +544,15 @@ fn validate_tun(request: &TunRequest, uid: u32) -> Result<(), NetdError> {
             "at least one of ipv4 or ipv6 must be given".into(),
         ));
     }
-    if let Some(net) = request.ipv4 {
-        if !net.addr().is_ipv4() {
-            return Err(NetdError::Refused("ipv4 field holds an IPv6 prefix".into()));
-        }
+    if let Some(net) = request.ipv4
+        && !net.addr().is_ipv4()
+    {
+        return Err(NetdError::Refused("ipv4 field holds an IPv6 prefix".into()));
     }
-    if let Some(net) = request.ipv6 {
-        if !net.addr().is_ipv6() {
-            return Err(NetdError::Refused("ipv6 field holds an IPv4 prefix".into()));
-        }
+    if let Some(net) = request.ipv6
+        && !net.addr().is_ipv6()
+    {
+        return Err(NetdError::Refused("ipv6 field holds an IPv4 prefix".into()));
     }
     if request.lease_ttl_secs == 0 || request.lease_ttl_secs > MAX_LEASE_TTL_SECS {
         return Err(NetdError::Refused(format!(
@@ -622,7 +625,9 @@ fn validate_dns(request: &DnsRequest) -> Result<(), NetdError> {
             continue;
         }
         if domain.is_empty() || domain.len() > 253 {
-            return Err(NetdError::Refused("search domain has an implausible length".into()));
+            return Err(NetdError::Refused(
+                "search domain has an implausible length".into(),
+            ));
         }
         if !domain
             .chars()
@@ -764,7 +769,9 @@ mod tests {
     fn an_address_family_mismatch_is_refused() {
         let mut request = tun(1000);
         request.ipv6 = "10.0.0.1/24".parse().ok();
-        let error = Operation::CreateTun(request).validate(1000).expect_err("must refuse");
+        let error = Operation::CreateTun(request)
+            .validate(1000)
+            .expect_err("must refuse");
         assert!(error.to_string().contains("ipv6 field"), "{error}");
     }
 
@@ -777,7 +784,9 @@ mod tests {
             bypass_private: true,
             blackhole_ipv6: false,
         };
-        let error = Operation::ApplyRouting(request).validate(1000).expect_err("must refuse");
+        let error = Operation::ApplyRouting(request)
+            .validate(1000)
+            .expect_err("must refuse");
         assert!(error.to_string().contains("default route"), "{error}");
     }
 
@@ -812,7 +821,9 @@ mod tests {
             kill_switch: false,
             bypass_uid: true,
         };
-        let error = Operation::ApplyFirewall(request).validate(1000).expect_err("must refuse");
+        let error = Operation::ApplyFirewall(request)
+            .validate(1000)
+            .expect_err("must refuse");
         assert!(error.to_string().contains("reserved range"), "{error}");
     }
 
@@ -832,7 +843,10 @@ mod tests {
             }
             .validate(1000)
             .expect_err("must refuse");
-            assert!(matches!(error, NetdError::Refused(_)), "{bad:?} -> {error:?}");
+            assert!(
+                matches!(error, NetdError::Refused(_)),
+                "{bad:?} -> {error:?}"
+            );
         }
         assert!(
             Operation::CreateCgroup {
@@ -999,6 +1013,10 @@ mod tests {
             "plan",
             "recover",
         ];
-        assert_eq!(names.len(), 17, "update docs/THREAT-MODEL.md when this changes");
+        assert_eq!(
+            names.len(),
+            17,
+            "update docs/THREAT-MODEL.md when this changes"
+        );
     }
 }
