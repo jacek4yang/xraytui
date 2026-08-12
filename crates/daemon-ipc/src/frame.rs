@@ -96,7 +96,10 @@ where
     ciborium::into_writer(value, &mut body)
         .map_err(|error| FrameError::Encode(error.to_string()))?;
     if body.len() > limit {
-        return Err(FrameError::TooLarge { declared: body.len(), limit });
+        return Err(FrameError::TooLarge {
+            declared: body.len(),
+            limit,
+        });
     }
     let length = u32::try_from(body.len()).map_err(|_| FrameError::TooLarge {
         declared: body.len(),
@@ -121,11 +124,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_frame_round_trips() {
-        let sample = Sample { id: 7, text: "hello".into() };
+        let sample = Sample {
+            id: 7,
+            text: "hello".into(),
+        };
         let mut buffer = Vec::new();
-        write_frame(&mut buffer, &sample, MAX_FRAME_BYTES).await.expect("write");
+        write_frame(&mut buffer, &sample, MAX_FRAME_BYTES)
+            .await
+            .expect("write");
         let mut cursor = std::io::Cursor::new(buffer);
-        let back: Sample = read_frame(&mut cursor, MAX_FRAME_BYTES).await.expect("read");
+        let back: Sample = read_frame(&mut cursor, MAX_FRAME_BYTES)
+            .await
+            .expect("read");
         assert_eq!(back, sample);
     }
 
@@ -133,12 +143,19 @@ mod tests {
     async fn several_frames_stream_in_order() {
         let mut buffer = Vec::new();
         for id in 0..5 {
-            let sample = Sample { id, text: format!("m{id}") };
-            write_frame(&mut buffer, &sample, MAX_FRAME_BYTES).await.expect("write");
+            let sample = Sample {
+                id,
+                text: format!("m{id}"),
+            };
+            write_frame(&mut buffer, &sample, MAX_FRAME_BYTES)
+                .await
+                .expect("write");
         }
         let mut cursor = std::io::Cursor::new(buffer);
         for id in 0..5 {
-            let back: Sample = read_frame(&mut cursor, MAX_FRAME_BYTES).await.expect("read");
+            let back: Sample = read_frame(&mut cursor, MAX_FRAME_BYTES)
+                .await
+                .expect("read");
             assert_eq!(back.id, id);
         }
         let end: Result<Sample, _> = read_frame(&mut cursor, MAX_FRAME_BYTES).await;
@@ -154,7 +171,13 @@ mod tests {
         let mut cursor = std::io::Cursor::new(buffer);
         let result: Result<Sample, _> = read_frame(&mut cursor, MAX_FRAME_BYTES).await;
         assert!(
-            matches!(result, Err(FrameError::TooLarge { limit: MAX_FRAME_BYTES, .. })),
+            matches!(
+                result,
+                Err(FrameError::TooLarge {
+                    limit: MAX_FRAME_BYTES,
+                    ..
+                })
+            ),
             "{result:?}"
         );
     }
@@ -169,9 +192,16 @@ mod tests {
     #[tokio::test]
     async fn a_truncated_body_is_an_error_not_a_hang() {
         let mut buffer = Vec::new();
-        write_frame(&mut buffer, &Sample { id: 1, text: "x".into() }, MAX_FRAME_BYTES)
-            .await
-            .expect("write");
+        write_frame(
+            &mut buffer,
+            &Sample {
+                id: 1,
+                text: "x".into(),
+            },
+            MAX_FRAME_BYTES,
+        )
+        .await
+        .expect("write");
         buffer.truncate(buffer.len() - 1);
         let mut cursor = std::io::Cursor::new(buffer);
         let result: Result<Sample, _> = read_frame(&mut cursor, MAX_FRAME_BYTES).await;
@@ -190,15 +220,29 @@ mod tests {
 
     #[tokio::test]
     async fn writing_over_the_limit_is_refused() {
-        let sample = Sample { id: 1, text: "x".repeat(1024) };
+        let sample = Sample {
+            id: 1,
+            text: "x".repeat(1024),
+        };
         let mut buffer = Vec::new();
         let result = write_frame(&mut buffer, &sample, 64).await;
-        assert!(matches!(result, Err(FrameError::TooLarge { limit: 64, .. })), "{result:?}");
-        assert!(buffer.is_empty(), "nothing may be written for a refused frame");
+        assert!(
+            matches!(result, Err(FrameError::TooLarge { limit: 64, .. })),
+            "{result:?}"
+        );
+        assert!(
+            buffer.is_empty(),
+            "nothing may be written for a refused frame"
+        );
     }
 
-    #[tokio::test]
-    async fn the_netd_limit_is_much_smaller_than_the_user_limit() {
-        assert!(MAX_NETD_FRAME_BYTES < MAX_FRAME_BYTES / 8);
+    #[test]
+    fn the_netd_limit_is_much_smaller_than_the_user_limit() {
+        // The helper accepts only short typed operations, so its cap is a
+        // fraction of the user socket's. Stated as a test so a future change to
+        // either constant has to justify itself.
+        const _: () = assert!(MAX_NETD_FRAME_BYTES * 8 <= MAX_FRAME_BYTES);
+        assert_eq!(MAX_NETD_FRAME_BYTES, 256 * 1024);
+        assert_eq!(MAX_FRAME_BYTES, 8 * 1024 * 1024);
     }
 }

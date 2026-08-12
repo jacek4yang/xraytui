@@ -30,12 +30,16 @@ impl ApiEndpoint {
     /// Loopback TCP on the given port.
     #[must_use]
     pub fn loopback(port: u16) -> Self {
-        Self::Tcp { authority: format!("127.0.0.1:{port}") }
+        Self::Tcp {
+            authority: format!("127.0.0.1:{port}"),
+        }
     }
 
     /// A Unix socket.
     pub fn unix(path: impl AsRef<Path>) -> Self {
-        Self::Unix { path: path.as_ref().to_string_lossy().into_owned() }
+        Self::Unix {
+            path: path.as_ref().to_string_lossy().into_owned(),
+        }
     }
 
     /// The string Xray's `api.listen` field expects.
@@ -87,8 +91,14 @@ mod tests {
 
     #[test]
     fn listen_strings_match_what_xray_expects() {
-        assert_eq!(ApiEndpoint::loopback(10085).xray_listen(), "127.0.0.1:10085");
-        assert_eq!(ApiEndpoint::unix("/run/user/1000/x.sock").xray_listen(), "/run/user/1000/x.sock");
+        assert_eq!(
+            ApiEndpoint::loopback(10085).xray_listen(),
+            "127.0.0.1:10085"
+        );
+        assert_eq!(
+            ApiEndpoint::unix("/run/user/1000/x.sock").xray_listen(),
+            "/run/user/1000/x.sock"
+        );
     }
 
     #[test]

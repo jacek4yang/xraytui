@@ -53,9 +53,8 @@ use xraytui_domain::{
 };
 use xraytui_xray_model::{
     ApiConfig, Balancer, BalancerStrategy, BurstObservatoryConfig, DnsConfig, DnsServer,
-    DnsServerDetail, Inbound,
-    LevelPolicy, LogConfig, ObservatoryConfig, Outbound, PolicyConfig, RoutingConfig, RoutingRule,
-    Sniffing, StatsConfig, SystemPolicy, XrayConfig,
+    DnsServerDetail, Inbound, LevelPolicy, LogConfig, ObservatoryConfig, Outbound, PolicyConfig,
+    RoutingConfig, RoutingRule, Sniffing, StatsConfig, SystemPolicy, XrayConfig,
 };
 
 /// Why compilation failed.
@@ -302,7 +301,11 @@ fn stats_policy() -> PolicyConfig {
     let mut levels = BTreeMap::new();
     levels.insert(
         "0".to_owned(),
-        LevelPolicy { handshake: Some(4), conn_idle: Some(300), ..Default::default() },
+        LevelPolicy {
+            handshake: Some(4),
+            conn_idle: Some(300),
+            ..Default::default()
+        },
     );
     PolicyConfig {
         levels,
@@ -419,12 +422,14 @@ impl<'a> Builder<'a> {
             }
             let mut previous: Option<String> = None;
             for (index, hop) in chain.hops.iter().enumerate() {
-                let node = self.state.nodes.get(hop).ok_or_else(|| {
-                    CompileError::UnsupportedChain {
-                        chain: id.to_string(),
-                        reason: format!("hop '{hop}' disappeared during compilation"),
-                    }
-                })?;
+                let node =
+                    self.state
+                        .nodes
+                        .get(hop)
+                        .ok_or_else(|| CompileError::UnsupportedChain {
+                            chain: id.to_string(),
+                            reason: format!("hop '{hop}' disappeared during compilation"),
+                        })?;
                 let is_terminal = Some(index) == chain.terminal_index();
                 let tag = if is_terminal {
                     tags::chain_terminal(id)
@@ -483,8 +488,7 @@ impl<'a> Builder<'a> {
 
         for (id, group) in &self.state.groups {
             let members = self.state.group_members(id);
-            let mut selector: Vec<String> =
-                members.iter().map(|m| self.target_tag(m)).collect();
+            let mut selector: Vec<String> = members.iter().map(|m| self.target_tag(m)).collect();
             if selector.is_empty() {
                 // An empty selector is rejected by Xray at load time. Point the
                 // balancer at the blackhole so the configuration still loads and
@@ -526,10 +530,11 @@ impl<'a> Builder<'a> {
             // A manual group is a balancer pinned by an override, exactly like a
             // profile selector. That keeps "switch a group's member" a runtime
             // operation rather than a recompile.
-            if group.strategy == GroupStrategy::Manual {
-                if let Some(selection) = &group.manual_selection {
-                    self.selector_overrides.push((tag, self.target_tag(selection)));
-                }
+            if group.strategy == GroupStrategy::Manual
+                && let Some(selection) = &group.manual_selection
+            {
+                self.selector_overrides
+                    .push((tag, self.target_tag(selection)));
             }
         }
 
@@ -785,7 +790,15 @@ impl<'a> Builder<'a> {
             .state
             .routing_rules
             .values()
-            .filter(|r| r.enabled && matches!(&r.action, RuleAction::Target { target: Target::Block }))
+            .filter(|r| {
+                r.enabled
+                    && matches!(
+                        &r.action,
+                        RuleAction::Target {
+                            target: Target::Block
+                        }
+                    )
+            })
             .collect();
         block_rules.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
         for rule in block_rules {
@@ -794,7 +807,12 @@ impl<'a> Builder<'a> {
         }
 
         // 7. Application rules.
-        let mut app_rules: Vec<_> = self.state.app_rules.values().filter(|r| r.enabled).collect();
+        let mut app_rules: Vec<_> = self
+            .state
+            .app_rules
+            .values()
+            .filter(|r| r.enabled)
+            .collect();
         app_rules.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
         for rule in app_rules {
             let processes: Vec<String> = rule.process.iter().map(|m| m.0.clone()).collect();
@@ -811,7 +829,13 @@ impl<'a> Builder<'a> {
             .routing_rules
             .values()
             .filter(|r| {
-                r.enabled && !matches!(&r.action, RuleAction::Target { target: Target::Block })
+                r.enabled
+                    && !matches!(
+                        &r.action,
+                        RuleAction::Target {
+                            target: Target::Block
+                        }
+                    )
             })
             .collect();
         user_rules.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));

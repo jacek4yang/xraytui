@@ -15,9 +15,10 @@ use xraytui_test_support::{MockEgress, free_port};
 
 fn have_xray() -> bool {
     std::env::var("XRAYTUI_TEST_XRAY").is_ok_and(|p| Path::new(&p).is_file())
-        || std::env::var("PATH").unwrap_or_default().split(':').any(|dir| {
-            !dir.is_empty() && Path::new(dir).join("xray").is_file()
-        })
+        || std::env::var("PATH")
+            .unwrap_or_default()
+            .split(':')
+            .any(|dir| !dir.is_empty() && Path::new(dir).join("xray").is_file())
 }
 
 macro_rules! require_xray {
@@ -100,8 +101,14 @@ fn the_cli_reports_a_missing_daemon_with_a_dedicated_exit_code() {
         .expect("run xraytui");
     assert_eq!(output.status.code(), Some(xraytui_cli::EXIT_NO_DAEMON));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot reach the xraytui daemon"), "{stderr}");
-    assert!(stderr.contains("systemctl --user start xraytuid.service"), "{stderr}");
+    assert!(
+        stderr.contains("cannot reach the xraytui daemon"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("systemctl --user start xraytuid.service"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -126,7 +133,11 @@ fn completions_and_man_pages_work_without_a_daemon() {
         .arg(&man_dir)
         .output()
         .expect("run xraytui");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(man_dir.join("xraytui.1").is_file());
     assert!(man_dir.join("xraytui-profile.1").is_file());
 }
@@ -141,7 +152,11 @@ fn the_daemon_validates_a_fresh_configuration() {
         .arg("--check")
         .output()
         .expect("run xraytuid");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("configuration is valid"), "{stdout}");
 }
@@ -158,7 +173,10 @@ fn a_second_daemon_refuses_to_start_for_the_same_user() {
         .arg("--no-start")
         .output()
         .expect("run xraytuid");
-    assert!(!output.status.success(), "a second daemon must refuse to start");
+    assert!(
+        !output.status.success(),
+        "a second daemon must refuse to start"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("already running"), "{stderr}");
 }
@@ -172,7 +190,11 @@ fn the_cli_talks_to_the_daemon_in_every_output_format() {
 
     // Plain.
     let output = daemon.cli(&["status"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("Profiles"), "{stdout}");
 
@@ -187,7 +209,11 @@ fn the_cli_talks_to_the_daemon_in_every_output_format() {
     let output = daemon.cli(&["status", "--format", "dwmblocks"]);
     assert!(output.status.success());
     let line = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(line.lines().count(), 1, "dwmblocks output must be one line: {line:?}");
+    assert_eq!(
+        line.lines().count(),
+        1,
+        "dwmblocks output must be one line: {line:?}"
+    );
 
     // Shell.
     let output = daemon.cli(&["status", "--format", "shell"]);
@@ -214,7 +240,11 @@ fn importing_a_link_and_switching_a_profile_works_end_to_end() {
     let link = "vless://11111111-2222-3333-4444-555555555555@127.0.0.1:443\
                 ?type=tcp&security=none#Imported%20Node";
     let output = daemon.cli(&["node", "import", link]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("imported 1 node"), "{stdout}");
 
@@ -232,7 +262,10 @@ fn importing_a_link_and_switching_a_profile_works_end_to_end() {
     // `node show` must not print the credential.
     let output = daemon.cli(&["node", "show", id]);
     let shown = String::from_utf8_lossy(&output.stdout);
-    assert!(!shown.contains("11111111-2222"), "credential leaked: {shown}");
+    assert!(
+        !shown.contains("11111111-2222"),
+        "credential leaked: {shown}"
+    );
     assert!(shown.contains("<redacted>"), "{shown}");
 
     // A share link round-trips back out.
@@ -288,9 +321,17 @@ fn the_dmenu_pipeline_from_the_specification_round_trips() {
         stdin.write_all(chosen.as_bytes()).expect("write");
     }
     let output = child.wait_with_output().expect("wait");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let selected = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(selected.trim(), "direct", "the starter profile should be selected");
+    assert_eq!(
+        selected.trim(),
+        "direct",
+        "the starter profile should be selected"
+    );
 }
 
 #[test]
@@ -305,7 +346,10 @@ fn doctor_reports_the_environment_and_exits_meaningfully() {
     assert!(stdout.contains("control-socket"), "{stdout}");
     assert!(stdout.contains("tun-device"), "{stdout}");
     // The exit code is non-zero exactly when a check failed.
-    let failed = stdout.lines().filter(|line| line.starts_with("[FAIL]")).count();
+    let failed = stdout
+        .lines()
+        .filter(|line| line.starts_with("[FAIL]"))
+        .count();
     assert_eq!(output.status.success(), failed == 0, "{stdout}");
 
     let output = daemon.cli(&["doctor", "--format", "json"]);
@@ -347,14 +391,25 @@ async fn exec_injects_the_profile_proxy_environment() {
             .success()
     );
     let up = daemon.cli(&["up"]);
-    assert!(up.status.success(), "{}", String::from_utf8_lossy(&up.stderr));
+    assert!(
+        up.status.success(),
+        "{}",
+        String::from_utf8_lossy(&up.stderr)
+    );
 
     // `env` prints the environment it was given, which is exactly what `exec`
     // is supposed to have set.
     let output = daemon.cli(&["exec", "--profile", "direct", "--", "env"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let environment = String::from_utf8_lossy(&output.stdout);
-    assert!(environment.contains("ALL_PROXY=socks5h://127.0.0.1:"), "{environment}");
+    assert!(
+        environment.contains("ALL_PROXY=socks5h://127.0.0.1:"),
+        "{environment}"
+    );
     assert!(environment.contains("HTTP_PROXY="), "{environment}");
     assert!(environment.contains("NO_PROXY=localhost,"), "{environment}");
     let _ = port;

@@ -80,7 +80,10 @@ impl ConfigFile {
         let mut problems = Vec::new();
 
         if self.tun.mtu < 576 || self.tun.mtu > 9000 {
-            problems.push(format!("[tun] mtu {} is outside the usable range 576..=9000", self.tun.mtu));
+            problems.push(format!(
+                "[tun] mtu {} is outside the usable range 576..=9000",
+                self.tun.mtu
+            ));
         }
         if !self.tun.ipv4 && !self.tun.ipv6 {
             problems.push("[tun] at least one of ipv4 or ipv6 must be enabled".to_owned());
@@ -100,7 +103,8 @@ impl ConfigFile {
         if self.health.timeout_ms < 200 {
             problems.push("[health] timeout_ms must be at least 200".to_owned());
         }
-        if !self.health.test_url.starts_with("http://") && !self.health.test_url.starts_with("https://")
+        if !self.health.test_url.starts_with("http://")
+            && !self.health.test_url.starts_with("https://")
         {
             problems.push("[health] test_url must be an http or https URL".to_owned());
         }
@@ -142,7 +146,9 @@ pub fn is_valid_interface_name(name: &str) -> bool {
     // Linux caps interface names at IFNAMSIZ-1 = 15 bytes.
     suffix.len() <= 8
         && name.len() <= 15
-        && suffix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && suffix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 /// `[core]`
@@ -459,7 +465,10 @@ pub struct HealthSection {
     #[serde(default = "default_health_concurrency")]
     pub concurrency: usize,
     /// Seconds between automatic sweeps; `None` disables them.
-    #[serde(default = "default_health_interval", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_health_interval",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub interval_secs: Option<u64>,
     /// Probe nodes that are not active targets, group candidates or chain hops.
     #[serde(default)]
@@ -606,7 +615,9 @@ mod tests {
 
     #[test]
     fn defaults_validate() {
-        ConfigFile::default().validate().expect("defaults must be valid");
+        ConfigFile::default()
+            .validate()
+            .expect("defaults must be valid");
     }
 
     #[test]
@@ -628,7 +639,10 @@ mod tests {
         let mut config = ConfigFile::default();
         config.core.lan_access = true;
         let error = config.validate().expect_err("must refuse");
-        assert!(error.to_string().contains("lan_access_acknowledged"), "{error}");
+        assert!(
+            error.to_string().contains("lan_access_acknowledged"),
+            "{error}"
+        );
         config.core.lan_access_acknowledged = true;
         config.validate().expect("acknowledged");
     }

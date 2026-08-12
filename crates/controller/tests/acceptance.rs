@@ -75,7 +75,9 @@ async fn engine_for(state: DesiredState, dir: &std::path::Path) -> Engine {
 
 /// Read the egress banner through a profile's SOCKS listener.
 async fn egress_reached(port: u16) -> String {
-    let address = format!("127.0.0.1:{port}").parse().expect("loopback address");
+    let address = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("loopback address");
     probe_through_socks5(address, "probe.invalid", 80)
         .await
         .unwrap_or_else(|error| panic!("probe through 127.0.0.1:{port} failed: {error}"))
@@ -95,13 +97,21 @@ async fn scenario_a_two_profiles_reach_their_own_egress_concurrently() {
     let dev_port = free_port().expect("port");
 
     let mut state = DesiredState::default();
-    fixtures::add_node(&mut state, fixtures::socks_node("egress-web", "Web egress", egress_web.socks_addr()));
-    fixtures::add_node(&mut state, fixtures::socks_node("egress-dev", "Dev egress", egress_dev.socks_addr()));
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("egress-web", "Web egress", egress_web.socks_addr()),
+    );
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("egress-dev", "Dev egress", egress_dev.socks_addr()),
+    );
     fixtures::add_profile(
         &mut state,
         fixtures::profile_with_socks(
             "web",
-            Target::Node { id: NodeId::new("egress-web").expect("valid") },
+            Target::Node {
+                id: NodeId::new("egress-web").expect("valid"),
+            },
             web_port,
         ),
     );
@@ -109,7 +119,9 @@ async fn scenario_a_two_profiles_reach_their_own_egress_concurrently() {
         &mut state,
         fixtures::profile_with_socks(
             "development",
-            Target::Node { id: NodeId::new("egress-dev").expect("valid") },
+            Target::Node {
+                id: NodeId::new("egress-dev").expect("valid"),
+            },
             dev_port,
         ),
     );
@@ -119,11 +131,16 @@ async fn scenario_a_two_profiles_reach_their_own_egress_concurrently() {
     assert!(matches!(engine.runtime().core, CoreStatus::Running { .. }));
 
     // Simultaneous, not sequential: the point is that both paths are live at once.
-    let (web_answer, dev_answer) =
-        tokio::join!(egress_reached(web_port), egress_reached(dev_port));
+    let (web_answer, dev_answer) = tokio::join!(egress_reached(web_port), egress_reached(dev_port));
 
-    assert!(web_answer.contains("EGRESS web"), "web profile reached: {web_answer:?}");
-    assert!(dev_answer.contains("EGRESS dev"), "development profile reached: {dev_answer:?}");
+    assert!(
+        web_answer.contains("EGRESS web"),
+        "web profile reached: {web_answer:?}"
+    );
+    assert!(
+        dev_answer.contains("EGRESS dev"),
+        "development profile reached: {dev_answer:?}"
+    );
     assert_eq!(egress_web.connection_count(), 1);
     assert_eq!(egress_dev.connection_count(), 1);
     assert_eq!(engine.runtime().generation, generation);
@@ -151,13 +168,18 @@ async fn scenario_b_switching_one_profile_leaves_the_other_alone_and_does_not_re
         ("egress-dev", &egress_dev),
         ("egress-new", &egress_new),
     ] {
-        fixtures::add_node(&mut state, fixtures::socks_node(id, id, egress.socks_addr()));
+        fixtures::add_node(
+            &mut state,
+            fixtures::socks_node(id, id, egress.socks_addr()),
+        );
     }
     fixtures::add_profile(
         &mut state,
         fixtures::profile_with_socks(
             "web",
-            Target::Node { id: NodeId::new("egress-web").expect("valid") },
+            Target::Node {
+                id: NodeId::new("egress-web").expect("valid"),
+            },
             web_port,
         ),
     );
@@ -165,7 +187,9 @@ async fn scenario_b_switching_one_profile_leaves_the_other_alone_and_does_not_re
         &mut state,
         fixtures::profile_with_socks(
             "development",
-            Target::Node { id: NodeId::new("egress-dev").expect("valid") },
+            Target::Node {
+                id: NodeId::new("egress-dev").expect("valid"),
+            },
             dev_port,
         ),
     );
@@ -184,8 +208,13 @@ async fn scenario_b_switching_one_profile_leaves_the_other_alone_and_does_not_re
 
     // The planner must classify this as an API operation before we run it.
     let mut next = engine.desired().clone();
-    if let Some(profile) = next.profiles.get_mut(&ProfileId::new("development").expect("valid")) {
-        profile.target = Target::Node { id: NodeId::new("egress-new").expect("valid") };
+    if let Some(profile) = next
+        .profiles
+        .get_mut(&ProfileId::new("development").expect("valid"))
+    {
+        profile.target = Target::Node {
+            id: NodeId::new("egress-new").expect("valid"),
+        };
     }
     assert!(
         matches!(engine.plan(&next), ChangePlan::Selectors(_)),
@@ -196,7 +225,9 @@ async fn scenario_b_switching_one_profile_leaves_the_other_alone_and_does_not_re
     let outcome = engine
         .set_profile_target(
             &ProfileId::new("development").expect("valid"),
-            Target::Node { id: NodeId::new("egress-new").expect("valid") },
+            Target::Node {
+                id: NodeId::new("egress-new").expect("valid"),
+            },
         )
         .await
         .expect("switch must succeed");
@@ -209,17 +240,31 @@ async fn scenario_b_switching_one_profile_leaves_the_other_alone_and_does_not_re
 
     // New connections follow the new target...
     let dev_answer = egress_reached(dev_port).await;
-    assert!(dev_answer.contains("EGRESS new"), "development after switch: {dev_answer:?}");
+    assert!(
+        dev_answer.contains("EGRESS new"),
+        "development after switch: {dev_answer:?}"
+    );
     // ...the untouched profile is unchanged...
     let web_answer = egress_reached(web_port).await;
-    assert!(web_answer.contains("EGRESS web"), "web after switch: {web_answer:?}");
+    assert!(
+        web_answer.contains("EGRESS web"),
+        "web after switch: {web_answer:?}"
+    );
     // ...and the core was never restarted.
     match engine.runtime().core {
         CoreStatus::Running { pid, .. } => assert_eq!(pid, pid_before, "core was restarted"),
         ref other => panic!("core is not running: {other:?}"),
     }
-    assert_eq!(engine.runtime().generation, generation_before, "generation changed");
-    assert_eq!(egress_dev.connection_count(), 1, "old egress took no new connection");
+    assert_eq!(
+        engine.runtime().generation,
+        generation_before,
+        "generation changed"
+    );
+    assert_eq!(
+        egress_dev.connection_count(),
+        1,
+        "old egress took no new connection"
+    );
 
     engine.stop_core().await;
 }
@@ -233,9 +278,13 @@ async fn scenario_e_a_two_hop_chain_reaches_the_exit_through_the_first_hop() {
 
     // The transit hop must forward faithfully; an identifying egress would
     // swallow the connection and the test would prove nothing.
-    let transit = MockEgress::start_forwarding("transit").await.expect("start transit");
+    let transit = MockEgress::start_forwarding("transit")
+        .await
+        .expect("start transit");
     let exit = MockEgress::start("exit").await.expect("start exit");
-    let direct = MockEgress::start("direct-exit").await.expect("start direct");
+    let direct = MockEgress::start("direct-exit")
+        .await
+        .expect("start direct");
 
     let chain_port = free_port().expect("port");
     let direct_port = free_port().expect("port");
@@ -245,12 +294,21 @@ async fn scenario_e_a_two_hop_chain_reaches_the_exit_through_the_first_hop() {
     // for breaking UDP on every later hop. The refusal is the correct default;
     // a real transit proxy offers UDP ASSOCIATE, so the fixture says so too.
     let mut transit_node = fixtures::socks_node("hop-transit", "Transit", transit.socks_addr());
-    transit_node.protocol = xraytui_domain::ProtocolSettings::Socks(
-        xraytui_domain::SocksSettings { username: None, password: None, udp: true },
-    );
+    transit_node.protocol =
+        xraytui_domain::ProtocolSettings::Socks(xraytui_domain::SocksSettings {
+            username: None,
+            password: None,
+            udp: true,
+        });
     fixtures::add_node(&mut state, transit_node);
-    fixtures::add_node(&mut state, fixtures::socks_node("hop-exit", "Exit", exit.socks_addr()));
-    fixtures::add_node(&mut state, fixtures::socks_node("solo", "Solo", direct.socks_addr()));
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("hop-exit", "Exit", exit.socks_addr()),
+    );
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("solo", "Solo", direct.socks_addr()),
+    );
 
     let chain_id = ChainId::new("transit-exit").expect("valid");
     state.chains.insert(
@@ -273,7 +331,9 @@ async fn scenario_e_a_two_hop_chain_reaches_the_exit_through_the_first_hop() {
         &mut state,
         fixtures::profile_with_socks(
             "solo",
-            Target::Node { id: NodeId::new("solo").expect("valid") },
+            Target::Node {
+                id: NodeId::new("solo").expect("valid"),
+            },
             direct_port,
         ),
     );
@@ -282,7 +342,10 @@ async fn scenario_e_a_two_hop_chain_reaches_the_exit_through_the_first_hop() {
     engine.rebuild_and_start().await.expect("core must start");
 
     let answer = egress_reached(chain_port).await;
-    assert!(answer.contains("EGRESS exit"), "chain must terminate at the exit: {answer:?}");
+    assert!(
+        answer.contains("EGRESS exit"),
+        "chain must terminate at the exit: {answer:?}"
+    );
     assert_eq!(
         transit.connection_count(),
         1,
@@ -291,8 +354,15 @@ async fn scenario_e_a_two_hop_chain_reaches_the_exit_through_the_first_hop() {
 
     // A profile that does not use the chain must not touch the transit hop.
     let solo_answer = egress_reached(direct_port).await;
-    assert!(solo_answer.contains("EGRESS direct-exit"), "{solo_answer:?}");
-    assert_eq!(transit.connection_count(), 1, "the non-chain profile used the transit hop");
+    assert!(
+        solo_answer.contains("EGRESS direct-exit"),
+        "{solo_answer:?}"
+    );
+    assert_eq!(
+        transit.connection_count(),
+        1,
+        "the non-chain profile used the transit hop"
+    );
 
     engine.stop_core().await;
 }
@@ -308,12 +378,17 @@ async fn scenario_i_killing_the_core_is_noticed_and_schedules_a_restart() {
     let port = free_port().expect("port");
 
     let mut state = DesiredState::default();
-    fixtures::add_node(&mut state, fixtures::socks_node("only", "Only", egress.socks_addr()));
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("only", "Only", egress.socks_addr()),
+    );
     fixtures::add_profile(
         &mut state,
         fixtures::profile_with_socks(
             "web",
-            Target::Node { id: NodeId::new("only").expect("valid") },
+            Target::Node {
+                id: NodeId::new("only").expect("valid"),
+            },
             port,
         ),
     );
@@ -336,19 +411,28 @@ async fn scenario_i_killing_the_core_is_noticed_and_schedules_a_restart() {
     let mut listener_died = false;
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let address: std::net::SocketAddr =
-            format!("127.0.0.1:{port}").parse().expect("loopback address");
+        let address: std::net::SocketAddr = format!("127.0.0.1:{port}")
+            .parse()
+            .expect("loopback address");
         if tokio::net::TcpStream::connect(address).await.is_err() {
             listener_died = true;
             break;
         }
     }
-    assert!(listener_died, "the profile listener outlived the core it belonged to");
+    assert!(
+        listener_died,
+        "the profile listener outlived the core it belonged to"
+    );
 
     // The supervisor schedules a restart rather than silently giving up.
-    let delay = engine.note_core_exit("killed".into()).expect("a restart must be scheduled");
+    let delay = engine
+        .note_core_exit("killed".into())
+        .expect("a restart must be scheduled");
     assert!(delay >= Duration::from_millis(1));
-    assert!(matches!(engine.runtime().core, CoreStatus::Restarting { .. }));
+    assert!(matches!(
+        engine.runtime().core,
+        CoreStatus::Restarting { .. }
+    ));
 
     // And restarting really does bring the path back.
     engine.rebuild_and_start().await.expect("core must restart");
@@ -368,12 +452,17 @@ async fn a_failing_generation_rolls_back_to_the_previous_one() {
     let good_port = free_port().expect("port");
 
     let mut state = DesiredState::default();
-    fixtures::add_node(&mut state, fixtures::socks_node("good", "Good", egress.socks_addr()));
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("good", "Good", egress.socks_addr()),
+    );
     fixtures::add_profile(
         &mut state,
         fixtures::profile_with_socks(
             "web",
-            Target::Node { id: NodeId::new("good").expect("valid") },
+            Target::Node {
+                id: NodeId::new("good").expect("valid"),
+            },
             good_port,
         ),
     );
@@ -385,7 +474,9 @@ async fn a_failing_generation_rolls_back_to_the_previous_one() {
     // Occupy a port, then ask for a profile that wants to bind it. The
     // configuration is valid — `xray run -test` passes — but the *runtime* start
     // fails, which is exactly the case a static test cannot catch.
-    let squatter = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+    let squatter = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind");
     let taken = squatter.local_addr().expect("addr").port();
 
     let mut next = engine.desired().clone();
@@ -394,11 +485,17 @@ async fn a_failing_generation_rolls_back_to_the_previous_one() {
     broken.socks = Some(ListenerSpec::loopback(taken));
     next.profiles.insert(pid, broken);
 
-    let outcome = engine.apply(next).await.expect("apply must resolve, not error");
+    let outcome = engine
+        .apply(next)
+        .await
+        .expect("apply must resolve, not error");
     match outcome {
         ApplyOutcome::RolledBack { failed, restored } => {
             assert_ne!(failed, restored);
-            assert!(restored > first, "the restored generation is a fresh start of the old state");
+            assert!(
+                restored > first,
+                "the restored generation is a fresh start of the old state"
+            );
         }
         other => panic!("expected a rollback, got {other:?}"),
     }
@@ -407,7 +504,10 @@ async fn a_failing_generation_rolls_back_to_the_previous_one() {
     assert!(matches!(engine.runtime().core, CoreStatus::Running { .. }));
     assert!(egress_reached(good_port).await.contains("EGRESS good"));
     assert!(
-        !engine.desired().profiles.contains_key(&ProfileId::new("broken").expect("valid")),
+        !engine
+            .desired()
+            .profiles
+            .contains_key(&ProfileId::new("broken").expect("valid")),
         "the failed desired state must not be retained"
     );
 
@@ -426,10 +526,20 @@ async fn a_generation_is_only_healthy_after_listeners_and_overrides_are_verified
     let port = free_port().expect("port");
 
     let mut state = DesiredState::default();
-    fixtures::add_node(&mut state, fixtures::socks_node("a", "A", egress.socks_addr()));
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("a", "A", egress.socks_addr()),
+    );
     fixtures::add_profile(
         &mut state,
-        fixtures::profile_with_both("web", Target::Node { id: NodeId::new("a").expect("valid") }, port, free_port().expect("port")),
+        fixtures::profile_with_both(
+            "web",
+            Target::Node {
+                id: NodeId::new("a").expect("valid"),
+            },
+            port,
+            free_port().expect("port"),
+        ),
     );
 
     let mut engine = engine_for(state, dir.path()).await;

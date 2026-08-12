@@ -20,9 +20,8 @@ use std::path::{Path, PathBuf};
 
 pub use paths::{Paths, ensure_private_dir, write_private_atomic};
 pub use schema::{
-    ConfigFile, CoreSection, DnsManager, DnsSection, FailurePolicy, HealthSection,
-    ReleaseChannel, RuntimeSection, SubscriptionSection, TunSection, UiSection,
-    is_valid_interface_name,
+    ConfigFile, CoreSection, DnsManager, DnsSection, FailurePolicy, HealthSection, ReleaseChannel,
+    RuntimeSection, SubscriptionSection, TunSection, UiSection, is_valid_interface_name,
 };
 
 /// Current schema version of `config.toml` and the policy files.
@@ -89,11 +88,18 @@ pub fn load_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(ConfigError::Io { path: path.to_path_buf(), source }),
+        Err(source) => {
+            return Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
     };
     check_schema_version(path, &text)?;
-    let value = toml::from_str(&text)
-        .map_err(|source| ConfigError::Parse { path: path.to_path_buf(), source: Box::new(source) })?;
+    let value = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source: Box::new(source),
+    })?;
     Ok(Some(value))
 }
 
@@ -113,16 +119,18 @@ fn check_schema_version(path: &Path, text: &str) -> Result<(), ConfigError> {
         #[serde(default)]
         schema_version: Option<u32>,
     }
-    let peek: Peek = toml::from_str(text)
-        .map_err(|source| ConfigError::Parse { path: path.to_path_buf(), source: Box::new(source) })?;
-    if let Some(found) = peek.schema_version {
-        if found > SCHEMA_VERSION {
-            return Err(ConfigError::SchemaTooNew {
-                path: path.to_path_buf(),
-                found,
-                supported: SCHEMA_VERSION,
-            });
-        }
+    let peek: Peek = toml::from_str(text).map_err(|source| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source: Box::new(source),
+    })?;
+    if let Some(found) = peek.schema_version
+        && found > SCHEMA_VERSION
+    {
+        return Err(ConfigError::SchemaTooNew {
+            path: path.to_path_buf(),
+            found,
+            supported: SCHEMA_VERSION,
+        });
     }
     Ok(())
 }
@@ -148,7 +156,10 @@ mod tests {
     fn round_trip_preserves_values() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("s.toml");
-        let sample = Sample { schema_version: 1, value: "x".into() };
+        let sample = Sample {
+            schema_version: 1,
+            value: "x".into(),
+        };
         store_toml(&path, &sample).expect("store");
         let loaded: Sample = load_toml(&path).expect("load").expect("present");
         assert_eq!(loaded, sample);
@@ -161,7 +172,14 @@ mod tests {
         std::fs::write(&path, "schema_version = 99\nvalue = \"x\"\n").expect("write");
         let error = load_toml::<Sample>(&path).expect_err("must refuse");
         assert!(
-            matches!(error, ConfigError::SchemaTooNew { found: 99, supported: 1, .. }),
+            matches!(
+                error,
+                ConfigError::SchemaTooNew {
+                    found: 99,
+                    supported: 1,
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }

@@ -88,8 +88,10 @@ impl MigrationPlan {
 pub fn plan(dir: &Path) -> Result<MigrationPlan, ConfigError> {
     let mut steps = Vec::new();
     for entry in toml_files(dir)? {
-        let text = std::fs::read_to_string(&entry)
-            .map_err(|source| ConfigError::Io { path: entry.clone(), source })?;
+        let text = std::fs::read_to_string(&entry).map_err(|source| ConfigError::Io {
+            path: entry.clone(),
+            source,
+        })?;
         let table: toml::Table = toml::from_str(&text).map_err(|source| ConfigError::Parse {
             path: entry.clone(),
             source: Box::new(source),
@@ -121,7 +123,10 @@ pub fn plan(dir: &Path) -> Result<MigrationPlan, ConfigError> {
             descriptions,
         });
     }
-    Ok(MigrationPlan { steps, backup_dir: backup_path(dir) })
+    Ok(MigrationPlan {
+        steps,
+        backup_dir: backup_path(dir),
+    })
 }
 
 /// Apply every pending migration, after taking a backup.
@@ -138,12 +143,15 @@ pub fn run(dir: &Path) -> Result<MigrationPlan, ConfigError> {
     backup(dir, &plan.backup_dir)?;
 
     for step in &plan.steps {
-        let text = std::fs::read_to_string(&step.path)
-            .map_err(|source| ConfigError::Io { path: step.path.clone(), source })?;
-        let mut table: toml::Table = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        let text = std::fs::read_to_string(&step.path).map_err(|source| ConfigError::Io {
             path: step.path.clone(),
-            source: Box::new(source),
+            source,
         })?;
+        let mut table: toml::Table =
+            toml::from_str(&text).map_err(|source| ConfigError::Parse {
+                path: step.path.clone(),
+                source: Box::new(source),
+            })?;
         let mut version = step.from;
         for migration in MIGRATIONS.iter().filter(|m| m.from >= step.from) {
             (migration.apply)(&mut table).map_err(|reason| {
@@ -171,15 +179,25 @@ fn toml_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(source) => return Err(ConfigError::Io { path: dir.to_path_buf(), source }),
+        Err(source) => {
+            return Err(ConfigError::Io {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
     };
     for entry in entries {
-        let entry = entry.map_err(|source| ConfigError::Io { path: dir.to_path_buf(), source })?;
+        let entry = entry.map_err(|source| ConfigError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
         let path = entry.path();
         // `symlink_metadata` rather than `metadata`: a symlink in the config
         // directory must not redirect a migration write outside the tree.
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|source| ConfigError::Io { path: path.clone(), source })?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(|source| ConfigError::Io {
+            path: path.clone(),
+            source,
+        })?;
         if metadata.file_type().is_symlink() {
             return Err(ConfigError::UnsafeDirectory {
                 path,
@@ -201,16 +219,22 @@ fn backup_path(dir: &Path) -> PathBuf {
         .unwrap_or_default();
     dir.with_file_name(format!(
         "{}.backup.{stamp}",
-        dir.file_name().and_then(|n| n.to_str()).unwrap_or("xraytui")
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("xraytui")
     ))
 }
 
 fn backup(dir: &Path, destination: &Path) -> Result<(), ConfigError> {
     crate::paths::ensure_private_dir(destination)?;
     for file in toml_files(dir)? {
-        let Some(name) = file.file_name() else { continue };
-        let contents =
-            std::fs::read(&file).map_err(|source| ConfigError::Io { path: file.clone(), source })?;
+        let Some(name) = file.file_name() else {
+            continue;
+        };
+        let contents = std::fs::read(&file).map_err(|source| ConfigError::Io {
+            path: file.clone(),
+            source,
+        })?;
         write_private_atomic(&destination.join(name), &contents)?;
     }
     Ok(())
@@ -226,7 +250,10 @@ mod tests {
         std::fs::write(temp.path().join("config.toml"), "schema_version = 1\n").expect("write");
         let plan = plan(temp.path()).expect("plan");
         assert!(plan.is_empty());
-        assert!(plan.render().contains("already at the current schema version"));
+        assert!(
+            plan.render()
+                .contains("already at the current schema version")
+        );
     }
 
     #[test]
@@ -234,7 +261,10 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(temp.path().join("config.toml"), "schema_version = 42\n").expect("write");
         let error = plan(temp.path()).expect_err("must refuse");
-        assert!(matches!(error, ConfigError::SchemaTooNew { found: 42, .. }), "{error:?}");
+        assert!(
+            matches!(error, ConfigError::SchemaTooNew { found: 42, .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -253,7 +283,10 @@ mod tests {
         std::fs::create_dir(&dir).expect("mkdir");
         std::os::unix::fs::symlink(&outside, dir.join("linked.toml")).expect("symlink");
         let error = plan(&dir).expect_err("must refuse");
-        assert!(matches!(error, ConfigError::UnsafeDirectory { .. }), "{error:?}");
+        assert!(
+            matches!(error, ConfigError::UnsafeDirectory { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -263,7 +296,10 @@ mod tests {
         std::fs::write(&path, "schema_version = 1\nvalue = 3\n").expect("write");
         let plan = run(temp.path()).expect("run");
         assert!(plan.is_empty());
-        assert_eq!(std::fs::read_to_string(&path).expect("read"), "schema_version = 1\nvalue = 3\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "schema_version = 1\nvalue = 3\n"
+        );
     }
 
     #[test]
@@ -273,7 +309,10 @@ mod tests {
             assert_eq!(pair[0].to, pair[1].from, "migration ladder has a gap");
         }
         if let Some(last) = MIGRATIONS.last() {
-            assert_eq!(last.to, SCHEMA_VERSION, "ladder does not reach the current version");
+            assert_eq!(
+                last.to, SCHEMA_VERSION,
+                "ladder does not reach the current version"
+            );
         }
     }
 }

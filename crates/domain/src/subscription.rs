@@ -81,7 +81,10 @@ impl SubscriptionMeta {
     #[must_use]
     pub fn remaining_bytes(&self) -> Option<u64> {
         let total = self.total_bytes?;
-        let used = self.upload_bytes.unwrap_or(0).saturating_add(self.download_bytes.unwrap_or(0));
+        let used = self
+            .upload_bytes
+            .unwrap_or(0)
+            .saturating_add(self.download_bytes.unwrap_or(0));
         Some(total.saturating_sub(used))
     }
 }
@@ -172,7 +175,10 @@ impl SubscriptionDiff {
     /// True when committing the diff would change nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.changes.iter().all(|c| matches!(c, NodeChange::Rejected { .. })) && self.changes.is_empty()
+        self.changes
+            .iter()
+            .all(|c| matches!(c, NodeChange::Rejected { .. }))
+            && self.changes.is_empty()
     }
 
     /// Nodes that would be removed while something still points at them.
@@ -181,7 +187,9 @@ impl SubscriptionDiff {
         self.changes
             .iter()
             .filter_map(|c| match c {
-                NodeChange::Removed { id, in_use: true, .. } => Some(id),
+                NodeChange::Removed {
+                    id, in_use: true, ..
+                } => Some(id),
                 _ => None,
             })
             .collect()
@@ -260,7 +268,13 @@ mod tests {
 
     #[test]
     fn diff_summary_is_compact() {
-        let counts = DiffCounts { added: 3, changed: 1, removed: 2, unsupported: 1, rejected: 0 };
+        let counts = DiffCounts {
+            added: 3,
+            changed: 1,
+            removed: 2,
+            unsupported: 1,
+            rejected: 0,
+        };
         assert_eq!(counts.summary(), "+3 ~1 -2 ?1");
         assert_eq!(DiffCounts::default().summary(), "no changes");
     }

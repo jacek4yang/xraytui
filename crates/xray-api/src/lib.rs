@@ -147,7 +147,10 @@ pub enum ApiError {
 
 impl ApiError {
     fn call(call: &'static str, status: tonic::Status) -> Self {
-        Self::Call { call, status: Box::new(status) }
+        Self::Call {
+            call,
+            status: Box::new(status),
+        }
     }
 
     /// Whether the failure means "this Xray build does not have that feature".
@@ -201,7 +204,10 @@ pub(crate) async fn connect_tcp(authority: &str, timeout: Duration) -> Result<Ch
     endpoint
         .connect()
         .await
-        .map_err(|source| ApiError::Connect { endpoint: authority.to_owned(), source })
+        .map_err(|source| ApiError::Connect {
+            endpoint: authority.to_owned(),
+            source,
+        })
 }
 
 /// Build a channel for a Unix-domain endpoint.
@@ -224,5 +230,8 @@ pub(crate) async fn connect_uds(path: &str, timeout: Duration) -> Result<Channel
             }
         }))
         .await
-        .map_err(|source| ApiError::Connect { endpoint: path, source })
+        .map_err(|source| ApiError::Connect {
+            endpoint: path,
+            source,
+        })
 }

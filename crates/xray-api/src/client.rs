@@ -28,7 +28,9 @@ pub struct ApiClient {
 
 impl std::fmt::Debug for ApiClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ApiClient").field("endpoint", &self.endpoint).finish_non_exhaustive()
+        f.debug_struct("ApiClient")
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
     }
 }
 
@@ -42,7 +44,10 @@ impl ApiClient {
             ApiEndpoint::Tcp { authority } => connect_tcp(authority, timeout).await?,
             ApiEndpoint::Unix { path } => connect_uds(path, timeout).await?,
         };
-        Ok(Self { services: Services::new(channel), endpoint: endpoint.clone() })
+        Ok(Self {
+            services: Services::new(channel),
+            endpoint: endpoint.clone(),
+        })
     }
 
     /// Connect, retrying until the deadline expires.
@@ -95,7 +100,12 @@ impl ApiClient {
             .list_outbounds(ListOutboundsRequest {})
             .await
             .map_err(|s| ApiError::call("ListOutbounds", s))?;
-        Ok(response.into_inner().outbounds.into_iter().map(|o| o.tag).collect())
+        Ok(response
+            .into_inner()
+            .outbounds
+            .into_iter()
+            .map(|o| o.tag)
+            .collect())
     }
 
     /// Tags of every inbound the core currently has.
@@ -109,7 +119,12 @@ impl ApiClient {
             .list_inbounds(ListInboundsRequest { is_only_tags: true })
             .await
             .map_err(|s| ApiError::call("ListInbounds", s))?;
-        Ok(response.into_inner().inbounds.into_iter().map(|i| i.tag).collect())
+        Ok(response
+            .into_inner()
+            .inbounds
+            .into_iter()
+            .map(|i| i.tag)
+            .collect())
     }
 
     /// Remove an outbound by tag.
@@ -119,7 +134,9 @@ impl ApiClient {
     pub async fn remove_outbound(&mut self, tag: &str) -> Result<(), ApiError> {
         self.services
             .handler
-            .remove_outbound(RemoveOutboundRequest { tag: tag.to_owned() })
+            .remove_outbound(RemoveOutboundRequest {
+                tag: tag.to_owned(),
+            })
             .await
             .map_err(|s| ApiError::call("RemoveOutbound", s))?;
         Ok(())
@@ -138,7 +155,11 @@ impl ApiClient {
     /// # Errors
     /// Propagates the gRPC status; a missing balancer tag surfaces as
     /// `Unknown`/`Internal` with "cannot find tag".
-    pub async fn override_balancer(&mut self, balancer: &str, target: &str) -> Result<(), ApiError> {
+    pub async fn override_balancer(
+        &mut self,
+        balancer: &str,
+        target: &str,
+    ) -> Result<(), ApiError> {
         self.services
             .routing
             .override_balancer_target(OverrideBalancerTargetRequest {
@@ -158,12 +179,17 @@ impl ApiClient {
         let response = self
             .services
             .routing
-            .get_balancer_info(GetBalancerInfoRequest { tag: tag.to_owned() })
+            .get_balancer_info(GetBalancerInfoRequest {
+                tag: tag.to_owned(),
+            })
             .await
             .map_err(|s| ApiError::call("GetBalancerInfo", s))?;
         let balancer = response.into_inner().balancer.unwrap_or_default();
         Ok(BalancerInfo {
-            override_target: balancer.r#override.map(|o| o.target).filter(|t| !t.is_empty()),
+            override_target: balancer
+                .r#override
+                .map(|o| o.target)
+                .filter(|t| !t.is_empty()),
             principle_targets: balancer.principle_target.map(|p| p.tag).unwrap_or_default(),
         })
     }
@@ -179,7 +205,12 @@ impl ApiClient {
             .list_rule(ListRuleRequest {})
             .await
             .map_err(|s| ApiError::call("ListRule", s))?;
-        Ok(response.into_inner().rules.into_iter().map(|r| (r.tag, r.rule_tag)).collect())
+        Ok(response
+            .into_inner()
+            .rules
+            .into_iter()
+            .map(|r| (r.tag, r.rule_tag))
+            .collect())
     }
 
     /// Remove a routing rule by its `ruleTag`.
@@ -189,7 +220,9 @@ impl ApiClient {
     pub async fn remove_rule(&mut self, rule_tag: &str) -> Result<(), ApiError> {
         self.services
             .routing
-            .remove_rule(RemoveRuleRequest { rule_tag: rule_tag.to_owned() })
+            .remove_rule(RemoveRuleRequest {
+                rule_tag: rule_tag.to_owned(),
+            })
             .await
             .map_err(|s| ApiError::call("RemoveRule", s))?;
         Ok(())
@@ -281,10 +314,17 @@ impl ApiClient {
         let response = self
             .services
             .stats
-            .get_stats(GetStatsRequest { name: name.to_owned(), reset })
+            .get_stats(GetStatsRequest {
+                name: name.to_owned(),
+                reset,
+            })
             .await
             .map_err(|s| ApiError::call("GetStats", s))?;
-        Ok(response.into_inner().stat.map(|s| s.value).unwrap_or_default())
+        Ok(response
+            .into_inner()
+            .stat
+            .map(|s| s.value)
+            .unwrap_or_default())
     }
 
     /// Read every counter matching a substring pattern.
@@ -299,10 +339,18 @@ impl ApiClient {
         let response = self
             .services
             .stats
-            .query_stats(QueryStatsRequest { pattern: pattern.to_owned(), reset })
+            .query_stats(QueryStatsRequest {
+                pattern: pattern.to_owned(),
+                reset,
+            })
             .await
             .map_err(|s| ApiError::call("QueryStats", s))?;
-        Ok(response.into_inner().stat.into_iter().map(|s| (s.name, s.value)).collect())
+        Ok(response
+            .into_inner()
+            .stat
+            .into_iter()
+            .map(|s| (s.name, s.value))
+            .collect())
     }
 
     /// Process-level statistics: goroutines, memory, uptime.
@@ -470,13 +518,14 @@ impl Capabilities {
             },
             None => routing,
         };
-        let test_route = match client.test_route(RouteQuery {
-            domain: Some("example.invalid".into()),
-            port: 443,
-            network: Some("tcp".into()),
-            ..Default::default()
-        })
-        .await
+        let test_route = match client
+            .test_route(RouteQuery {
+                domain: Some("example.invalid".into()),
+                port: 443,
+                network: Some("tcp".into()),
+                ..Default::default()
+            })
+            .await
         {
             Ok(_) => true,
             Err(error) => !error.is_unimplemented(),
@@ -484,7 +533,15 @@ impl Capabilities {
         let stats = ok(client.sys_stats().await).await;
         let logger = ok(client.restart_logger().await).await;
 
-        Self { handler, routing, balancer_override, rule_management, test_route, stats, logger }
+        Self {
+            handler,
+            routing,
+            balancer_override,
+            rule_management,
+            test_route,
+            stats,
+            logger,
+        }
     }
 }
 
@@ -506,7 +563,10 @@ mod tests {
         assert!(full.is_sufficient());
         assert!(full.missing().is_empty());
 
-        let no_override = Capabilities { balancer_override: false, ..full };
+        let no_override = Capabilities {
+            balancer_override: false,
+            ..full
+        };
         assert!(!no_override.is_sufficient());
         assert_eq!(no_override.missing().len(), 1);
     }

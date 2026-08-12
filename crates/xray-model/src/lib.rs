@@ -42,7 +42,11 @@ pub struct XrayConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observatory: Option<ObservatoryConfig>,
     /// Concurrent liveness observation for `leastLoad`.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "burstObservatory")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "burstObservatory"
+    )]
     pub burst_observatory: Option<BurstObservatoryConfig>,
     /// Inbound handlers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -106,13 +110,25 @@ pub struct LevelPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "connIdle")]
     pub conn_idle: Option<u32>,
     /// Uplink-only timeout, seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "uplinkOnly")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "uplinkOnly"
+    )]
     pub uplink_only: Option<u32>,
     /// Downlink-only timeout, seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "downlinkOnly")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "downlinkOnly"
+    )]
     pub downlink_only: Option<u32>,
     /// Per-connection buffer size in KiB.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "bufferSize")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "bufferSize"
+    )]
     pub buffer_size: Option<i32>,
 }
 
@@ -120,16 +136,32 @@ pub struct LevelPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SystemPolicy {
     /// Count inbound uplink bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "statsInboundUplink")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "statsInboundUplink"
+    )]
     pub stats_inbound_uplink: Option<bool>,
     /// Count inbound downlink bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "statsInboundDownlink")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "statsInboundDownlink"
+    )]
     pub stats_inbound_downlink: Option<bool>,
     /// Count outbound uplink bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "statsOutboundUplink")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "statsOutboundUplink"
+    )]
     pub stats_outbound_uplink: Option<bool>,
     /// Count outbound downlink bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "statsOutboundDownlink")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "statsOutboundDownlink"
+    )]
     pub stats_outbound_downlink: Option<bool>,
 }
 
@@ -146,13 +178,25 @@ pub struct DnsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// `UseIP`, `UseIPv4`, `UseIPv6`.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "queryStrategy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "queryStrategy"
+    )]
     pub query_strategy: Option<String>,
     /// Disable the DNS cache.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "disableCache")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "disableCache"
+    )]
     pub disable_cache: Option<bool>,
     /// Disable falling back to later servers.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "disableFallback")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "disableFallback"
+    )]
     pub disable_fallback: Option<bool>,
 }
 
@@ -181,16 +225,28 @@ pub struct DnsServerDetail {
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "expectedIPs")]
     pub expected_ips: Vec<String>,
     /// Reject these IP ranges in the answer.
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "unexpectedIPs")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "unexpectedIPs"
+    )]
     pub unexpected_ips: Vec<String>,
     /// Do not fall through to later servers.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "skipFallback")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "skipFallback"
+    )]
     pub skip_fallback: Option<bool>,
     /// Routing tag applied to this resolver's own traffic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// Per-server query strategy.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "queryStrategy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "queryStrategy"
+    )]
     pub query_strategy: Option<String>,
     /// Per-server timeout in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "timeoutMs")]
@@ -201,7 +257,11 @@ pub struct DnsServerDetail {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RoutingConfig {
     /// `AsIs`, `IPIfNonMatch` or `IPOnDemand`.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "domainStrategy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "domainStrategy"
+    )]
     pub domain_strategy: Option<String>,
     /// Ordered rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -230,7 +290,11 @@ pub struct RoutingRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<String>,
     /// Source ports.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "sourcePort")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "sourcePort"
+    )]
     pub source_port: Option<String>,
     /// Source IPs.
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "sourceIP")]
@@ -251,10 +315,18 @@ pub struct RoutingRule {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attrs: BTreeMap<String, String>,
     /// Outbound to dispatch to.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "outboundTag")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "outboundTag"
+    )]
     pub outbound_tag: Option<String>,
     /// Balancer to dispatch to.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "balancerTag")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "balancerTag"
+    )]
     pub balancer_tag: Option<String>,
 }
 
@@ -317,7 +389,11 @@ pub struct Balancer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<BalancerStrategy>,
     /// Outbound used when no candidate is alive.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "fallbackTag")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "fallbackTag"
+    )]
     pub fallback_tag: Option<String>,
 }
 
@@ -342,10 +418,18 @@ pub struct ObservatoryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "probeURL")]
     pub probe_url: Option<String>,
     /// Interval such as `"5m"`.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "probeInterval")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "probeInterval"
+    )]
     pub probe_interval: Option<String>,
     /// Probe subjects concurrently.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "enableConcurrency")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "enableConcurrency"
+    )]
     pub enable_concurrency: Option<bool>,
 }
 
@@ -356,7 +440,11 @@ pub struct BurstObservatoryConfig {
     #[serde(rename = "subjectSelector")]
     pub subject_selector: Vec<String>,
     /// Health check settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "pingConfig")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "pingConfig"
+    )]
     pub ping_config: Option<serde_json::Value>,
 }
 
@@ -377,7 +465,11 @@ pub struct Inbound {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<serde_json::Value>,
     /// Stream settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "streamSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "streamSettings"
+    )]
     pub stream_settings: Option<StreamSettings>,
     /// Traffic sniffing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -390,16 +482,28 @@ pub struct Sniffing {
     /// Whether sniffing runs.
     pub enabled: bool,
     /// Which sniffers to apply.
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "destOverride")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "destOverride"
+    )]
     pub dest_override: Vec<String>,
     /// Domains excluded from sniffing.
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "domainsExcluded")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "domainsExcluded"
+    )]
     pub domains_excluded: Vec<String>,
     /// Use the sniffed domain for routing only, not for dialling.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "routeOnly")]
     pub route_only: Option<bool>,
     /// Do not rewrite the destination.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "metadataOnly")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "metadataOnly"
+    )]
     pub metadata_only: Option<bool>,
 }
 
@@ -414,13 +518,21 @@ pub struct Outbound {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<serde_json::Value>,
     /// Stream settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "streamSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "streamSettings"
+    )]
     pub stream_settings: Option<StreamSettings>,
     /// Multiplexing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mux: Option<MuxConfig>,
     /// Source address to send from.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "sendThrough")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "sendThrough"
+    )]
     pub send_through: Option<String>,
 }
 
@@ -433,10 +545,18 @@ pub struct MuxConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<i16>,
     /// XUDP concurrency.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "xudpConcurrency")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "xudpConcurrency"
+    )]
     pub xudp_concurrency: Option<i16>,
     /// UDP/443 handling.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "xudpProxyUDP443")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "xudpProxyUDP443"
+    )]
     pub xudp_proxy_udp_443: Option<String>,
 }
 
@@ -450,22 +570,46 @@ pub struct StreamSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<String>,
     /// TLS settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "tlsSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "tlsSettings"
+    )]
     pub tls_settings: Option<serde_json::Value>,
     /// REALITY settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "realitySettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "realitySettings"
+    )]
     pub reality_settings: Option<serde_json::Value>,
     /// RAW transport settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "rawSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "rawSettings"
+    )]
     pub raw_settings: Option<serde_json::Value>,
     /// XHTTP transport settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "xhttpSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "xhttpSettings"
+    )]
     pub xhttp_settings: Option<serde_json::Value>,
     /// gRPC transport settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "grpcSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "grpcSettings"
+    )]
     pub grpc_settings: Option<serde_json::Value>,
     /// WebSocket transport settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "wsSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "wsSettings"
+    )]
     pub ws_settings: Option<serde_json::Value>,
     /// HTTPUpgrade transport settings.
     #[serde(
@@ -475,7 +619,11 @@ pub struct StreamSettings {
     )]
     pub httpupgrade_settings: Option<serde_json::Value>,
     /// mKCP transport settings.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "kcpSettings")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "kcpSettings"
+    )]
     pub kcp_settings: Option<serde_json::Value>,
     /// Post-transport obfuscation masks.
     ///
@@ -518,7 +666,11 @@ pub struct SockOpt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark: Option<u32>,
     /// TCP fast open.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "tcpFastOpen")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "tcpFastOpen"
+    )]
     pub tcp_fast_open: Option<bool>,
     /// Keep-alive interval in seconds.
     #[serde(
@@ -531,12 +683,20 @@ pub struct SockOpt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface: Option<String>,
     /// Address family preference.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "domainStrategy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "domainStrategy"
+    )]
     pub domain_strategy: Option<String>,
     /// Dial this outbound's connection through another outbound.
     ///
     /// This is the chaining primitive; see `docs/XRAY-INTEGRATION.md`.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "dialerProxy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "dialerProxy"
+    )]
     pub dialer_proxy: Option<String>,
 }
 
@@ -623,7 +783,10 @@ mod tests {
 
     #[test]
     fn dialer_proxy_is_spelled_the_way_xray_expects() {
-        let sockopt = SockOpt { dialer_proxy: Some("chain/x/0".into()), ..Default::default() };
+        let sockopt = SockOpt {
+            dialer_proxy: Some("chain/x/0".into()),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&sockopt).expect("serialise");
         assert_eq!(json, r#"{"dialerProxy":"chain/x/0"}"#);
     }

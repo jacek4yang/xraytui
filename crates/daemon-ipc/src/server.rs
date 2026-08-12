@@ -165,10 +165,16 @@ pub fn listen(path: &Path) -> Result<Server, ServerError> {
         source,
     })?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
-        ServerError::Bind { path: path.to_path_buf(), source }
+        ServerError::Bind {
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
 
-    Ok(Server { listener, path: path.to_path_buf() })
+    Ok(Server {
+        listener,
+        path: path.to_path_buf(),
+    })
 }
 
 /// Read the peer's credentials from a connected socket.
@@ -193,7 +199,11 @@ async fn serve_connection<H: ServerHandler>(
     if peer.uid != own_uid {
         // Belt and braces over the 0700 directory: refuse anything that is not
         // the owning user, whatever the filesystem happens to allow.
-        tracing::warn!(peer_uid = peer.uid, own_uid, "refusing control connection from another uid");
+        tracing::warn!(
+            peer_uid = peer.uid,
+            own_uid,
+            "refusing control connection from another uid"
+        );
         return Ok(());
     }
 
@@ -257,7 +267,10 @@ async fn serve_connection<H: ServerHandler>(
             if let Some(handle) = streams.remove(&id) {
                 handle.abort();
             }
-            let reply = Reply { id: envelope.id, payload: ReplyPayload::Ok(Response::Ack) };
+            let reply = Reply {
+                id: envelope.id,
+                payload: ReplyPayload::Ok(Response::Ack),
+            };
             let mut guard = writer.lock().await;
             write_frame(&mut *guard, &reply, MAX_FRAME_BYTES).await?;
             continue;
@@ -291,7 +304,10 @@ async fn serve_connection<H: ServerHandler>(
                 Ok(response) => ReplyPayload::Ok(response),
                 Err(error) => ReplyPayload::Err(error),
             };
-            let reply = Reply { id: envelope.id, payload };
+            let reply = Reply {
+                id: envelope.id,
+                payload,
+            };
             let mut guard = writer.lock().await;
             let _ = write_frame(&mut *guard, &reply, MAX_FRAME_BYTES).await;
             drop(permit);
@@ -319,13 +335,22 @@ async fn pump_events(
         if !wanted(&event, filter) {
             continue;
         }
-        let reply = Reply { id, payload: ReplyPayload::Stream(event) };
+        let reply = Reply {
+            id,
+            payload: ReplyPayload::Stream(event),
+        };
         let mut guard = writer.lock().await;
-        if write_frame(&mut *guard, &reply, MAX_FRAME_BYTES).await.is_err() {
+        if write_frame(&mut *guard, &reply, MAX_FRAME_BYTES)
+            .await
+            .is_err()
+        {
             break;
         }
     }
-    let reply = Reply { id, payload: ReplyPayload::StreamEnd };
+    let reply = Reply {
+        id,
+        payload: ReplyPayload::StreamEnd,
+    };
     let mut guard = writer.lock().await;
     let _ = write_frame(&mut *guard, &reply, MAX_FRAME_BYTES).await;
 }
@@ -355,6 +380,9 @@ mod tests {
         events: broadcast::Sender<Event>,
     }
 
+    // The explicit `impl Future + Send` return is what makes the future spawnable;
+    // `async fn` in a trait does not promise `Send`.
+    #[allow(clippy::manual_async_fn)]
     impl ServerHandler for Stub {
         fn handle(
             &self,
@@ -363,13 +391,15 @@ mod tests {
         ) -> impl std::future::Future<Output = Result<Response, IpcError>> + Send {
             async move {
                 match request {
-                    Request::Ping => {
-                        Ok(Response::Pong { daemon: "stub".into(), uptime_secs: 1 })
-                    }
+                    Request::Ping => Ok(Response::Pong {
+                        daemon: "stub".into(),
+                        uptime_secs: 1,
+                    }),
                     Request::GetMode => Ok(Response::Mode(xraytui_domain::SystemMode::Rule)),
-                    Request::RemoveNode(id) => {
-                        Err(IpcError::NotFound { kind: "node".into(), id: id.to_string() })
-                    }
+                    Request::RemoveNode(id) => Err(IpcError::NotFound {
+                        kind: "node".into(),
+                        id: id.to_string(),
+                    }),
                     _ => Ok(Response::Ack),
                 }
             }
@@ -389,7 +419,9 @@ mod tests {
         let path = dir.path().join("control.sock");
         let (events, _) = event_channel();
         let server = listen(&path).unwrap_or_else(|_| unreachable!("bind"));
-        let handler = Arc::new(Stub { events: events.clone() });
+        let handler = Arc::new(Stub {
+            events: events.clone(),
+        });
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
             server
@@ -406,24 +438,36 @@ mod tests {
     #[tokio::test]
     async fn request_and_response_round_trip() {
         let (_dir, path, _events) = start().await;
-        let mut client = Client::connect(&path).await.unwrap_or_else(|_| unreachable!("connect"));
-        let response = client.request(Request::Ping).await.unwrap_or_else(|_| unreachable!("ping"));
+        let mut client = Client::connect(&path)
+            .await
+            .unwrap_or_else(|_| unreachable!("connect"));
+        let response = client
+            .request(Request::Ping)
+            .await
+            .unwrap_or_else(|_| unreachable!("ping"));
         assert!(matches!(response, Response::Pong { .. }));
-        let response =
-            client.request(Request::GetMode).await.unwrap_or_else(|_| unreachable!("mode"));
+        let response = client
+            .request(Request::GetMode)
+            .await
+            .unwrap_or_else(|_| unreachable!("mode"));
         assert_eq!(response, Response::Mode(xraytui_domain::SystemMode::Rule));
     }
 
     #[tokio::test]
     async fn structured_errors_reach_the_client() {
         let (_dir, path, _events) = start().await;
-        let mut client = Client::connect(&path).await.unwrap_or_else(|_| unreachable!("connect"));
+        let mut client = Client::connect(&path)
+            .await
+            .unwrap_or_else(|_| unreachable!("connect"));
         let id = xraytui_domain::NodeId::new("missing").unwrap_or_else(|_| unreachable!("valid"));
         let error = client
             .request(Request::RemoveNode(id))
             .await
             .expect_err("must be an error");
-        assert!(error.to_string().contains("node 'missing' does not exist"), "{error}");
+        assert!(
+            error.to_string().contains("node 'missing' does not exist"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -458,7 +502,9 @@ mod tests {
     #[tokio::test]
     async fn events_stream_until_cancelled() {
         let (_dir, path, events) = start().await;
-        let mut client = Client::connect(&path).await.unwrap_or_else(|_| unreachable!("connect"));
+        let mut client = Client::connect(&path)
+            .await
+            .unwrap_or_else(|_| unreachable!("connect"));
         let mut stream = client
             .subscribe(SubscriptionFilter::all())
             .await
@@ -492,7 +538,9 @@ mod tests {
     #[tokio::test]
     async fn filters_drop_unwanted_event_kinds() {
         let (_dir, path, events) = start().await;
-        let mut client = Client::connect(&path).await.unwrap_or_else(|_| unreachable!("connect"));
+        let mut client = Client::connect(&path)
+            .await
+            .unwrap_or_else(|_| unreachable!("connect"));
         let mut stream = client
             .subscribe(SubscriptionFilter::state_only())
             .await
@@ -506,9 +554,7 @@ mod tests {
                     target: "t".into(),
                     message: "ignored".into(),
                 });
-                let _ = events.send(Event::State(Box::new(
-                    xraytui_domain::RuntimeState::default(),
-                )));
+                let _ = events.send(Event::State(Box::default()));
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         });
@@ -517,7 +563,10 @@ mod tests {
             .await
             .unwrap_or_else(|_| unreachable!("no event arrived"))
             .unwrap_or_else(|| unreachable!("stream ended early"));
-        assert!(matches!(event, Event::State(_)), "log event was not filtered out");
+        assert!(
+            matches!(event, Event::State(_)),
+            "log event was not filtered out"
+        );
         publisher.abort();
     }
 
@@ -525,7 +574,9 @@ mod tests {
     async fn an_oversized_frame_closes_the_connection_rather_than_allocating() {
         use tokio::io::AsyncWriteExt;
         let (_dir, path, _events) = start().await;
-        let mut raw = UnixStream::connect(&path).await.unwrap_or_else(|_| unreachable!("connect"));
+        let mut raw = UnixStream::connect(&path)
+            .await
+            .unwrap_or_else(|_| unreachable!("connect"));
         // Skip negotiation and declare an enormous frame.
         raw.write_all(&u32::MAX.to_be_bytes())
             .await
@@ -545,10 +596,15 @@ mod tests {
     #[tokio::test]
     async fn a_version_mismatch_is_rejected_politely() {
         let (_dir, path, _events) = start().await;
-        let stream = UnixStream::connect(&path).await.unwrap_or_else(|_| unreachable!("connect"));
+        let stream = UnixStream::connect(&path)
+            .await
+            .unwrap_or_else(|_| unreachable!("connect"));
         let (reader, mut writer) = stream.into_split();
         let mut reader = tokio::io::BufReader::new(reader);
-        let hello = Hello { protocol_version: 999, client: "future/1".into() };
+        let hello = Hello {
+            protocol_version: 999,
+            client: "future/1".into(),
+        };
         write_frame(&mut writer, &hello, MAX_FRAME_BYTES)
             .await
             .unwrap_or_else(|_| unreachable!("write"));
@@ -556,7 +612,10 @@ mod tests {
             .await
             .unwrap_or_else(|_| unreachable!("read"));
         match welcome {
-            Welcome::Rejected { daemon_protocol_version, reason } => {
+            Welcome::Rejected {
+                daemon_protocol_version,
+                reason,
+            } => {
                 assert_eq!(daemon_protocol_version, PROTOCOL_VERSION);
                 assert!(reason.contains("999"), "{reason}");
             }

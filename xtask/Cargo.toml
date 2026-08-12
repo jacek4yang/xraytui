@@ -16,6 +16,3 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
-xraytui-cli = { workspace = true }
-clap_complete = { workspace = true }
-clap_mangen = { workspace = true }

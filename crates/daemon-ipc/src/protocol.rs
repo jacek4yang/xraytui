@@ -198,13 +198,21 @@ impl SubscriptionFilter {
     /// Everything.
     #[must_use]
     pub fn all() -> Self {
-        Self { state: true, logs: true, connections: true, health: true }
+        Self {
+            state: true,
+            logs: true,
+            connections: true,
+            health: true,
+        }
     }
 
     /// State only, which is what the dashboard needs.
     #[must_use]
     pub fn state_only() -> Self {
-        Self { state: true, ..Self::default() }
+        Self {
+            state: true,
+            ..Self::default()
+        }
     }
 }
 
@@ -285,13 +293,18 @@ impl DoctorReport {
     /// Whether every check passed.
     #[must_use]
     pub fn is_ok(&self) -> bool {
-        self.checks.iter().all(|check| check.status != CheckStatus::Fail)
+        self.checks
+            .iter()
+            .all(|check| check.status != CheckStatus::Fail)
     }
 
     /// Number of failing checks.
     #[must_use]
     pub fn failures(&self) -> usize {
-        self.checks.iter().filter(|c| c.status == CheckStatus::Fail).count()
+        self.checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Fail)
+            .count()
     }
 }
 
@@ -446,7 +459,10 @@ mod tests {
                 profile: ProfileId::new("web").expect("valid"),
                 target: Target::Direct,
             },
-            Request::Import { text: "x".into(), origin: ImportOrigin::Manual },
+            Request::Import {
+                text: "x".into(),
+                origin: ImportOrigin::Manual,
+            },
             Request::Test(TestTarget::Node(NodeId::new("a").expect("valid"))),
             Request::Subscribe(SubscriptionFilter::all()),
             Request::Cancel { id: 3 },
@@ -463,7 +479,10 @@ mod tests {
             ReplyPayload::Ok(Response::Ack),
             ReplyPayload::Ok(Response::Mode(SystemMode::Global)),
             ReplyPayload::Err(IpcError::CoreNotRunning),
-            ReplyPayload::Err(IpcError::NotFound { kind: "node".into(), id: "a".into() }),
+            ReplyPayload::Err(IpcError::NotFound {
+                kind: "node".into(),
+                id: "a".into(),
+            }),
             ReplyPayload::StreamEnd,
         ];
         for payload in replies {
@@ -483,15 +502,24 @@ mod tests {
 
     #[test]
     fn error_messages_are_human_readable_and_carry_no_secrets() {
-        let error = IpcError::NotFound { kind: "profile".into(), id: "web".into() };
+        let error = IpcError::NotFound {
+            kind: "profile".into(),
+            id: "web".into(),
+        };
         assert_eq!(error.to_string(), "profile 'web' does not exist");
-        let error = IpcError::Version { daemon: 1, client: 2 };
+        let error = IpcError::Version {
+            daemon: 1,
+            client: 2,
+        };
         assert!(error.to_string().contains("daemon speaks 1"));
     }
 
     #[test]
     fn negotiation_messages_round_trip() {
-        let hello = Hello { protocol_version: PROTOCOL_VERSION, client: "xraytui/0.1.0".into() };
+        let hello = Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client: "xraytui/0.1.0".into(),
+        };
         assert_eq!(round_trip(&hello), hello);
         let welcome = Welcome::Accepted {
             protocol_version: PROTOCOL_VERSION,
@@ -505,7 +533,12 @@ mod tests {
     fn subscription_filters_are_explicit() {
         assert_eq!(
             SubscriptionFilter::state_only(),
-            SubscriptionFilter { state: true, logs: false, connections: false, health: false }
+            SubscriptionFilter {
+                state: true,
+                logs: false,
+                connections: false,
+                health: false
+            }
         );
         let all = SubscriptionFilter::all();
         assert!(all.state && all.logs && all.connections && all.health);

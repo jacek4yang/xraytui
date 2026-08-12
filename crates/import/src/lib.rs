@@ -65,8 +65,8 @@ pub mod qr;
 mod xray;
 
 pub use b64::{
-    decode_base64_flexible, decode_base64_utf8, encode_standard, encode_url_safe_no_pad,
-    looks_like_base64, MAX_BASE64_INPUT,
+    MAX_BASE64_INPUT, decode_base64_flexible, decode_base64_utf8, encode_standard,
+    encode_url_safe_no_pad, looks_like_base64,
 };
 pub use export::to_share_link;
 pub use xray::{parse_xray_config, parse_xray_outbound};
@@ -373,7 +373,10 @@ pub fn parse_many(input: &str, source: NodeSource) -> ImportBatch {
         batch.rejected.push(RejectedEntry {
             index: 0,
             redacted: String::new(),
-            error: ImportError::TooLarge { size: input.len(), limit: MAX_BATCH_BYTES },
+            error: ImportError::TooLarge {
+                size: input.len(),
+                limit: MAX_BATCH_BYTES,
+            },
         });
         return batch;
     }
@@ -443,13 +446,28 @@ mod tests {
     fn oversized_input_is_refused_before_parsing() {
         let huge = format!("vless://{}@h:1", "a".repeat(MAX_LINK_BYTES));
         let err = parse_uri(&huge).expect_err("must refuse");
-        assert!(matches!(err, ImportError::TooLarge { limit: MAX_LINK_BYTES, .. }), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                ImportError::TooLarge {
+                    limit: MAX_LINK_BYTES,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
     }
 
     #[test]
     fn non_uri_text_is_not_a_share_link() {
-        assert_eq!(parse_uri("just some words"), Err(ImportError::NotAShareLink));
-        assert_eq!(parse_uri("mailto:a@b.example"), Err(ImportError::NotAShareLink));
+        assert_eq!(
+            parse_uri("just some words"),
+            Err(ImportError::NotAShareLink)
+        );
+        assert_eq!(
+            parse_uri("mailto:a@b.example"),
+            Err(ImportError::NotAShareLink)
+        );
         assert_eq!(parse_uri("://nohost"), Err(ImportError::NotAShareLink));
     }
 
@@ -492,7 +510,9 @@ mod tests {
 
     #[test]
     fn parse_many_carries_the_source_through() {
-        let source = NodeSource::File { path: "/tmp/links.txt".into() };
+        let source = NodeSource::File {
+            path: "/tmp/links.txt".into(),
+        };
         let batch = parse_many(VLESS, source.clone());
         assert_eq!(batch.nodes.first().map(|n| n.source.clone()), Some(source));
     }
@@ -503,7 +523,11 @@ mod tests {
         let batch = parse_many(&broken, NodeSource::Manual);
         let rejected = batch.rejected.first().expect("one reject");
         assert!(!rejected.redacted.contains("zzzz"), "{}", rejected.redacted);
-        assert!(rejected.redacted.chars().count() <= 81, "{}", rejected.redacted);
+        assert!(
+            rejected.redacted.chars().count() <= 81,
+            "{}",
+            rejected.redacted
+        );
     }
 
     #[test]

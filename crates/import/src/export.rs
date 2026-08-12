@@ -13,9 +13,7 @@
 use std::fmt::Write as _;
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use xraytui_domain::{
-    Node, ProtocolSettings, Transport, TransportSecurity,
-};
+use xraytui_domain::{Node, ProtocolSettings, Transport, TransportSecurity};
 use xraytui_secrets::Secret;
 
 use crate::b64::encode_standard;
@@ -81,14 +79,20 @@ pub fn to_share_link(node: &Node) -> Result<Secret, ExportError> {
         ProtocolSettings::Vmess(_) => vmess_link(node)?,
         ProtocolSettings::Shadowsocks(_) => shadowsocks_link(node)?,
         ProtocolSettings::Wireguard(_) => {
-            return Err(ExportError::NoStandardFormat { protocol: "wireguard" });
+            return Err(ExportError::NoStandardFormat {
+                protocol: "wireguard",
+            });
         }
         ProtocolSettings::Hysteria(_) => {
-            return Err(ExportError::NoStandardFormat { protocol: "hysteria" });
+            return Err(ExportError::NoStandardFormat {
+                protocol: "hysteria",
+            });
         }
     };
     if link.len() > MAX_LINK_BYTES {
-        return Err(ExportError::TooLarge { limit: MAX_LINK_BYTES });
+        return Err(ExportError::TooLarge {
+            limit: MAX_LINK_BYTES,
+        });
     }
     Ok(Secret::new(link))
 }
@@ -260,7 +264,11 @@ fn authority_link(node: &Node, scheme: &'static str) -> Result<String, ExportErr
 fn credentials(username: Option<&str>, password: Option<&Secret>) -> String {
     match (username, password) {
         (Some(user), Some(pass)) => {
-            format!("{}:{}", escape_userinfo(user), escape_userinfo(pass.expose()))
+            format!(
+                "{}:{}",
+                escape_userinfo(user),
+                escape_userinfo(pass.expose())
+            )
         }
         (Some(user), None) => escape_userinfo(user),
         _ => String::new(),
@@ -288,7 +296,12 @@ fn vmess_link(node: &Node) -> Result<String, ExportError> {
             ws.path.clone(),
             "none".to_owned(),
         ),
-        Transport::Grpc(g) => ("grpc", String::new(), g.service_name.clone(), "none".to_owned()),
+        Transport::Grpc(g) => (
+            "grpc",
+            String::new(),
+            g.service_name.clone(),
+            "none".to_owned(),
+        ),
         Transport::Xhttp(x) => (
             "xhttp",
             x.host.clone().unwrap_or_default(),
@@ -342,12 +355,17 @@ fn vmess_link(node: &Node) -> Result<String, ExportError> {
         "alpn": alpn,
         "fp": fingerprint,
     });
-    Ok(format!("vmess://{}", encode_standard(payload.to_string().as_bytes())))
+    Ok(format!(
+        "vmess://{}",
+        encode_standard(payload.to_string().as_bytes())
+    ))
 }
 
 fn shadowsocks_link(node: &Node) -> Result<String, ExportError> {
     let ProtocolSettings::Shadowsocks(ss) = &node.protocol else {
-        return Err(ExportError::NoStandardFormat { protocol: "shadowsocks" });
+        return Err(ExportError::NoStandardFormat {
+            protocol: "shadowsocks",
+        });
     };
     if ss.method.is_empty() {
         return Err(ExportError::EmptyField { field: "method" });
@@ -361,7 +379,10 @@ fn shadowsocks_link(node: &Node) -> Result<String, ExportError> {
         .extra
         .iter()
         .map(|(key, value)| {
-            let text = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
+            let text = value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string());
             (key.clone(), text)
         })
         .collect();
@@ -378,11 +399,14 @@ fn shadowsocks_link(node: &Node) -> Result<String, ExportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_uri, ImportedEntry};
+    use crate::{ImportedEntry, parse_uri};
     use xraytui_domain::NodeSource;
 
     fn round_trip(link: &str) -> (Node, Node) {
-        let first = parse_uri(link).expect("first parse").into_node().expect("supported");
+        let first = parse_uri(link)
+            .expect("first parse")
+            .into_node()
+            .expect("supported");
         let exported = to_share_link(&first).expect("export");
         let second = parse_uri(exported.expose())
             .expect("second parse")
@@ -427,7 +451,10 @@ mod tests {
             "id": "22222222-3333-4444-5555-666666666666", "aid": "0", "scy": "auto",
             "net": "ws", "type": "none", "host": "cdn.example.com", "path": "/vm", "tls": "tls"
         });
-        let link = format!("vmess://{}", encode_standard(payload.to_string().as_bytes()));
+        let link = format!(
+            "vmess://{}",
+            encode_standard(payload.to_string().as_bytes())
+        );
         let (a, b) = round_trip(&link);
         assert_eq!(a.canonical_identity(), b.canonical_identity());
         assert_eq!(a.name, b.name);
@@ -483,7 +510,12 @@ mod tests {
             })),
         );
         let error = to_share_link(&node).expect_err("must refuse");
-        assert_eq!(error, ExportError::NoStandardFormat { protocol: "wireguard" });
+        assert_eq!(
+            error,
+            ExportError::NoStandardFormat {
+                protocol: "wireguard"
+            }
+        );
     }
 
     #[test]

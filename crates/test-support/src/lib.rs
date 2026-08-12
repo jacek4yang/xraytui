@@ -26,7 +26,6 @@ pub mod http_fixture;
 
 pub use http_fixture::HttpFixtureServer;
 
-
 /// Bind an ephemeral loopback port and return it.
 ///
 /// The listener is dropped before returning, so there is a small race window.
@@ -202,8 +201,6 @@ async fn serve_socks5(
     identity: SocketAddr,
     mode: EgressMode,
 ) -> io::Result<()> {
-    let mut requested_host = String::new();
-    let mut requested_port: u16 = 0;
     // Greeting: VER NMETHODS METHODS...
     let mut header = [0_u8; 2];
     client.read_exact(&mut header).await?;
@@ -220,55 +217,61 @@ async fn serve_socks5(
     client.read_exact(&mut request).await?;
     if request[1] != 0x01 {
         // Only CONNECT is implemented; reply "command not supported".
-        client.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        client
+            .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await?;
         return Ok(());
     }
-    match request[3] {
+    let requested_host = match request[3] {
         0x01 => {
             let mut address = [0_u8; 4];
             client.read_exact(&mut address).await?;
-            requested_host = std::net::Ipv4Addr::from(address).to_string();
+            std::net::Ipv4Addr::from(address).to_string()
         }
         0x03 => {
             let mut length = [0_u8; 1];
             client.read_exact(&mut length).await?;
             let mut host = vec![0_u8; usize::from(length[0])];
             client.read_exact(&mut host).await?;
-            requested_host = String::from_utf8_lossy(&host).into_owned();
+            String::from_utf8_lossy(&host).into_owned()
         }
         0x04 => {
             let mut address = [0_u8; 16];
             client.read_exact(&mut address).await?;
-            requested_host = std::net::Ipv6Addr::from(address).to_string();
+            std::net::Ipv6Addr::from(address).to_string()
         }
         _ => {
-            client.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            client
+                .write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
             return Ok(());
         }
-    }
+    };
     let mut port = [0_u8; 2];
     client.read_exact(&mut port).await?;
-    requested_port = u16::from_be_bytes(port);
+    let requested_port = u16::from_be_bytes(port);
 
     let upstream = match mode {
         // Substituting the identity service for the requested destination is
         // what makes the egress observable end to end.
         EgressMode::Identify => TcpStream::connect(identity).await,
-        EgressMode::Forward => {
-            TcpStream::connect((requested_host.as_str(), requested_port)).await
-        }
+        EgressMode::Forward => TcpStream::connect((requested_host.as_str(), requested_port)).await,
     };
     let mut upstream = match upstream {
         Ok(stream) => stream,
         Err(error) => {
             // SOCKS5 "host unreachable".
-            client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            client
+                .write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
             return Err(error);
         }
     };
 
     // Success, bound address 0.0.0.0:0.
-    client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+    client
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
     let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     Ok(())
 }
@@ -289,12 +292,18 @@ pub async fn probe_through_socks5(
     let mut greeting = [0_u8; 2];
     stream.read_exact(&mut greeting).await?;
     if greeting != [0x05, 0x00] {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "SOCKS5 handshake refused"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SOCKS5 handshake refused",
+        ));
     }
 
     let host = request_host.as_bytes();
     if host.len() > 255 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "hostname too long"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hostname too long",
+        ));
     }
     let mut request = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
     request.extend_from_slice(host);
@@ -304,7 +313,10 @@ pub async fn probe_through_socks5(
     let mut reply = [0_u8; 4];
     stream.read_exact(&mut reply).await?;
     if reply[1] != 0x00 {
-        return Err(io::Error::other(format!("SOCKS5 CONNECT failed with code {}", reply[1])));
+        return Err(io::Error::other(format!(
+            "SOCKS5 CONNECT failed with code {}",
+            reply[1]
+        )));
     }
     match reply[3] {
         0x01 => {
@@ -322,7 +334,9 @@ pub async fn probe_through_socks5(
             stream.read_exact(&mut skip).await?;
         }
         other => {
-            return Err(io::Error::other(format!("unexpected SOCKS5 address type {other}")));
+            return Err(io::Error::other(format!(
+                "unexpected SOCKS5 address type {other}"
+            )));
         }
     }
 
@@ -337,7 +351,12 @@ pub async fn probe_through_socks5(
     match read {
         Ok(Ok(_)) => {}
         Ok(Err(error)) => return Err(error),
-        Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "no answer from egress")),
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no answer from egress",
+            ));
+        }
     }
     Ok(String::from_utf8_lossy(&response).into_owned())
 }
@@ -370,11 +389,17 @@ pub async fn probe_through_http_connect(
             Ok(Ok(_)) => header.push(byte[0]),
             Ok(Err(error)) => return Err(error),
             Err(_) => {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "no CONNECT response"));
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "no CONNECT response",
+                ));
             }
         }
         if header.len() > 8192 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "CONNECT response too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CONNECT response too large",
+            ));
         }
     }
     let status = String::from_utf8_lossy(&header);
@@ -395,7 +420,12 @@ pub async fn probe_through_http_connect(
     match read {
         Ok(Ok(_)) => {}
         Ok(Err(error)) => return Err(error),
-        Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "no answer from egress")),
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no answer from egress",
+            ));
+        }
     }
     Ok(String::from_utf8_lossy(&response).into_owned())
 }
@@ -418,8 +448,12 @@ mod tests {
     async fn two_egresses_are_distinguishable() {
         let a = MockEgress::start("a").await.expect("start a");
         let b = MockEgress::start("b").await.expect("start b");
-        let answer_a = probe_through_socks5(a.socks_addr(), "x.invalid", 80).await.expect("probe a");
-        let answer_b = probe_through_socks5(b.socks_addr(), "x.invalid", 80).await.expect("probe b");
+        let answer_a = probe_through_socks5(a.socks_addr(), "x.invalid", 80)
+            .await
+            .expect("probe a");
+        let answer_b = probe_through_socks5(b.socks_addr(), "x.invalid", 80)
+            .await
+            .expect("probe b");
         assert!(answer_a.contains("EGRESS a"), "{answer_a:?}");
         assert!(answer_b.contains("EGRESS b"), "{answer_b:?}");
         assert_ne!(answer_a, answer_b);

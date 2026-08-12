@@ -52,7 +52,12 @@ impl Paths {
         let cache = xdg_dir("XDG_CACHE_HOME", home.join(".cache")).join(PROJECT_DIR);
         let runtime = runtime_root().join(PROJECT_DIR);
 
-        Ok(Self { config, state, cache, runtime })
+        Ok(Self {
+            config,
+            state,
+            cache,
+            runtime,
+        })
     }
 
     /// Build an explicit layout, used by tests and by `--config-dir`.
@@ -176,10 +181,10 @@ fn xdg_dir(variable: &str, fallback: PathBuf) -> PathBuf {
 }
 
 fn runtime_root() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
-        if dir.is_absolute() {
-            return dir;
-        }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+        && dir.is_absolute()
+    {
+        return dir;
     }
     let uid = rustix::process::getuid().as_raw();
     let run_user = PathBuf::from(format!("/run/user/{uid}"));
@@ -195,13 +200,13 @@ fn runtime_root() -> PathBuf {
 /// Returns [`ConfigError::UnsafeDirectory`] when the path exists but is a
 /// symlink, is not a directory, or is owned by another user.
 pub fn ensure_private_dir(dir: &Path) -> Result<(), ConfigError> {
-    if let Some(parent) = dir.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
+    if let Some(parent) = dir.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
     match std::fs::symlink_metadata(dir) {
         Ok(metadata) => {
@@ -224,7 +229,10 @@ pub fn ensure_private_dir(dir: &Path) -> Result<(), ConfigError> {
             create_private_dir(dir)?;
         }
         Err(source) => {
-            return Err(ConfigError::Io { path: dir.to_path_buf(), source });
+            return Err(ConfigError::Io {
+                path: dir.to_path_buf(),
+                source,
+            });
         }
     }
     Ok(())
@@ -236,7 +244,10 @@ fn create_private_dir(dir: &Path) -> Result<(), ConfigError> {
         .recursive(true)
         .mode(0o700)
         .create(dir)
-        .map_err(|source| ConfigError::Io { path: dir.to_path_buf(), source })
+        .map_err(|source| ConfigError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })
 }
 
 fn verify_owner(dir: &Path, metadata: &std::fs::Metadata) -> Result<(), ConfigError> {
@@ -245,7 +256,10 @@ fn verify_owner(dir: &Path, metadata: &std::fs::Metadata) -> Result<(), ConfigEr
     if metadata.uid() != uid {
         return Err(ConfigError::UnsafeDirectory {
             path: dir.to_path_buf(),
-            reason: format!("owned by uid {} but this process runs as uid {uid}", metadata.uid()),
+            reason: format!(
+                "owned by uid {} but this process runs as uid {uid}",
+                metadata.uid()
+            ),
         });
     }
     Ok(())
@@ -255,8 +269,12 @@ fn tighten_permissions(dir: &Path, metadata: &std::fs::Metadata) -> Result<(), C
     use std::os::unix::fs::PermissionsExt;
     let mode = metadata.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|source| ConfigError::Io { path: dir.to_path_buf(), source })?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |source| ConfigError::Io {
+                path: dir.to_path_buf(),
+                source,
+            },
+        )?;
     }
     Ok(())
 }
@@ -288,14 +306,26 @@ pub fn write_private_atomic(path: &Path, contents: &[u8]) -> Result<(), ConfigEr
         .truncate(true)
         .mode(0o600)
         .open(&temp)
-        .map_err(|source| ConfigError::Io { path: temp.clone(), source })?;
-    file.write_all(contents).map_err(|source| ConfigError::Io { path: temp.clone(), source })?;
-    file.sync_all().map_err(|source| ConfigError::Io { path: temp.clone(), source })?;
+        .map_err(|source| ConfigError::Io {
+            path: temp.clone(),
+            source,
+        })?;
+    file.write_all(contents).map_err(|source| ConfigError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    file.sync_all().map_err(|source| ConfigError::Io {
+        path: temp.clone(),
+        source,
+    })?;
     drop(file);
 
     std::fs::rename(&temp, path).map_err(|source| {
         let _ = std::fs::remove_file(&temp);
-        ConfigError::Io { path: path.to_path_buf(), source }
+        ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
 
     // Durably record the rename itself.
@@ -316,7 +346,11 @@ mod tests {
         let paths = Paths::rooted_at(temp.path());
         paths.ensure().expect("ensure");
         for dir in [&paths.config, &paths.state, &paths.cache, &paths.runtime] {
-            let mode = std::fs::metadata(dir).expect("metadata").permissions().mode() & 0o777;
+            let mode = std::fs::metadata(dir)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o700, "{}", dir.display());
         }
         assert!(paths.config.join("nodes.d").is_dir());
@@ -338,7 +372,11 @@ mod tests {
         std::fs::create_dir(&dir).expect("create");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         ensure_private_dir(&dir).expect("ensure");
-        let mode = std::fs::metadata(&dir).expect("metadata").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o700);
     }
 
@@ -350,7 +388,10 @@ mod tests {
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(&target, &link).expect("symlink");
         let error = ensure_private_dir(&link).expect_err("must refuse");
-        assert!(matches!(error, ConfigError::UnsafeDirectory { .. }), "{error:?}");
+        assert!(
+            matches!(error, ConfigError::UnsafeDirectory { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -359,7 +400,10 @@ mod tests {
         let path = temp.path().join("file");
         std::fs::write(&path, b"x").expect("write");
         let error = ensure_private_dir(&path).expect_err("must refuse");
-        assert!(matches!(error, ConfigError::UnsafeDirectory { .. }), "{error:?}");
+        assert!(
+            matches!(error, ConfigError::UnsafeDirectory { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -367,9 +411,16 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("sub").join("secrets.toml");
         write_private_atomic(&path, b"schema_version = 1\n").expect("write");
-        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
-        assert_eq!(std::fs::read_to_string(&path).expect("read"), "schema_version = 1\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "schema_version = 1\n"
+        );
     }
 
     #[test]

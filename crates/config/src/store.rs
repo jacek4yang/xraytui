@@ -128,7 +128,9 @@ pub fn load(paths: &Paths) -> Result<DesiredState, ConfigError> {
     }
     if let Some(file) = load_toml::<SubscriptionsFile>(&paths.policy_file("subscriptions"))? {
         for subscription in file.subscription {
-            state.subscriptions.insert(subscription.id.clone(), subscription);
+            state
+                .subscriptions
+                .insert(subscription.id.clone(), subscription);
         }
     }
 
@@ -201,8 +203,7 @@ pub fn save(paths: &Paths, state: &DesiredState) -> Result<(), ConfigError> {
 pub fn starter_state() -> DesiredState {
     let mut state = DesiredState::default();
     let id = ProfileId::new("direct").unwrap_or_else(|_| ProfileId::from_text("direct"));
-    let mut profile =
-        EgressProfile::new(id.clone(), "Direct", xraytui_domain::Target::Direct);
+    let mut profile = EgressProfile::new(id.clone(), "Direct", xraytui_domain::Target::Direct);
     profile.socks = Some(xraytui_domain::ListenerSpec::loopback(11080));
     profile.http = Some(xraytui_domain::ListenerSpec::loopback(11081));
     state.profiles.insert(id.clone(), profile);
@@ -219,7 +220,9 @@ pub fn nodes_by_subscription(
     let mut out: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for (id, node) in &state.nodes {
         if let Some(subscription) = node.source.subscription() {
-            out.entry(subscription.clone()).or_default().push(id.clone());
+            out.entry(subscription.clone())
+                .or_default()
+                .push(id.clone());
         }
     }
     out
@@ -250,7 +253,9 @@ mod tests {
         let mut profile = EgressProfile::new(
             pid.clone(),
             "Web",
-            Target::Node { id: NodeId::new("hk-01").expect("valid") },
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
         );
         profile.socks = Some(ListenerSpec::loopback(12080));
         state.profiles.insert(pid, profile);
@@ -284,10 +289,21 @@ mod tests {
         let paths = Paths::rooted_at(temp.path());
         paths.ensure().expect("ensure");
         save(&paths, &sample_state()).expect("save");
-        for name in ["nodes", "profiles", "groups", "chains", "rules", "subscriptions"] {
+        for name in [
+            "nodes",
+            "profiles",
+            "groups",
+            "chains",
+            "rules",
+            "subscriptions",
+        ] {
             let path = paths.policy_file(name);
             assert!(path.is_file(), "{name}.toml was not written");
-            let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o600, "{name}.toml has mode {mode:o}");
         }
     }
@@ -300,7 +316,10 @@ mod tests {
         save(&paths, &sample_state()).expect("save");
         let loaded = load(&paths).expect("load");
         assert_eq!(
-            loaded.nodes.get(&NodeId::new("hk-01").expect("valid")).map(|n| n.name.as_str()),
+            loaded
+                .nodes
+                .get(&NodeId::new("hk-01").expect("valid"))
+                .map(|n| n.name.as_str()),
             Some("香港 01")
         );
     }
@@ -319,7 +338,11 @@ mod tests {
             state.validate()
         );
         assert!(
-            state.profiles.values().flat_map(|p| p.listeners()).all(|l| !l.is_exposed()),
+            state
+                .profiles
+                .values()
+                .flat_map(|p| p.listeners())
+                .all(|l| !l.is_exposed()),
             "the starter configuration must not expose anything"
         );
     }
@@ -331,7 +354,10 @@ mod tests {
         paths.ensure().expect("ensure");
         std::fs::write(paths.policy_file("nodes"), "schema_version = 99\n").expect("write");
         let error = load(&paths).expect_err("must refuse");
-        assert!(matches!(error, ConfigError::SchemaTooNew { found: 99, .. }), "{error:?}");
+        assert!(
+            matches!(error, ConfigError::SchemaTooNew { found: 99, .. }),
+            "{error:?}"
+        );
     }
 
     #[test]

@@ -218,7 +218,10 @@ impl HealthRecord {
                     }
                 });
             }
-        } else if !matches!(result.outcome, ProbeOutcome::Cancelled | ProbeOutcome::NotRun { .. }) {
+        } else if !matches!(
+            result.outcome,
+            ProbeOutcome::Cancelled | ProbeOutcome::NotRun { .. }
+        ) {
             self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         }
         self.last = Some(result);
@@ -464,7 +467,10 @@ impl RuntimeState {
         matches!(self.core, CoreStatus::Running { .. })
             && !matches!(self.tun, TunStatus::Failed { .. })
             && !matches!(self.dns, DnsStatus::Unhealthy { .. })
-            && self.profiles.iter().all(|p| p.health.state() != HealthState::Down)
+            && self
+                .profiles
+                .iter()
+                .all(|p| p.health.state() != HealthState::Down)
     }
 }
 
@@ -479,7 +485,9 @@ mod tests {
             outcome: if ok {
                 ProbeOutcome::Ok
             } else {
-                ProbeOutcome::ConnectFailed { detail: "refused".into() }
+                ProbeOutcome::ConnectFailed {
+                    detail: "refused".into(),
+                }
             },
             kind: ProbeKind::TcpConnect,
         }

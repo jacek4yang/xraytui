@@ -3641,12 +3641,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "clap_complete",
- "clap_mangen",
  "serde",
  "serde_json",
  "toml",
- "xraytui-cli",
 ]
 
 [[package]]

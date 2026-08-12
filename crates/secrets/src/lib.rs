@@ -3,7 +3,8 @@
 //! Two things live here:
 //!
 //! * [`Secret`] — a string-like value that never reveals itself through [`Debug`],
-//!   [`Display`] or accidental serialisation of a struct, and that zeroizes on drop.
+//!   [`std::fmt::Display`] or accidental serialisation of a struct, and that
+//!   zeroizes on drop.
 //! * [`redact`] — best-effort scrubbing of URLs, share links and free text before
 //!   they reach logs, diagnostics or the terminal.
 //!
@@ -212,6 +213,11 @@ fn summarise_unparseable(input: &str) -> String {
     }
 }
 
+/// Redact a URL for logging: strips userinfo, scrubs sensitive query values,
+/// and replaces long opaque path segments.
+///
+/// Falls back to a scheme-only summary when the input does not parse or is
+/// implausibly long.
 #[must_use]
 pub fn redact_url(input: &str) -> String {
     if input.len() > MAX_URL_BYTES {
@@ -357,7 +363,10 @@ mod tests {
         for secret in ["a", "", "hunter2", &"x".repeat(4096), "香港-01"] {
             let fingerprint = Secret::new(secret).fingerprint();
             assert_eq!(fingerprint.len(), 16, "{secret:?} -> {fingerprint}");
-            assert!(fingerprint.chars().all(|c| c.is_ascii_hexdigit()), "{fingerprint}");
+            assert!(
+                fingerprint.chars().all(|c| c.is_ascii_hexdigit()),
+                "{fingerprint}"
+            );
             assert_ne!(fingerprint, secret);
         }
     }
@@ -408,10 +417,17 @@ mod tests {
 
     #[test]
     fn subscription_url_token_is_scrubbed() {
-        let redacted = redact_url("https://example.com/sub/9f1c8b2ea4d64f0b8c7d3e5a1b2c3d4e?token=abcdefgh");
-        assert!(!redacted.contains("9f1c8b2ea4d64f0b8c7d3e5a1b2c3d4e"), "{redacted}");
+        let redacted =
+            redact_url("https://example.com/sub/9f1c8b2ea4d64f0b8c7d3e5a1b2c3d4e?token=abcdefgh");
+        assert!(
+            !redacted.contains("9f1c8b2ea4d64f0b8c7d3e5a1b2c3d4e"),
+            "{redacted}"
+        );
         assert!(!redacted.contains("abcdefgh"), "{redacted}");
-        assert!(redacted.starts_with("https://example.com/sub/"), "{redacted}");
+        assert!(
+            redacted.starts_with("https://example.com/sub/"),
+            "{redacted}"
+        );
     }
 
     #[test]
@@ -433,7 +449,10 @@ mod tests {
 
     #[test]
     fn ordinary_text_is_untouched() {
-        assert_eq!(redact_text("core started, 3 profiles"), "core started, 3 profiles");
+        assert_eq!(
+            redact_text("core started, 3 profiles"),
+            "core started, 3 profiles"
+        );
     }
 
     #[test]

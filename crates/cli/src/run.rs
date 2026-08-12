@@ -2,7 +2,7 @@
 
 use std::io::{Read as _, Write as _};
 
-use xraytui_domain::{RuleAction, Target};
+use xraytui_domain::Target;
 use xraytui_ipc::{Client, ImportOrigin, Request, Response, TestTarget};
 
 use crate::args::{
@@ -19,7 +19,10 @@ use crate::{CliError, exec};
 #[must_use]
 pub fn main() -> i32 {
     let cli = <Cli as clap::Parser>::parse();
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("xraytui: cannot start the async runtime: {error}");
@@ -38,8 +41,9 @@ pub fn main() -> i32 {
 async fn dispatch(cli: Cli) -> Result<(), CliError> {
     let paths = match &cli.root {
         Some(root) => xraytui_config::Paths::rooted_at(root),
-        None => xraytui_config::Paths::discover()
-            .map_err(|error| CliError::Other(error.to_string()))?,
+        None => {
+            xraytui_config::Paths::discover().map_err(|error| CliError::Other(error.to_string()))?
+        }
     };
 
     // Commands that never need the daemon are handled first, so `completion`
@@ -84,7 +88,9 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
         Some(Command::Group(command)) => group(&mut client, command, cli.format).await,
         Some(Command::Chain(command)) => chain(&mut client, command, cli.format).await,
         Some(Command::Rule(command)) => rule(&mut client, command, cli.format).await,
-        Some(Command::Subscription(command)) => subscription(&mut client, command, cli.format).await,
+        Some(Command::Subscription(command)) => {
+            subscription(&mut client, command, cli.format).await
+        }
         Some(Command::Runtime(command)) => runtime_info(&mut client, command, cli.format).await,
         Some(Command::Logs(args)) => logs(&mut client, args.follow).await,
         Some(Command::ShowConfig) => show_config(&mut client).await,
@@ -155,7 +161,12 @@ async fn doctor(client: &mut Client, format: Format) -> Result<(), CliError> {
         );
     } else {
         for check in &report.checks {
-            println!("[{}] {:<18} {}", check.status.label(), check.name, check.detail);
+            println!(
+                "[{}] {:<18} {}",
+                check.status.label(),
+                check.name,
+                check.detail
+            );
             if let Some(remedy) = &check.remedy {
                 for line in remedy.lines() {
                     println!("            {line}");
@@ -164,7 +175,10 @@ async fn doctor(client: &mut Client, format: Format) -> Result<(), CliError> {
         }
     }
     if report.failures() > 0 {
-        return Err(CliError::Other(format!("{} check(s) failed", report.failures())));
+        return Err(CliError::Other(format!(
+            "{} check(s) failed",
+            report.failures()
+        )));
     }
     Ok(())
 }
@@ -179,8 +193,7 @@ async fn mode(
         ModeCommand::Get => ask(client, Request::GetMode).await?,
         ModeCommand::Cycle => ask(client, Request::CycleMode).await?,
         ModeCommand::Set { mode } => {
-            let parsed: xraytui_domain::SystemMode =
-                mode.parse().map_err(CliError::Usage)?;
+            let parsed: xraytui_domain::SystemMode = mode.parse().map_err(CliError::Usage)?;
             ask(client, Request::SetMode(parsed)).await?;
             ask(client, Request::GetMode).await?
         }
@@ -290,38 +303,63 @@ async fn profile(
                 println!("target:   {}", found.target.to_token());
                 println!(
                     "fallback: {}",
-                    found.fallback.as_ref().map_or("(none)".to_owned(), Target::to_token)
+                    found
+                        .fallback
+                        .as_ref()
+                        .map_or("(none)".to_owned(), Target::to_token)
                 );
                 println!(
                     "socks:    {}",
-                    found.socks.as_ref().map_or("(none)".to_owned(), |l| l.listen.to_string())
+                    found
+                        .socks
+                        .as_ref()
+                        .map_or("(none)".to_owned(), |l| l.listen.to_string())
                 );
                 println!(
                     "http:     {}",
-                    found.http.as_ref().map_or("(none)".to_owned(), |l| l.listen.to_string())
+                    found
+                        .http
+                        .as_ref()
+                        .map_or("(none)".to_owned(), |l| l.listen.to_string())
                 );
                 println!("kill switch: {:?}", found.kill_switch);
             }
             Ok(())
         }
 
-        ProfileCommand::SetTarget { profile, target, stdin } => {
+        ProfileCommand::SetTarget {
+            profile,
+            target,
+            stdin,
+        } => {
             let id = parse_id::<xraytui_domain::ProfileId>(&profile, "profile")?;
-            let token = if stdin { read_stdin_token()? } else { target.unwrap_or_default() };
-            let target: Target = token.parse().map_err(|error: xraytui_domain::TargetParseError| {
-                CliError::Usage(error.to_string())
-            })?;
-            let response =
-                ask(client, Request::SetProfileTarget { profile: id, target: target.clone() })
-                    .await?;
-            if let Response::Applied { restarted, .. } = response {
-                if !quiet {
-                    println!(
-                        "{profile} -> {}{}",
-                        target.to_token(),
-                        if restarted { " (core restarted)" } else { "" }
-                    );
-                }
+            let token = if stdin {
+                read_stdin_token()?
+            } else {
+                target.unwrap_or_default()
+            };
+            let target: Target =
+                token
+                    .parse()
+                    .map_err(|error: xraytui_domain::TargetParseError| {
+                        CliError::Usage(error.to_string())
+                    })?;
+            let response = ask(
+                client,
+                Request::SetProfileTarget {
+                    profile: id,
+                    target: target.clone(),
+                },
+            )
+            .await?;
+            if let Response::Applied { restarted, .. } = response
+                && !quiet
+            {
+                println!(
+                    "{profile} -> {}{}",
+                    target.to_token(),
+                    if restarted { " (core restarted)" } else { "" }
+                );
             }
             Ok(())
         }
@@ -371,18 +409,27 @@ async fn target(
     for (id, group) in &desired.groups {
         rows.push((
             format!("group:{id}"),
-            format!("{} ({} members)", group.name, desired.group_members(id).len()),
+            format!(
+                "{} ({} members)",
+                group.name,
+                desired.group_members(id).len()
+            ),
         ));
     }
     for (id, chain) in &desired.chains {
-        rows.push((format!("chain:{id}"), format!("{}  {}", chain.name, chain.describe())));
+        rows.push((
+            format!("chain:{id}"),
+            format!("{}  {}", chain.name, chain.describe()),
+        ));
     }
 
     match format {
         Format::Json => println!(
             "{}",
             serde_json::to_string_pretty(
-                &rows.iter().map(|(id, label)| serde_json::json!({"target": id, "label": label}))
+                &rows
+                    .iter()
+                    .map(|(id, label)| serde_json::json!({"target": id, "label": label}))
                     .collect::<Vec<_>>()
             )
             .map_err(|error| CliError::Other(error.to_string()))?
@@ -401,7 +448,11 @@ async fn target(
     Ok(())
 }
 
-async fn app(client: &mut Client, command: crate::args::AppCommand, format: Format) -> Result<(), CliError> {
+async fn app(
+    client: &mut Client,
+    command: crate::args::AppCommand,
+    format: Format,
+) -> Result<(), CliError> {
     let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
         return Err(CliError::Other("unexpected response".into()));
     };
@@ -417,8 +468,7 @@ async fn app(client: &mut Client, command: crate::args::AppCommand, format: Form
                 );
             } else {
                 for rule in rules {
-                    let matchers: Vec<&str> =
-                        rule.process.iter().map(|m| m.0.as_str()).collect();
+                    let matchers: Vec<&str> = rule.process.iter().map(|m| m.0.as_str()).collect();
                     println!(
                         "{:>6}  {:<24} {:<20} {}",
                         rule.priority,
@@ -461,9 +511,9 @@ async fn node(
                 .nodes
                 .values()
                 .filter(|node| {
-                    filter
-                        .as_deref()
-                        .is_none_or(|needle| node.name.contains(needle) || node.id.as_str().contains(needle))
+                    filter.as_deref().is_none_or(|needle| {
+                        node.name.contains(needle) || node.id.as_str().contains(needle)
+                    })
                 })
                 .collect();
             match format {
@@ -518,8 +568,11 @@ async fn node(
 
         NodeCommand::Import(args) => {
             let (text, origin) = read_import_input(&args)?;
-            let Response::Imported { added, unsupported, rejected } =
-                ask(client, Request::Import { text, origin }).await?
+            let Response::Imported {
+                added,
+                unsupported,
+                rejected,
+            } = ask(client, Request::Import { text, origin }).await?
             else {
                 return Err(CliError::Other("unexpected response".into()));
             };
@@ -592,8 +645,8 @@ async fn share(client: &mut Client, args: crate::args::ShareArgs) -> Result<(), 
         .nodes
         .get(&id)
         .ok_or_else(|| CliError::NotFound(format!("node '{}' does not exist", args.node)))?;
-    let link = xraytui_import::to_share_link(node)
-        .map_err(|error| CliError::Other(error.to_string()))?;
+    let link =
+        xraytui_import::to_share_link(node).map_err(|error| CliError::Other(error.to_string()))?;
 
     // A share link is a credential. Say so once, on stderr, so piping the link
     // into another command still works.
@@ -639,7 +692,11 @@ async fn group(client: &mut Client, command: GroupCommand, format: Format) -> Re
                         id,
                         format!("{:?}", group.strategy).to_lowercase(),
                         members.len(),
-                        members.iter().map(Target::short_label).collect::<Vec<_>>().join(", ")
+                        members
+                            .iter()
+                            .map(Target::short_label)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                 }
             }
@@ -656,10 +713,20 @@ async fn group(client: &mut Client, command: GroupCommand, format: Format) -> Re
         }
         GroupCommand::Select { group, target } => {
             let id = parse_id::<xraytui_domain::GroupId>(&group, "group")?;
-            let target: Target = target
-                .parse()
-                .map_err(|error: xraytui_domain::TargetParseError| CliError::Usage(error.to_string()))?;
-            ask(client, Request::SetGroupSelection { group: id, target: target.clone() }).await?;
+            let target: Target =
+                target
+                    .parse()
+                    .map_err(|error: xraytui_domain::TargetParseError| {
+                        CliError::Usage(error.to_string())
+                    })?;
+            ask(
+                client,
+                Request::SetGroupSelection {
+                    group: id,
+                    target: target.clone(),
+                },
+            )
+            .await?;
             println!("{group} -> {}", target.to_token());
             Ok(())
         }
@@ -729,9 +796,17 @@ async fn rule(client: &mut Client, command: RuleCommand, format: Format) -> Resu
         }
         RuleCommand::Explain { query, network } => {
             let (domain, ip, port) = split_query(&query);
-            let Response::RouteDecision { outbound, groups, .. } = ask(
+            let Response::RouteDecision {
+                outbound, groups, ..
+            } = ask(
                 client,
-                Request::ExplainRoute { domain, ip, port, network, inbound_tag: None },
+                Request::ExplainRoute {
+                    domain,
+                    ip,
+                    port,
+                    network,
+                    inbound_tag: None,
+                },
             )
             .await?
             else {
@@ -815,7 +890,11 @@ async fn subscription(
                         id,
                         subscription.name,
                         subscription.meta.node_count,
-                        if subscription.enabled { "" } else { "  (disabled)" }
+                        if subscription.enabled {
+                            ""
+                        } else {
+                            "  (disabled)"
+                        }
                     );
                 }
             }
@@ -866,10 +945,13 @@ async fn runtime_info(
         }
         RuntimeCommand::Connections { follow } => {
             if follow {
-                return follow_events(client, xraytui_ipc::SubscriptionFilter {
-                    connections: true,
-                    ..Default::default()
-                })
+                return follow_events(
+                    client,
+                    xraytui_ipc::SubscriptionFilter {
+                        connections: true,
+                        ..Default::default()
+                    },
+                )
                 .await;
             }
             println!("no buffered connections; use --follow to watch live decisions");
@@ -883,8 +965,14 @@ async fn logs(client: &mut Client, follow: bool) -> Result<(), CliError> {
         println!("use --follow to stream the daemon and core logs");
         return Ok(());
     }
-    follow_events(client, xraytui_ipc::SubscriptionFilter { logs: true, ..Default::default() })
-        .await
+    follow_events(
+        client,
+        xraytui_ipc::SubscriptionFilter {
+            logs: true,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 async fn follow_events(
@@ -894,13 +982,22 @@ async fn follow_events(
     let mut stream = client.subscribe(filter).await?;
     while let Some(event) = stream.next().await {
         match event {
-            xraytui_ipc::Event::Log { level, target, message, .. } => {
+            xraytui_ipc::Event::Log {
+                level,
+                target,
+                message,
+                ..
+            } => {
                 println!("{level:<5} {target:<24} {message}");
             }
             xraytui_ipc::Event::Connection(record) => {
                 println!(
                     "{:<28} -> {:<28} {}",
-                    record.domain.clone().or(record.ip.clone()).unwrap_or_default(),
+                    record
+                        .domain
+                        .clone()
+                        .or(record.ip.clone())
+                        .unwrap_or_default(),
                     record.outbound,
                     record.rule_tag.unwrap_or_default()
                 );
@@ -933,11 +1030,12 @@ async fn run_exec(client: &mut Client, args: crate::args::ExecArgs) -> Result<()
     };
     let id = parse_id::<xraytui_domain::ProfileId>(&args.profile, "profile")?;
     if !desired.profiles.contains_key(&id) {
-        return Err(CliError::NotFound(format!("profile '{}' does not exist", args.profile)));
+        return Err(CliError::NotFound(format!(
+            "profile '{}' does not exist",
+            args.profile
+        )));
     }
-    let live = runtime
-        .profile(&id)
-        .ok_or(CliError::CoreDown)?;
+    let live = runtime.profile(&id).ok_or(CliError::CoreDown)?;
     let no_proxy = args
         .no_proxy
         .clone()
@@ -973,14 +1071,14 @@ fn read_stdin_token() -> Result<String, CliError> {
     let mut buffer = String::new();
     std::io::stdin()
         .read_to_string(&mut buffer)
-        .map_err(|source| CliError::Io { context: "reading standard input".into(), source })?;
-    output::dmenu_id(&buffer)
-        .ok_or_else(|| CliError::Usage("standard input was empty".to_owned()))
+        .map_err(|source| CliError::Io {
+            context: "reading standard input".into(),
+            source,
+        })?;
+    output::dmenu_id(&buffer).ok_or_else(|| CliError::Usage("standard input was empty".to_owned()))
 }
 
-fn read_import_input(
-    args: &crate::args::ImportArgs,
-) -> Result<(String, ImportOrigin), CliError> {
+fn read_import_input(args: &crate::args::ImportArgs) -> Result<(String, ImportOrigin), CliError> {
     if let Some(path) = &args.xray_json {
         let text = std::fs::read_to_string(path).map_err(|source| CliError::Io {
             context: format!("reading {}", path.display()),
@@ -993,7 +1091,12 @@ fn read_import_input(
             context: format!("reading {}", path.display()),
             source,
         })?;
-        return Ok((text, ImportOrigin::File { path: path.display().to_string() }));
+        return Ok((
+            text,
+            ImportOrigin::File {
+                path: path.display().to_string(),
+            },
+        ));
     }
     if let Some(path) = &args.qr {
         let decoded = xraytui_import::qr::decode_png(path)
@@ -1004,7 +1107,10 @@ fn read_import_input(
         let mut buffer = String::new();
         std::io::stdin()
             .read_to_string(&mut buffer)
-            .map_err(|source| CliError::Io { context: "reading standard input".into(), source })?;
+            .map_err(|source| CliError::Io {
+                context: "reading standard input".into(),
+                source,
+            })?;
         return Ok((buffer, ImportOrigin::Manual));
     }
     if args.clipboard {
@@ -1070,7 +1176,9 @@ fn write_manpage(
     command: &clap::Command,
     name: &str,
 ) -> Result<(), CliError> {
-    let man = clap_mangen::Man::new(command.clone()).title(name.to_uppercase()).section("1");
+    let man = clap_mangen::Man::new(command.clone())
+        .title(name.to_uppercase())
+        .section("1");
     let mut buffer = Vec::new();
     man.render(&mut buffer).map_err(|source| CliError::Io {
         context: format!("rendering {name}.1"),
@@ -1097,8 +1205,14 @@ mod tests {
             split_query("example.com:80"),
             (Some("example.com".to_owned()), None, 80)
         );
-        assert_eq!(split_query("1.2.3.4"), (None, Some("1.2.3.4".to_owned()), 443));
-        assert_eq!(split_query("1.2.3.4:8080"), (None, Some("1.2.3.4".to_owned()), 8080));
+        assert_eq!(
+            split_query("1.2.3.4"),
+            (None, Some("1.2.3.4".to_owned()), 443)
+        );
+        assert_eq!(
+            split_query("1.2.3.4:8080"),
+            (None, Some("1.2.3.4".to_owned()), 8080)
+        );
         assert_eq!(
             split_query("[2001:db8::1]:443"),
             (None, Some("2001:db8::1".to_owned()), 443)
@@ -1140,7 +1254,10 @@ mod tests {
     fn rule_action_tokens_are_understood_by_the_cli_layer() {
         // Guards against the CLI and the domain drifting apart on token syntax.
         for token in ["profile:web", "node:hk-01", "direct", "block", "default"] {
-            assert!(token.parse::<RuleAction>().is_ok(), "{token}");
+            assert!(
+                token.parse::<xraytui_domain::RuleAction>().is_ok(),
+                "{token}"
+            );
         }
     }
 }

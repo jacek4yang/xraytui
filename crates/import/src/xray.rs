@@ -30,7 +30,10 @@ pub fn parse_xray_config(text: &str, source: NodeSource) -> ImportBatch {
         batch.rejected.push(RejectedEntry {
             index: 0,
             redacted: String::new(),
-            error: ImportError::TooLarge { size: text.len(), limit: MAX_JSON_BYTES },
+            error: ImportError::TooLarge {
+                size: text.len(),
+                limit: MAX_JSON_BYTES,
+            },
         });
         return batch;
     }
@@ -106,7 +109,10 @@ pub fn parse_xray_outbound(
         .ok_or(ImportError::MissingProtocol)?
         .to_ascii_lowercase();
 
-    let tag = object.get("tag").and_then(Value::as_str).unwrap_or_default();
+    let tag = object
+        .get("tag")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let name: String = tag.chars().take(MAX_NAME_CHARS).collect();
     let settings = object.get("settings").and_then(Value::as_object);
     let stream = object.get("streamSettings").and_then(Value::as_object);
@@ -154,7 +160,10 @@ pub fn parse_xray_outbound(
     }
 
     let Some(settings) = settings else {
-        return Err(ImportError::MissingField { scheme: "xray", field: "settings" });
+        return Err(ImportError::MissingField {
+            scheme: "xray",
+            field: "settings",
+        });
     };
 
     let (endpoint, protocol_settings) = match protocol.as_str() {
@@ -164,13 +173,20 @@ pub fn parse_xray_outbound(
                 Endpoint::new(address, port),
                 ProtocolSettings::Vless(VlessSettings {
                     id: Secret::new(string_field(&user, "id")?),
-                    flow: user.get("flow").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    flow: user
+                        .get("flow")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                     encryption: user
                         .get("encryption")
                         .and_then(Value::as_str)
                         .unwrap_or("none")
                         .to_owned(),
-                    level: user.get("level").and_then(Value::as_u64).and_then(|l| u32::try_from(l).ok()),
+                    level: user
+                        .get("level")
+                        .and_then(Value::as_u64)
+                        .and_then(|l| u32::try_from(l).ok()),
                 }),
             )
         }
@@ -190,7 +206,10 @@ pub fn parse_xray_outbound(
                         .and_then(Value::as_u64)
                         .and_then(|a| u16::try_from(a).ok())
                         .unwrap_or(0),
-                    level: user.get("level").and_then(Value::as_u64).and_then(|l| u32::try_from(l).ok()),
+                    level: user
+                        .get("level")
+                        .and_then(Value::as_u64)
+                        .and_then(|l| u32::try_from(l).ok()),
                 }),
             )
         }
@@ -200,7 +219,11 @@ pub fn parse_xray_outbound(
                 endpoint_of(&server)?,
                 ProtocolSettings::Trojan(TrojanSettings {
                     password: Secret::new(string_field(&server, "password")?),
-                    flow: server.get("flow").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    flow: server
+                        .get("flow")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                 }),
             )
         }
@@ -224,7 +247,11 @@ pub fn parse_xray_outbound(
             let (username, password) = first_user_credentials(&server);
             (
                 endpoint_of(&server)?,
-                ProtocolSettings::Socks(SocksSettings { username, password, udp: true }),
+                ProtocolSettings::Socks(SocksSettings {
+                    username,
+                    password,
+                    udp: true,
+                }),
             )
         }
         "http" => {
@@ -237,7 +264,9 @@ pub fn parse_xray_outbound(
         }
         other => {
             return Ok(make_unsupported(
-                UnsupportedReason::UnknownScheme { scheme: other.to_owned() },
+                UnsupportedReason::UnknownScheme {
+                    scheme: other.to_owned(),
+                },
                 None,
             ));
         }
@@ -265,7 +294,10 @@ fn string_field(object: &Object, field: &'static str) -> Result<String, ImportEr
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-        .ok_or(ImportError::MissingField { scheme: "xray", field })
+        .ok_or(ImportError::MissingField {
+            scheme: "xray",
+            field,
+        })
 }
 
 fn first_vnext_user(settings: &Object) -> Result<(String, u16, Object), ImportError> {
@@ -274,20 +306,29 @@ fn first_vnext_user(settings: &Object) -> Result<(String, u16, Object), ImportEr
         .and_then(Value::as_array)
         .and_then(|items| items.first())
         .and_then(Value::as_object)
-        .ok_or(ImportError::MissingField { scheme: "xray", field: "vnext" })?;
+        .ok_or(ImportError::MissingField {
+            scheme: "xray",
+            field: "vnext",
+        })?;
     let address = string_field(vnext, "address")?;
     let port = vnext
         .get("port")
         .and_then(Value::as_u64)
         .and_then(|p| u16::try_from(p).ok())
-        .ok_or(ImportError::InvalidField { scheme: "xray", field: "port" })?;
+        .ok_or(ImportError::InvalidField {
+            scheme: "xray",
+            field: "port",
+        })?;
     let user = vnext
         .get("users")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
         .and_then(Value::as_object)
         .cloned()
-        .ok_or(ImportError::MissingField { scheme: "xray", field: "users" })?;
+        .ok_or(ImportError::MissingField {
+            scheme: "xray",
+            field: "users",
+        })?;
     Ok((address, port, user))
 }
 
@@ -298,7 +339,10 @@ fn first_server(settings: &Object) -> Result<Object, ImportError> {
         .and_then(|items| items.first())
         .and_then(Value::as_object)
         .cloned()
-        .ok_or(ImportError::MissingField { scheme: "xray", field: "servers" })
+        .ok_or(ImportError::MissingField {
+            scheme: "xray",
+            field: "servers",
+        })
 }
 
 fn endpoint_of(server: &Object) -> Result<Endpoint, ImportError> {
@@ -307,7 +351,10 @@ fn endpoint_of(server: &Object) -> Result<Endpoint, ImportError> {
         .get("port")
         .and_then(Value::as_u64)
         .and_then(|p| u16::try_from(p).ok())
-        .ok_or(ImportError::InvalidField { scheme: "xray", field: "port" })?;
+        .ok_or(ImportError::InvalidField {
+            scheme: "xray",
+            field: "port",
+        })?;
     Ok(Endpoint::new(address, port))
 }
 
@@ -317,17 +364,25 @@ fn first_user_credentials(server: &Object) -> (Option<String>, Option<Secret>) {
         .and_then(Value::as_array)
         .and_then(|items| items.first())
         .and_then(Value::as_object);
-    let Some(user) = user else { return (None, None) };
+    let Some(user) = user else {
+        return (None, None);
+    };
     let username = user.get("user").and_then(Value::as_str).map(str::to_owned);
     let password = user.get("pass").and_then(Value::as_str).map(Secret::new);
     (username, password)
 }
 
 fn transport_from_stream(stream: &Object) -> Transport {
-    let network = stream.get("network").and_then(Value::as_str).unwrap_or("raw");
+    let network = stream
+        .get("network")
+        .and_then(Value::as_str)
+        .unwrap_or("raw");
     let settings = |key: &str| stream.get(key).and_then(Value::as_object);
     let text = |object: Option<&Object>, key: &str| {
-        object.and_then(|o| o.get(key)).and_then(Value::as_str).map(str::to_owned)
+        object
+            .and_then(|o| o.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     };
 
     match network {
@@ -395,7 +450,11 @@ fn transport_from_stream(stream: &Object) -> Transport {
 }
 
 fn security_from_stream(stream: &Object, address: &str) -> TransportSecurity {
-    match stream.get("security").and_then(Value::as_str).unwrap_or("none") {
+    match stream
+        .get("security")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+    {
         "tls" => {
             let tls = stream.get("tlsSettings").and_then(Value::as_object);
             TransportSecurity::Tls(TlsSettings {
@@ -408,7 +467,11 @@ fn security_from_stream(stream: &Object, address: &str) -> TransportSecurity {
                     .and_then(|o| o.get("alpn"))
                     .and_then(Value::as_array)
                     .map(|items| {
-                        items.iter().filter_map(Value::as_str).map(str::to_owned).collect()
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
                     })
                     .unwrap_or_default(),
                 fingerprint: tls
@@ -426,7 +489,10 @@ fn security_from_stream(stream: &Object, address: &str) -> TransportSecurity {
         "reality" => {
             let reality = stream.get("realitySettings").and_then(Value::as_object);
             let field = |key: &str| {
-                reality.and_then(|o| o.get(key)).and_then(Value::as_str).map(str::to_owned)
+                reality
+                    .and_then(|o| o.get(key))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
             };
             TransportSecurity::Reality(RealitySettings {
                 server_name: field("serverName").or_else(|| Some(address.to_owned())),
@@ -462,7 +528,11 @@ mod tests {
         });
         let batch = parse_xray_config(&config.to_string(), NodeSource::XrayJson);
         assert_eq!(batch.nodes.len(), 1);
-        assert_eq!(batch.unsupported.len(), 1, "blackhole must be preserved, not imported");
+        assert_eq!(
+            batch.unsupported.len(),
+            1,
+            "blackhole must be preserved, not imported"
+        );
         let node = batch.nodes.first().expect("node");
         assert_eq!(node.name, "hk");
         assert_eq!(node.endpoint, Endpoint::new("h.example", 443));
@@ -493,7 +563,14 @@ mod tests {
 
     #[test]
     fn broken_documents_produce_rejects_not_panics() {
-        for text in ["", "{", "null", "[]", "{\"outbounds\":[]}", "{\"outbounds\":[1,2]}"] {
+        for text in [
+            "",
+            "{",
+            "null",
+            "[]",
+            "{\"outbounds\":[]}",
+            "{\"outbounds\":[1,2]}",
+        ] {
             let batch = parse_xray_config(text, NodeSource::XrayJson);
             assert!(batch.is_empty(), "{text} unexpectedly produced nodes");
             assert!(batch.has_rejects(), "{text} produced no reject");
@@ -514,7 +591,13 @@ mod tests {
     fn missing_fields_are_reported_without_the_payload() {
         let outbound = serde_json::json!({ "tag": "x", "protocol": "vless", "settings": {} });
         let error = parse_xray_outbound(&outbound, NodeSource::XrayJson).expect_err("must refuse");
-        assert_eq!(error, ImportError::MissingField { scheme: "xray", field: "vnext" });
+        assert_eq!(
+            error,
+            ImportError::MissingField {
+                scheme: "xray",
+                field: "vnext"
+            }
+        );
     }
 
     #[test]

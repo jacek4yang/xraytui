@@ -5,7 +5,12 @@
 //! `xraytui-netd`. It never modifies host networking itself.
 
 #![forbid(unsafe_code)]
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Production paths must not panic; test modules are exempt so assertions stay
+// readable.
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 mod daemon;
 mod lock;
@@ -32,7 +37,11 @@ struct Cli {
     root: Option<PathBuf>,
 
     /// Log level filter, e.g. `info`, `xraytuid=debug`.
-    #[arg(long, env = "XRAYTUI_LOG", default_value = "warn,xraytuid=info,xraytui=info")]
+    #[arg(
+        long,
+        env = "XRAYTUI_LOG",
+        default_value = "warn,xraytuid=info,xraytui=info"
+    )]
     log: String,
 
     /// Validate the configuration and exit without starting anything.
@@ -69,7 +78,9 @@ async fn run(cli: Cli) -> Result<()> {
         Some(root) => xraytui_config::Paths::rooted_at(root),
         None => xraytui_config::Paths::discover().context("cannot determine XDG directories")?,
     };
-    paths.ensure().context("cannot create the xraytui directories")?;
+    paths
+        .ensure()
+        .context("cannot create the xraytui directories")?;
 
     let config = xraytui_config::load_toml::<xraytui_config::ConfigFile>(&paths.config_file())
         .context("cannot read config.toml")?

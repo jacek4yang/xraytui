@@ -32,8 +32,9 @@ pub const INBOUND_DNS: &str = "inbound/system/dns";
 pub const INBOUND_TUN: &str = "inbound/system/tun";
 
 /// First path segments that are reserved by the generator.
-pub const RESERVED_ROOTS: &[&str] =
-    &["control", "node", "chain", "group", "profile", "inbound", "rule"];
+pub const RESERVED_ROOTS: &[&str] = &[
+    "control", "node", "chain", "group", "profile", "inbound", "rule",
+];
 
 /// Outbound tag for a node.
 ///

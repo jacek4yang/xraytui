@@ -89,7 +89,10 @@ mod tests {
         let path = temp.path().join("daemon.lock");
         let _held = acquire(&path).expect("first acquire");
         let error = acquire(&path).expect_err("second acquire must fail");
-        assert!(error.to_string().contains("locked by another xraytuid"), "{error}");
+        assert!(
+            error.to_string().contains("locked by another xraytuid"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -108,7 +111,11 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("daemon.lock");
         let _held = acquire(&path).expect("acquire");
-        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
     }
 }

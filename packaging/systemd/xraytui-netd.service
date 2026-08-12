@@ -1,0 +1,46 @@
+[Unit]
+Description=xraytui privileged network helper
+Documentation=man:xraytui(1)
+After=network-pre.target
+Before=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/xraytui-netd --socket /run/xraytui/netd.sock --group xraytui
+# On stop, project-owned networking state is removed. --recover does the same
+# reconciliation after an unclean shutdown.
+ExecStopPost=/usr/bin/xraytui-netd --recover --once
+Restart=on-failure
+RestartSec=2
+
+# The only component with privileges, and only these.
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+# AF_NETLINK for routes and links; AF_UNIX for the control socket. No AF_INET:
+# the helper never opens a network connection of its own.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @network-io
+SystemCallErrorNumber=EPERM
+UMask=0007
+
+RuntimeDirectory=xraytui
+RuntimeDirectoryMode=0755
+StateDirectory=xraytui-netd
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

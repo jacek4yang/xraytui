@@ -104,7 +104,12 @@ impl HttpFixtureServer {
             }
         });
 
-        Ok(Self { addr, routes, requests, task })
+        Ok(Self {
+            addr,
+            routes,
+            requests,
+            task,
+        })
     }
 
     /// Base URL, without a trailing slash.
@@ -144,12 +149,9 @@ async fn handle(
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 4096];
     loop {
-        let read = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stream.read(&mut chunk),
-        )
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request timed out"))??;
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut chunk))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request timed out"))??;
         if read == 0 {
             break;
         }
@@ -187,7 +189,10 @@ async fn handle(
         return Ok(());
     };
 
-    let not_modified = route.etag.as_deref().is_some_and(|e| if_none_match.as_deref() == Some(e))
+    let not_modified = route
+        .etag
+        .as_deref()
+        .is_some_and(|e| if_none_match.as_deref() == Some(e))
         || route
             .last_modified
             .as_deref()
@@ -241,7 +246,10 @@ mod tests {
         let server = HttpFixtureServer::start().await.expect("start");
         server.set_route("/sub", Route::ok("hello")).await;
         let mut stream = TcpStream::connect(server.addr).await.expect("connect");
-        stream.write_all(b"GET /sub HTTP/1.1\r\nHost: x\r\n\r\n").await.expect("write");
+        stream
+            .write_all(b"GET /sub HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("write");
         let mut response = String::new();
         tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut response)
             .await
@@ -254,7 +262,9 @@ mod tests {
     #[tokio::test]
     async fn honours_if_none_match() {
         let server = HttpFixtureServer::start().await.expect("start");
-        server.set_route("/sub", Route::ok("hello").with_etag("\"v1\"")).await;
+        server
+            .set_route("/sub", Route::ok("hello").with_etag("\"v1\""))
+            .await;
         let mut stream = TcpStream::connect(server.addr).await.expect("connect");
         stream
             .write_all(b"GET /sub HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"v1\"\r\n\r\n")

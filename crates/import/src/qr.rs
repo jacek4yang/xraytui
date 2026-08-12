@@ -11,8 +11,7 @@ use std::path::Path;
 use qrcode::{EcLevel, QrCode};
 
 /// One-line warning to print before showing a QR code that carries credentials.
-pub const SECRET_WARNING: &str =
-    "This QR code grants access to the proxy. Treat it like a password: do not \
+pub const SECRET_WARNING: &str = "This QR code grants access to the proxy. Treat it like a password: do not \
      photograph it, screen-share it, or paste it where others can see.";
 
 /// Largest payload a QR code can hold (version 40, low error correction).
@@ -105,7 +104,11 @@ pub fn render_terminal_inverted(data: &str) -> Result<String, QrError> {
 
 fn render_blocks(data: &str, invert: bool) -> Result<String, QrError> {
     let code = encode(data)?;
-    let modules: Vec<bool> = code.to_colors().iter().map(|c| *c == qrcode::Color::Dark).collect();
+    let modules: Vec<bool> = code
+        .to_colors()
+        .iter()
+        .map(|c| *c == qrcode::Color::Dark)
+        .collect();
     let width = code.width();
 
     let padded_width = width + QUIET_ZONE * 2;
@@ -128,7 +131,11 @@ fn render_blocks(data: &str, invert: bool) -> Result<String, QrError> {
     while y < padded_height {
         for x in 0..padded_width {
             let top = dark(x, y);
-            let bottom = if y + 1 < padded_height { dark(x, y + 1) } else { invert };
+            let bottom = if y + 1 < padded_height {
+                dark(x, y + 1)
+            } else {
+                invert
+            };
             out.push(match (top, bottom) {
                 (true, true) => '█',
                 (true, false) => '▀',
@@ -158,9 +165,15 @@ pub fn render_png(data: &str, path: &Path, scale: u32) -> Result<(), QrError> {
     // second copy of `image`; rasterising the module grid directly avoids that
     // and keeps full control over the quiet zone and pixel scale.
     let width = code.width();
-    let modules: Vec<bool> = code.to_colors().iter().map(|c| *c == qrcode::Color::Dark).collect();
+    let modules: Vec<bool> = code
+        .to_colors()
+        .iter()
+        .map(|c| *c == qrcode::Color::Dark)
+        .collect();
     let padded = width + QUIET_ZONE * 2;
-    let side = u32::try_from(padded).unwrap_or(u32::MAX).saturating_mul(scale);
+    let side = u32::try_from(padded)
+        .unwrap_or(u32::MAX)
+        .saturating_mul(scale);
 
     let mut buffer = image::GrayImage::from_pixel(side, side, image::Luma([255_u8]));
     for (index, dark) in modules.iter().enumerate() {
@@ -197,7 +210,10 @@ fn create_private_file(path: &Path) -> Result<(), QrError> {
         .mode(0o600)
         .open(path)
         .map(|_| ())
-        .map_err(|source| QrError::Io { path: path.display().to_string(), source })
+        .map_err(|source| QrError::Io {
+            path: path.display().to_string(),
+            source,
+        })
 }
 
 /// Decode every QR code found in a PNG (or any image the `image` crate reads).
@@ -219,7 +235,9 @@ pub fn decode_png(path: &Path) -> Result<Vec<String>, QrError> {
         }
     }
     if out.is_empty() {
-        return Err(QrError::NoCode { path: path.display().to_string() });
+        return Err(QrError::NoCode {
+            path: path.display().to_string(),
+        });
     }
     Ok(out)
 }
@@ -251,7 +269,10 @@ mod tests {
         // line must be blank.
         assert!(first.chars().all(|c| c == ' '), "{first:?}");
         for line in rendered.lines() {
-            assert!(line.starts_with("    "), "missing left quiet zone: {line:?}");
+            assert!(
+                line.starts_with("    "),
+                "missing left quiet zone: {line:?}"
+            );
         }
     }
 
@@ -269,7 +290,10 @@ mod tests {
     fn empty_and_oversized_payloads_are_refused() {
         assert!(matches!(render_terminal(""), Err(QrError::Empty)));
         let huge = "x".repeat(MAX_QR_BYTES + 1);
-        assert!(matches!(render_terminal(&huge), Err(QrError::TooLarge { .. })));
+        assert!(matches!(
+            render_terminal(&huge),
+            Err(QrError::TooLarge { .. })
+        ));
     }
 
     #[test]
@@ -288,7 +312,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("node.png");
         render_png("x", &path, 4).expect("render");
-        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
     }
 

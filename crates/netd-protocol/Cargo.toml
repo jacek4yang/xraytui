@@ -15,11 +15,11 @@ serde = { workspace = true }
 ciborium = { workspace = true }
 thiserror = { workspace = true }
 ipnet = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }
 tracing = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["net", "process"] }
 bytes = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }

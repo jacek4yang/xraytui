@@ -8,9 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{
-    AppRuleId, ChainId, GroupId, NodeId, ProfileId, RoutingRuleId, SubscriptionId,
-};
+use crate::ids::{AppRuleId, ChainId, GroupId, NodeId, ProfileId, RoutingRuleId, SubscriptionId};
 use crate::node::{Compatibility, Node, UnsupportedNode};
 use crate::policy::{
     ApplicationRule, Chain, ChainError, EgressProfile, Group, RoutingRule, RuleAction, SystemMode,
@@ -170,12 +168,16 @@ impl DesiredState {
 
         for node_id in &membership.nodes {
             if self.nodes.contains_key(node_id) {
-                members.insert(Target::Node { id: node_id.clone() });
+                members.insert(Target::Node {
+                    id: node_id.clone(),
+                });
             }
         }
         for chain_id in &membership.chains {
             if self.chains.contains_key(chain_id) {
-                members.insert(Target::Chain { id: chain_id.clone() });
+                members.insert(Target::Chain {
+                    id: chain_id.clone(),
+                });
             }
         }
 
@@ -211,7 +213,11 @@ impl DesiredState {
                 }
                 if !membership.regions.is_empty() {
                     let region = node.region.clone().unwrap_or_default();
-                    if !membership.regions.iter().any(|r| r.eq_ignore_ascii_case(&region)) {
+                    if !membership
+                        .regions
+                        .iter()
+                        .any(|r| r.eq_ignore_ascii_case(&region))
+                    {
                         continue;
                     }
                 }
@@ -226,7 +232,9 @@ impl DesiredState {
                 if excludes.iter().any(|re| re.is_match(&node.name)) {
                     continue;
                 }
-                members.insert(Target::Node { id: node_id.clone() });
+                members.insert(Target::Node {
+                    id: node_id.clone(),
+                });
             }
         } else if !membership.exclude_regex.is_empty() {
             let excludes = compile_patterns(&membership.exclude_regex);
@@ -307,7 +315,9 @@ impl DesiredState {
                     out.push(
                         Diagnostic::warning(
                             "target.empty-group",
-                            format!("{subject} points at group '{id}' which currently has no members"),
+                            format!(
+                                "{subject} points at group '{id}' which currently has no members"
+                            ),
                         )
                         .about(subject),
                     );
@@ -356,7 +366,11 @@ impl DesiredState {
     fn validate_groups(&self, out: &mut Vec<Diagnostic>) {
         for (id, group) in &self.groups {
             let subject = format!("group '{id}'");
-            for pattern in group.membership.include_regex.iter().chain(&group.membership.exclude_regex)
+            for pattern in group
+                .membership
+                .include_regex
+                .iter()
+                .chain(&group.membership.exclude_regex)
             {
                 if let Err(err) = regex::Regex::new(pattern) {
                     out.push(
@@ -434,7 +448,8 @@ impl DesiredState {
         for id in self.chains.keys() {
             for error in self.validate_chain(id) {
                 out.push(
-                    Diagnostic::error("chain.invalid", error.to_string()).about(format!("chain '{id}'")),
+                    Diagnostic::error("chain.invalid", error.to_string())
+                        .about(format!("chain '{id}'")),
                 );
             }
         }
@@ -453,11 +468,17 @@ impl DesiredState {
         let mut seen = BTreeSet::new();
         for (index, hop) in chain.hops.iter().enumerate() {
             if !seen.insert(hop.clone()) {
-                errors.push(ChainError::RepeatedHop { chain: id.clone(), node: hop.clone() });
+                errors.push(ChainError::RepeatedHop {
+                    chain: id.clone(),
+                    node: hop.clone(),
+                });
             }
             match self.nodes.get(hop) {
                 None => {
-                    errors.push(ChainError::MissingHop { chain: id.clone(), node: hop.clone() });
+                    errors.push(ChainError::MissingHop {
+                        chain: id.clone(),
+                        node: hop.clone(),
+                    });
                 }
                 Some(node) => {
                     if !node.enabled {
@@ -476,7 +497,10 @@ impl DesiredState {
                     }
                     let is_terminal = Some(index) == chain.terminal_index();
                     if !is_terminal && !node.protocol.supports_udp() {
-                        errors.push(ChainError::UdpBreak { chain: id.clone(), node: hop.clone() });
+                        errors.push(ChainError::UdpBreak {
+                            chain: id.clone(),
+                            node: hop.clone(),
+                        });
                     }
                 }
             }
@@ -524,14 +548,17 @@ impl DesiredState {
             }
         }
 
-        let mut ordered: Vec<&RoutingRule> = self.routing_rules.values().filter(|r| r.enabled).collect();
+        let mut ordered: Vec<&RoutingRule> =
+            self.routing_rules.values().filter(|r| r.enabled).collect();
         ordered.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
         for (index, rule) in ordered.iter().enumerate() {
             let subject = format!("routing rule '{}'", rule.id);
             self.validate_action(&rule.action, &subject, out);
             if rule.matcher.is_catch_all() && index + 1 < ordered.len() {
-                let shadowed: Vec<String> =
-                    ordered[index + 1..].iter().map(|r| r.id.to_string()).collect();
+                let shadowed: Vec<String> = ordered[index + 1..]
+                    .iter()
+                    .map(|r| r.id.to_string())
+                    .collect();
                 out.push(
                     Diagnostic::warning(
                         "routing-rule.shadowing",
@@ -627,7 +654,9 @@ impl DesiredState {
                     out.push(
                         Diagnostic::error(
                             "listener.zero-port",
-                            format!("{owner} requests port 0, which cannot be addressed by clients"),
+                            format!(
+                                "{owner} requests port 0, which cannot be addressed by clients"
+                            ),
                         )
                         .about(&owner),
                     );
@@ -675,12 +704,14 @@ impl DesiredState {
             }
         }
         for (rid, rule) in &self.routing_rules {
-            if matches!(&rule.action, RuleAction::Target { target: Target::Node { id: n } } if n == id) {
+            if matches!(&rule.action, RuleAction::Target { target: Target::Node { id: n } } if n == id)
+            {
                 refs.push(format!("routing rule '{rid}'"));
             }
         }
         for (rid, rule) in &self.app_rules {
-            if matches!(&rule.action, RuleAction::Target { target: Target::Node { id: n } } if n == id) {
+            if matches!(&rule.action, RuleAction::Target { target: Target::Node { id: n } } if n == id)
+            {
                 refs.push(format!("application rule '{rid}'"));
             }
         }
@@ -690,12 +721,18 @@ impl DesiredState {
     /// Nodes owned by a subscription namespace.
     #[must_use]
     pub fn nodes_of_subscription(&self, id: &SubscriptionId) -> Vec<&Node> {
-        self.nodes.values().filter(|n| n.source.owned_by(id)).collect()
+        self.nodes
+            .values()
+            .filter(|n| n.source.owned_by(id))
+            .collect()
     }
 }
 
 fn compile_patterns(patterns: &[String]) -> Vec<regex::Regex> {
-    patterns.iter().filter_map(|p| regex::Regex::new(p).ok()).collect()
+    patterns
+        .iter()
+        .filter_map(|p| regex::Regex::new(p).ok())
+        .collect()
 }
 
 // A tiny regex shim so the domain crate does not pull the full `regex` crate
@@ -728,7 +765,10 @@ mod regex {
     enum Atom {
         Literal(char),
         Any,
-        Class { negated: bool, ranges: Vec<(char, char)> },
+        Class {
+            negated: bool,
+            ranges: Vec<(char, char)>,
+        },
         Start,
         End,
     }
@@ -758,7 +798,9 @@ mod regex {
         /// Compile a pattern.
         pub fn new(pattern: &str) -> Result<Self, Error> {
             if pattern.len() > MAX_PATTERN_LEN {
-                return Err(Error(format!("pattern longer than {MAX_PATTERN_LEN} bytes")));
+                return Err(Error(format!(
+                    "pattern longer than {MAX_PATTERN_LEN} bytes"
+                )));
             }
             let mut alternatives = Vec::new();
             for branch in split_top_level(pattern)? {
@@ -772,9 +814,16 @@ mod regex {
             let chars: Vec<char> = haystack.chars().collect();
             for pieces in &self.alternatives {
                 let anchored_start = matches!(pieces.first().map(|p| &p.atom), Some(Atom::Start));
-                let body = if anchored_start { &pieces[1..] } else { &pieces[..] };
-                let starts: Vec<usize> =
-                    if anchored_start { vec![0] } else { (0..=chars.len()).collect() };
+                let body = if anchored_start {
+                    &pieces[1..]
+                } else {
+                    &pieces[..]
+                };
+                let starts: Vec<usize> = if anchored_start {
+                    vec![0]
+                } else {
+                    (0..=chars.len()).collect()
+                };
                 for start in starts {
                     let mut budget = STEP_BUDGET;
                     if match_here(body, &chars, start, &mut budget) {
@@ -816,7 +865,9 @@ mod regex {
                     current.push(ch);
                 }
                 ')' if !in_class => {
-                    depth = depth.checked_sub(1).ok_or_else(|| Error("unbalanced ')'".into()))?;
+                    depth = depth
+                        .checked_sub(1)
+                        .ok_or_else(|| Error("unbalanced ')'".into()))?;
                     current.push(ch);
                 }
                 '|' if !in_class && depth == 0 => {
@@ -875,10 +926,15 @@ mod regex {
                 }
                 '\\' => {
                     i += 1;
-                    let escaped = *chars.get(i).ok_or_else(|| Error("trailing backslash".into()))?;
+                    let escaped = *chars
+                        .get(i)
+                        .ok_or_else(|| Error("trailing backslash".into()))?;
                     i += 1;
                     match escaped {
-                        'd' => Atom::Class { negated: false, ranges: vec![('0', '9')] },
+                        'd' => Atom::Class {
+                            negated: false,
+                            ranges: vec![('0', '9')],
+                        },
                         'w' => Atom::Class {
                             negated: false,
                             ranges: vec![('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')],
@@ -906,8 +962,7 @@ mod regex {
                         }
                         let lo = chars[i];
                         i += 1;
-                        if chars.get(i) == Some(&'-')
-                            && chars.get(i + 1).is_some_and(|c| *c != ']')
+                        if chars.get(i) == Some(&'-') && chars.get(i + 1).is_some_and(|c| *c != ']')
                         {
                             let hi = chars[i + 1];
                             i += 2;
@@ -922,7 +977,10 @@ mod regex {
                     Atom::Class { negated, ranges }
                 }
                 '*' | '+' | '?' => {
-                    return Err(Error(format!("quantifier '{}' has nothing to repeat", chars[i])));
+                    return Err(Error(format!(
+                        "quantifier '{}' has nothing to repeat",
+                        chars[i]
+                    )));
                 }
                 literal => {
                     i += 1;
@@ -1112,7 +1170,9 @@ mod tests {
             EgressProfile::new(
                 ProfileId::new("web").expect("valid"),
                 "Web",
-                Target::Node { id: NodeId::new("missing").expect("valid") },
+                Target::Node {
+                    id: NodeId::new("missing").expect("valid"),
+                },
             ),
         );
         let diagnostics = state.validate();
@@ -1143,7 +1203,12 @@ mod tests {
             },
         );
         let members = state.group_members(&GroupId::new("auto-hk").expect("valid"));
-        assert_eq!(members, vec![Target::Node { id: NodeId::new("hk-01").expect("valid") }]);
+        assert_eq!(
+            members,
+            vec![Target::Node {
+                id: NodeId::new("hk-01").expect("valid")
+            }]
+        );
     }
 
     #[test]
@@ -1155,13 +1220,19 @@ mod tests {
                 id: GroupId::new("g").expect("valid"),
                 name: "G".into(),
                 strategy: GroupStrategy::Random,
-                membership: GroupMembership { include_regex: vec!["[".into()], ..Default::default() },
+                membership: GroupMembership {
+                    include_regex: vec!["[".into()],
+                    ..Default::default()
+                },
                 manual_selection: None,
                 fallback: None,
             },
         );
         let diagnostics = state.validate();
-        assert!(diagnostics.iter().any(|d| d.code == "group.bad-regex"), "{diagnostics:?}");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "group.bad-regex"),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -1182,8 +1253,18 @@ mod tests {
             },
         );
         let errors = state.validate_chain(&id);
-        assert!(errors.iter().any(|e| matches!(e, ChainError::RepeatedHop { .. })), "{errors:?}");
-        assert!(errors.iter().any(|e| matches!(e, ChainError::MissingHop { .. })), "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ChainError::RepeatedHop { .. })),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ChainError::MissingHop { .. })),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -1209,7 +1290,12 @@ mod tests {
             },
         );
         let errors = state.validate_chain(&id);
-        assert!(errors.iter().any(|e| matches!(e, ChainError::UdpBreak { .. })), "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ChainError::UdpBreak { .. })),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -1235,7 +1321,12 @@ mod tests {
             },
         );
         let errors = state.validate_chain(&id);
-        assert!(!errors.iter().any(|e| matches!(e, ChainError::UdpBreak { .. })), "{errors:?}");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, ChainError::UdpBreak { .. })),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -1248,7 +1339,12 @@ mod tests {
             state.profiles.insert(pid, profile);
         }
         let diagnostics = state.validate();
-        assert!(diagnostics.iter().any(|d| d.code == "listener.port-collision"), "{diagnostics:?}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "listener.port-collision"),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -1263,7 +1359,12 @@ mod tests {
         });
         state.profiles.insert(pid, profile);
         let diagnostics = state.validate();
-        assert!(diagnostics.iter().any(|d| d.code == "listener.lan-without-auth"), "{diagnostics:?}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "listener.lan-without-auth"),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -1277,14 +1378,21 @@ mod tests {
                     id: rid,
                     priority,
                     matcher: Default::default(),
-                    action: RuleAction::Target { target: Target::Direct },
+                    action: RuleAction::Target {
+                        target: Target::Direct,
+                    },
                     enabled: true,
                     note: None,
                 },
             );
         }
         let diagnostics = state.validate();
-        assert!(diagnostics.iter().any(|d| d.code == "routing-rule.shadowing"), "{diagnostics:?}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "routing-rule.shadowing"),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -1294,7 +1402,13 @@ mod tests {
         let pid = ProfileId::new("web").expect("valid");
         state.profiles.insert(
             pid.clone(),
-            EgressProfile::new(pid, "Web", Target::Node { id: node_id.clone() }),
+            EgressProfile::new(
+                pid,
+                "Web",
+                Target::Node {
+                    id: node_id.clone(),
+                },
+            ),
         );
         state.chains.insert(
             ChainId::new("c").expect("valid"),
@@ -1339,7 +1453,9 @@ mod tests {
                 enabled: true,
             },
         );
-        let nodes = state.resolve_target_nodes(&Target::Group { id: GroupId::new("g").expect("valid") });
+        let nodes = state.resolve_target_nodes(&Target::Group {
+            id: GroupId::new("g").expect("valid"),
+        });
         assert_eq!(nodes.len(), 3, "{nodes:?}");
     }
 }

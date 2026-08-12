@@ -19,7 +19,11 @@ pub fn socks_node(id: &str, name: &str, egress: SocketAddr) -> Node {
         name,
         NodeSource::Manual,
         Endpoint::new(egress.ip().to_string(), egress.port()),
-        ProtocolSettings::Socks(SocksSettings { username: None, password: None, udp: false }),
+        ProtocolSettings::Socks(SocksSettings {
+            username: None,
+            password: None,
+            udp: false,
+        }),
     )
 }
 

@@ -19,7 +19,12 @@
 //! and it is tested directly.
 
 #![forbid(unsafe_code)]
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Production paths must not panic; test modules are exempt so assertions stay
+// readable.
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 #![warn(missing_docs)]
 
 pub mod core;

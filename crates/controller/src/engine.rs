@@ -5,18 +5,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use xraytui_domain::{
-    CoreStatus, DesiredState, GenerationId, GroupId, HealthRecord, ProfileId, ProfileRuntime,
-    RuntimeState, SystemMode, Target, TrafficCounters,
+    CoreStatus, DesiredState, GenerationId, GroupId, ProfileId, ProfileRuntime, RuntimeState,
+    SystemMode, Target, TrafficCounters,
 };
 use xraytui_xray_api::{ApiClient, ApiEndpoint};
 use xraytui_xray_compiler::{CompileOptions, Compiled, compile, tags};
 
-use crate::core::{
-    self, CoreInfo, HealthGate, LaunchSpec, RestartPolicy, RunningCore, unix_now,
-};
 use crate::ControllerError;
 #[cfg(test)]
 use crate::core::Version;
+use crate::core::{self, CoreInfo, HealthGate, LaunchSpec, RestartPolicy, RunningCore, unix_now};
 
 /// Static settings the engine needs that are not part of the routing model.
 #[derive(Debug, Clone)]
@@ -248,7 +246,9 @@ impl Engine {
 
         for (id, group) in &mut next_shape.groups {
             let Some(current) = current_shape.groups.get_mut(id) else {
-                return ChangePlan::Restart { reason: format!("group '{id}' was added") };
+                return ChangePlan::Restart {
+                    reason: format!("group '{id}' was added"),
+                };
             };
             if current.manual_selection != group.manual_selection {
                 if let Some(selection) = &group.manual_selection {
@@ -265,7 +265,9 @@ impl Engine {
         }
 
         if current_shape != next_shape {
-            return ChangePlan::Restart { reason: describe_structural_change(&current_shape, &next_shape) };
+            return ChangePlan::Restart {
+                reason: describe_structural_change(&current_shape, &next_shape),
+            };
         }
         if selectors.is_empty() {
             ChangePlan::NoChange
@@ -275,7 +277,9 @@ impl Engine {
     }
 
     fn tag_exists(&self, tag: &str) -> bool {
-        self.compiled.as_ref().is_some_and(|c| c.owned_tags.contains(tag))
+        self.compiled
+            .as_ref()
+            .is_some_and(|c| c.owned_tags.contains(tag))
     }
 
     /// Replace the desired state, applying it in the cheapest correct way.
@@ -292,7 +296,10 @@ impl Engine {
                 Ok(ApplyOutcome::Unchanged)
             }
             ChangePlan::Selectors(selectors) => {
-                let client = self.client.as_mut().ok_or(ControllerError::CoreNotRunning)?;
+                let client = self
+                    .client
+                    .as_mut()
+                    .ok_or(ControllerError::CoreNotRunning)?;
                 let mut applied = Vec::new();
                 for (balancer, target) in &selectors {
                     client.override_balancer(balancer, target).await?;
@@ -304,7 +311,11 @@ impl Engine {
                 // one that was compiled in.
                 if let Some(compiled) = self.compiled.as_mut() {
                     for (balancer, target) in selectors {
-                        match compiled.selector_overrides.iter_mut().find(|(b, _)| b == &balancer) {
+                        match compiled
+                            .selector_overrides
+                            .iter_mut()
+                            .find(|(b, _)| b == &balancer)
+                        {
                             Some(entry) => entry.1 = target,
                             None => compiled.selector_overrides.push((balancer, target)),
                         }
@@ -390,7 +401,9 @@ impl Engine {
             Err(error) => {
                 self.running = Some(running);
                 self.stop_core().await;
-                self.runtime.core = CoreStatus::Failed { reason: error.to_string() };
+                self.runtime.core = CoreStatus::Failed {
+                    reason: error.to_string(),
+                };
                 return Err(error);
             }
         };
@@ -401,12 +414,18 @@ impl Engine {
         if !report.is_healthy() {
             let detail = report.describe();
             self.stop_core().await;
-            self.runtime.core = CoreStatus::Failed { reason: detail.clone() };
+            self.runtime.core = CoreStatus::Failed {
+                reason: detail.clone(),
+            };
             return Err(ControllerError::Unhealthy { generation, detail });
         }
 
         // 5. Only now is the generation good enough to roll back to.
-        let pid = self.running.as_ref().and_then(RunningCore::pid).unwrap_or_default();
+        let pid = self
+            .running
+            .as_ref()
+            .and_then(RunningCore::pid)
+            .unwrap_or_default();
         self.runtime.core = CoreStatus::Running {
             generation,
             pid,
@@ -424,10 +443,8 @@ impl Engine {
             .any(|l| l.is_exposed());
         self.runtime.warnings = compiled.warnings.clone();
 
-        let _ = xraytui_config::write_private_atomic(
-            &self.config.last_good_config,
-            json.as_bytes(),
-        );
+        let _ =
+            xraytui_config::write_private_atomic(&self.config.last_good_config, json.as_bytes());
         self.last_good = Some((generation, json));
         self.compiled = Some(compiled);
         self.refresh_profile_runtime();
@@ -566,24 +583,36 @@ impl Engine {
 
         self.runtime.total_traffic = totals;
         for profile in &mut self.runtime.profiles {
-            if let Some(tag) = &profile.effective_outbound {
-                if let Some(counters) = per_tag.get(tag) {
-                    profile.traffic = *counters;
-                }
+            if let Some(tag) = &profile.effective_outbound
+                && let Some(counters) = per_tag.get(tag)
+            {
+                profile.traffic = *counters;
             }
         }
         Ok(())
     }
 
     /// Record a probe result against a node.
-    pub fn record_node_health(&mut self, node: xraytui_domain::NodeId, result: xraytui_domain::ProbeResult) {
-        self.runtime.node_health.entry(node).or_insert_with(HealthRecord::default).record(result);
+    pub fn record_node_health(
+        &mut self,
+        node: xraytui_domain::NodeId,
+        result: xraytui_domain::ProbeResult,
+    ) {
+        self.runtime
+            .node_health
+            .entry(node)
+            .or_default()
+            .record(result);
         self.refresh_profile_runtime();
     }
 
     /// Rebuild the per-profile view of runtime state from desired + health.
     fn refresh_profile_runtime(&mut self) {
-        let listeners = self.compiled.as_ref().map(|c| c.listeners.clone()).unwrap_or_default();
+        let listeners = self
+            .compiled
+            .as_ref()
+            .map(|c| c.listeners.clone())
+            .unwrap_or_default();
         self.runtime.profiles = self
             .desired
             .profiles
@@ -630,10 +659,18 @@ impl Engine {
 fn describe_structural_change(current: &DesiredState, next: &DesiredState) -> String {
     let mut reasons = Vec::new();
     if current.nodes.len() != next.nodes.len() {
-        reasons.push(format!("nodes {} -> {}", current.nodes.len(), next.nodes.len()));
+        reasons.push(format!(
+            "nodes {} -> {}",
+            current.nodes.len(),
+            next.nodes.len()
+        ));
     }
     if current.profiles.len() != next.profiles.len() {
-        reasons.push(format!("profiles {} -> {}", current.profiles.len(), next.profiles.len()));
+        reasons.push(format!(
+            "profiles {} -> {}",
+            current.profiles.len(),
+            next.profiles.len()
+        ));
     }
     if current.groups != next.groups {
         reasons.push("groups changed".to_owned());
@@ -667,7 +704,11 @@ mod tests {
     fn info() -> CoreInfo {
         CoreInfo {
             binary: PathBuf::from("/usr/bin/xray"),
-            version: Version { major: 26, minor: 3, patch: 27 },
+            version: Version {
+                major: 26,
+                minor: 3,
+                patch: 27,
+            },
             banner: "Xray 26.3.27".into(),
             asset_dir: None,
             has_geodata: false,
@@ -680,18 +721,20 @@ mod tests {
             id,
             NodeSource::Manual,
             Endpoint::new("127.0.0.1", 1080),
-            ProtocolSettings::Socks(SocksSettings { username: None, password: None, udp: false }),
+            ProtocolSettings::Socks(SocksSettings {
+                username: None,
+                password: None,
+                udp: false,
+            }),
         )
     }
 
     /// An engine whose "compiled" generation matches `state`, without a core.
     fn engine_with(state: DesiredState) -> Engine {
-        let mut engine = Engine::new(EngineConfig::default(), info()).unwrap_or_else(|_| {
-            unreachable!("the fixture version is above the minimum")
-        });
-        let compiled = compile(&state, &engine.config.compile).unwrap_or_else(|_| {
-            unreachable!("the fixture state is valid")
-        });
+        let mut engine = Engine::new(EngineConfig::default(), info())
+            .unwrap_or_else(|_| unreachable!("the fixture version is above the minimum"));
+        let compiled = compile(&state, &engine.config.compile)
+            .unwrap_or_else(|_| unreachable!("the fixture state is valid"));
         engine.compiled = Some(compiled);
         engine.desired = state;
         engine
@@ -703,15 +746,14 @@ mod tests {
             let n = node(id);
             state.nodes.insert(n.id.clone(), n);
         }
-        for (id, target, port) in [
-            ("web", "a", 11080_u16),
-            ("development", "b", 12080),
-        ] {
+        for (id, target, port) in [("web", "a", 11080_u16), ("development", "b", 12080)] {
             let pid = ProfileId::new(id).unwrap_or_else(|_| ProfileId::from_text(id));
             let mut profile = EgressProfile::new(
                 pid.clone(),
                 id,
-                Target::Node { id: NodeId::new(target).unwrap_or_else(|_| NodeId::from_text(target)) },
+                Target::Node {
+                    id: NodeId::new(target).unwrap_or_else(|_| NodeId::from_text(target)),
+                },
             );
             profile.socks = Some(ListenerSpec::loopback(port));
             state.profiles.insert(pid, profile);
@@ -733,14 +775,19 @@ mod tests {
 
         let mut next = state;
         if let Some(profile) = next.profiles.get_mut(&ProfileId::from_text("development")) {
-            profile.target = Target::Node { id: NodeId::from_text("c") };
+            profile.target = Target::Node {
+                id: NodeId::from_text("c"),
+            };
         }
 
         match engine.plan(&next) {
             ChangePlan::Selectors(selectors) => {
                 assert_eq!(
                     selectors,
-                    vec![("profile/development/selector".to_owned(), "node/c/out".to_owned())]
+                    vec![(
+                        "profile/development/selector".to_owned(),
+                        "node/c/out".to_owned()
+                    )]
                 );
             }
             other => panic!("expected an API switch, got {other:?}"),
@@ -758,7 +805,10 @@ mod tests {
         match engine.plan(&next) {
             ChangePlan::Selectors(selectors) => {
                 assert_eq!(selectors.len(), 1);
-                assert!(selectors.iter().all(|(b, _)| b.contains("/web/")), "{selectors:?}");
+                assert!(
+                    selectors.iter().all(|(b, _)| b.contains("/web/")),
+                    "{selectors:?}"
+                );
             }
             other => panic!("expected an API switch, got {other:?}"),
         }
@@ -772,9 +822,15 @@ mod tests {
         let new_node = node("brand-new");
         next.nodes.insert(new_node.id.clone(), new_node);
         if let Some(profile) = next.profiles.get_mut(&ProfileId::from_text("web")) {
-            profile.target = Target::Node { id: NodeId::from_text("brand-new") };
+            profile.target = Target::Node {
+                id: NodeId::from_text("brand-new"),
+            };
         }
-        assert!(engine.plan(&next).is_disruptive(), "{:?}", engine.plan(&next));
+        assert!(
+            engine.plan(&next).is_disruptive(),
+            "{:?}",
+            engine.plan(&next)
+        );
     }
 
     #[test]
@@ -792,7 +848,8 @@ mod tests {
         // Adding a profile changes the balancer set.
         let mut next = state.clone();
         let pid = ProfileId::from_text("chat");
-        next.profiles.insert(pid.clone(), EgressProfile::new(pid, "chat", Target::Direct));
+        next.profiles
+            .insert(pid.clone(), EgressProfile::new(pid, "chat", Target::Direct));
         match engine.plan(&next) {
             ChangePlan::Restart { reason } => assert!(reason.contains("chat"), "{reason}"),
             other => panic!("expected a restart, got {other:?}"),
@@ -827,7 +884,9 @@ mod tests {
                     nodes: vec![NodeId::from_text("a"), NodeId::from_text("b")],
                     ..Default::default()
                 },
-                manual_selection: Some(Target::Node { id: NodeId::from_text("a") }),
+                manual_selection: Some(Target::Node {
+                    id: NodeId::from_text("a"),
+                }),
                 fallback: None,
             },
         );
@@ -835,7 +894,9 @@ mod tests {
 
         let mut next = state;
         if let Some(group) = next.groups.get_mut(&gid) {
-            group.manual_selection = Some(Target::Node { id: NodeId::from_text("b") });
+            group.manual_selection = Some(Target::Node {
+                id: NodeId::from_text("b"),
+            });
         }
         match engine.plan(&next) {
             ChangePlan::Selectors(selectors) => {
@@ -851,9 +912,16 @@ mod tests {
     #[test]
     fn too_old_a_core_is_refused_at_construction() {
         let mut old = info();
-        old.version = Version { major: 1, minor: 7, patch: 0 };
+        old.version = Version {
+            major: 1,
+            minor: 7,
+            patch: 0,
+        };
         let error = Engine::new(EngineConfig::default(), old).expect_err("must refuse");
-        assert!(matches!(error, ControllerError::CoreTooOld { .. }), "{error:?}");
+        assert!(
+            matches!(error, ControllerError::CoreTooOld { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]

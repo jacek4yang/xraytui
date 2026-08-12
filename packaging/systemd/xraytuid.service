@@ -1,0 +1,47 @@
+[Unit]
+Description=xraytui per-user desired-state daemon
+Documentation=man:xraytui(1)
+After=network.target
+# The privileged helper is optional: without it every mode except the system
+# TUN still works, so this is Wants= rather than Requires=.
+Wants=xraytui-netd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/xraytuid
+Restart=on-failure
+RestartSec=2
+
+# The daemon is unprivileged by construction. These directives make that
+# structural rather than merely conventional.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-write
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+# Written to by the daemon and by the core it supervises.
+StateDirectory=xraytui
+CacheDirectory=xraytui
+RuntimeDirectory=xraytui
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=default.target

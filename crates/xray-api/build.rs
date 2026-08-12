@@ -38,7 +38,11 @@ fn main() {
 
     let paths: Vec<PathBuf> = PROTOS.iter().map(|p| root.join(p)).collect();
     for path in &paths {
-        assert!(path.is_file(), "vendored protobuf {} is missing", path.display());
+        assert!(
+            path.is_file(),
+            "vendored protobuf {} is missing",
+            path.display()
+        );
     }
 
     if let Err(error) = tonic_prost_build::configure()

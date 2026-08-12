@@ -11,10 +11,9 @@ use std::collections::BTreeMap;
 use percent_encoding::percent_decode_str;
 use xraytui_domain::{
     Compatibility, Endpoint, GrpcTransport, HttpProxySettings, HttpUpgradeTransport, MkcpTransport,
-    Node, NodeId, NodeSource, ProtocolSettings, RawTransport, RealitySettings,
-    ShadowsocksSettings, SocksSettings, TlsSettings, Transport, TransportSecurity,
-    TrojanSettings, UnsupportedNode, UnsupportedReason, VlessSettings, VmessSettings,
-    WebsocketTransport, XhttpTransport, slugify,
+    Node, NodeId, NodeSource, ProtocolSettings, RawTransport, RealitySettings, ShadowsocksSettings,
+    SocksSettings, TlsSettings, Transport, TransportSecurity, TrojanSettings, UnsupportedNode,
+    UnsupportedReason, VlessSettings, VmessSettings, WebsocketTransport, XhttpTransport, slugify,
 };
 use xraytui_secrets::Secret;
 
@@ -28,7 +27,10 @@ pub(crate) fn parse(input: &str, source: NodeSource) -> Result<ImportedEntry, Im
         return Err(ImportError::Empty);
     }
     if trimmed.len() > MAX_LINK_BYTES {
-        return Err(ImportError::TooLarge { size: trimmed.len(), limit: MAX_LINK_BYTES });
+        return Err(ImportError::TooLarge {
+            size: trimmed.len(),
+            limit: MAX_LINK_BYTES,
+        });
     }
 
     let Some((raw_scheme, rest)) = trimmed.split_once("://") else {
@@ -48,7 +50,9 @@ pub(crate) fn parse(input: &str, source: NodeSource) -> Result<ImportedEntry, Im
         "http-proxy" | "https-proxy" => parse_http_proxy(trimmed, source),
         // Bare `http://`/`https://` is a subscription URL far more often than it
         // is a proxy share link, so it is not treated as one here.
-        other => Ok(ImportedEntry::Unsupported(unsupported(other, trimmed, source))),
+        other => Ok(ImportedEntry::Unsupported(unsupported(
+            other, trimmed, source,
+        ))),
     }
 }
 
@@ -60,7 +64,9 @@ fn is_scheme_char(c: char) -> bool {
 
 /// Percent-decode a fragment into a display name, bounded in length.
 fn decode_name(fragment: Option<&str>) -> String {
-    let Some(raw) = fragment else { return String::new() };
+    let Some(raw) = fragment else {
+        return String::new();
+    };
     let decoded = percent_decode_str(raw).decode_utf8_lossy();
     decoded.trim().chars().take(MAX_NAME_CHARS).collect()
 }
@@ -77,7 +83,11 @@ fn make_id(name: &str, fallback: &str) -> NodeId {
     const SUFFIX_LEN: usize = 12;
     const SEPARATOR_LEN: usize = 1;
     let budget = xraytui_domain::ids::MAX_ID_LEN.saturating_sub(SUFFIX_LEN + SEPARATOR_LEN);
-    let base_source = if name.trim().is_empty() { fallback } else { name };
+    let base_source = if name.trim().is_empty() {
+        fallback
+    } else {
+        name
+    };
     let mut base = slugify(base_source);
     if base.len() > budget {
         base.truncate(budget);
@@ -118,26 +128,41 @@ fn unsupported(scheme: &str, original: &str, source: NodeSource) -> UnsupportedN
 fn classify_foreign(scheme: &str) -> (UnsupportedReason, Option<String>) {
     match scheme {
         "hysteria2" | "hy2" => (
-            UnsupportedReason::ForeignCore { core: "hysteria2".into() },
+            UnsupportedReason::ForeignCore {
+                core: "hysteria2".into(),
+            },
             Some("hysteria2 or sing-box".into()),
         ),
         "tuic" => (
-            UnsupportedReason::ForeignCore { core: "tuic".into() },
+            UnsupportedReason::ForeignCore {
+                core: "tuic".into(),
+            },
             Some("sing-box".into()),
         ),
         "ssr" => (
-            UnsupportedReason::ForeignCore { core: "shadowsocksr".into() },
+            UnsupportedReason::ForeignCore {
+                core: "shadowsocksr".into(),
+            },
             Some("shadowsocksr".into()),
         ),
         "snell" => (
-            UnsupportedReason::ForeignCore { core: "snell".into() },
+            UnsupportedReason::ForeignCore {
+                core: "snell".into(),
+            },
             Some("surge".into()),
         ),
         "juicity" | "naive" | "brook" => (
-            UnsupportedReason::ForeignCore { core: scheme.to_owned() },
+            UnsupportedReason::ForeignCore {
+                core: scheme.to_owned(),
+            },
             None,
         ),
-        other => (UnsupportedReason::UnknownScheme { scheme: other.to_owned() }, None),
+        other => (
+            UnsupportedReason::UnknownScheme {
+                scheme: other.to_owned(),
+            },
+            None,
+        ),
     }
 }
 
@@ -160,23 +185,33 @@ fn split_authority(input: &str, scheme: &'static str) -> Result<Authority, Impor
     })?;
     let host = parsed.host_str().unwrap_or_default().to_owned();
     if host.is_empty() {
-        return Err(ImportError::MissingField { scheme, field: "host" });
+        return Err(ImportError::MissingField {
+            scheme,
+            field: "host",
+        });
     }
-    let port = parsed
-        .port()
-        .ok_or(ImportError::MissingField { scheme, field: "port" })?;
+    let port = parsed.port().ok_or(ImportError::MissingField {
+        scheme,
+        field: "port",
+    })?;
     // `url` splits userinfo at the first `:`, so both halves have to be put back
     // together — otherwise `socks://user:pass@host` silently loses its password.
-    let username = percent_decode_str(parsed.username()).decode_utf8_lossy().into_owned();
+    let username = percent_decode_str(parsed.username())
+        .decode_utf8_lossy()
+        .into_owned();
     let userinfo = match parsed.password() {
         Some(password) => {
-            let password = percent_decode_str(password).decode_utf8_lossy().into_owned();
+            let password = percent_decode_str(password)
+                .decode_utf8_lossy()
+                .into_owned();
             format!("{username}:{password}")
         }
         None => username,
     };
-    let query: BTreeMap<String, String> =
-        parsed.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+    let query: BTreeMap<String, String> = parsed
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
     Ok(Authority {
         userinfo,
         host: strip_brackets(&host),
@@ -195,10 +230,38 @@ fn strip_brackets(host: &str) -> String {
 
 /// Query keys the transport/security parsers consume; anything else is kept.
 const KNOWN_QUERY_KEYS: &[&str] = &[
-    "type", "net", "headertype", "headerType", "host", "path", "servicename", "serviceName",
-    "mode", "authority", "security", "sni", "peer", "alpn", "fp", "pbk", "sid", "spx", "flow",
-    "encryption", "allowinsecure", "allowInsecure", "seed", "mldsa65verify", "mldsa65Verify",
-    "multimode", "multiMode", "extra", "obfs", "obfs-password", "plugin", "udp",
+    "type",
+    "net",
+    "headertype",
+    "headerType",
+    "host",
+    "path",
+    "servicename",
+    "serviceName",
+    "mode",
+    "authority",
+    "security",
+    "sni",
+    "peer",
+    "alpn",
+    "fp",
+    "pbk",
+    "sid",
+    "spx",
+    "flow",
+    "encryption",
+    "allowinsecure",
+    "allowInsecure",
+    "seed",
+    "mldsa65verify",
+    "mldsa65Verify",
+    "multimode",
+    "multiMode",
+    "extra",
+    "obfs",
+    "obfs-password",
+    "plugin",
+    "udp",
 ];
 
 fn extras(query: &BTreeMap<String, String>) -> BTreeMap<String, serde_json::Value> {
@@ -217,7 +280,9 @@ fn get<'a>(query: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str
 }
 
 fn build_transport(query: &BTreeMap<String, String>) -> Transport {
-    let kind = get(query, &["type", "net"]).unwrap_or("tcp").to_ascii_lowercase();
+    let kind = get(query, &["type", "net"])
+        .unwrap_or("tcp")
+        .to_ascii_lowercase();
     let host = get(query, &["host"]).map(str::to_owned);
     let path = get(query, &["path"]).map(str::to_owned);
     match kind.as_str() {
@@ -230,7 +295,10 @@ fn build_transport(query: &BTreeMap<String, String>) -> Transport {
             service_name: get(query, &["serviceName", "servicename", "path"])
                 .unwrap_or_default()
                 .to_owned(),
-            multi_mode: matches!(get(query, &["mode", "multiMode", "multimode"]), Some("multi")),
+            multi_mode: matches!(
+                get(query, &["mode", "multiMode", "multimode"]),
+                Some("multi")
+            ),
             authority: get(query, &["authority"]).map(str::to_owned),
         }),
         "xhttp" | "splithttp" | "http" | "h2" => Transport::Xhttp(XhttpTransport {
@@ -258,7 +326,9 @@ fn build_transport(query: &BTreeMap<String, String>) -> Transport {
 }
 
 fn build_security(query: &BTreeMap<String, String>, host: &str) -> TransportSecurity {
-    let kind = get(query, &["security"]).unwrap_or("none").to_ascii_lowercase();
+    let kind = get(query, &["security"])
+        .unwrap_or("none")
+        .to_ascii_lowercase();
     let sni = get(query, &["sni", "peer"]).map(str::to_owned);
     let fingerprint = get(query, &["fp"]).map(str::to_owned);
     match kind.as_str() {
@@ -284,11 +354,7 @@ fn build_security(query: &BTreeMap<String, String>, host: &str) -> TransportSecu
     }
 }
 
-fn finish(
-    mut node: Node,
-    query: &BTreeMap<String, String>,
-    notes: Vec<String>,
-) -> ImportedEntry {
+fn finish(mut node: Node, query: &BTreeMap<String, String>, notes: Vec<String>) -> ImportedEntry {
     node.transport = build_transport(query);
     node.security = build_security(query, &node.endpoint.address);
     node.extra = extras(query);
@@ -304,7 +370,10 @@ fn finish(
 fn parse_vless(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportError> {
     let authority = split_authority(input, "vless")?;
     if authority.userinfo.is_empty() {
-        return Err(ImportError::MissingField { scheme: "vless", field: "id" });
+        return Err(ImportError::MissingField {
+            scheme: "vless",
+            field: "id",
+        });
     }
     let node = Node::new(
         make_id(&authority.name, "vless"),
@@ -313,8 +382,12 @@ fn parse_vless(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportE
         Endpoint::new(authority.host.clone(), authority.port),
         ProtocolSettings::Vless(VlessSettings {
             id: Secret::new(authority.userinfo.clone()),
-            flow: get(&authority.query, &["flow"]).unwrap_or_default().to_owned(),
-            encryption: get(&authority.query, &["encryption"]).unwrap_or("none").to_owned(),
+            flow: get(&authority.query, &["flow"])
+                .unwrap_or_default()
+                .to_owned(),
+            encryption: get(&authority.query, &["encryption"])
+                .unwrap_or("none")
+                .to_owned(),
             level: None,
         }),
     );
@@ -326,7 +399,10 @@ fn parse_vless(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportE
 fn parse_trojan(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportError> {
     let authority = split_authority(input, "trojan")?;
     if authority.userinfo.is_empty() {
-        return Err(ImportError::MissingField { scheme: "trojan", field: "password" });
+        return Err(ImportError::MissingField {
+            scheme: "trojan",
+            field: "password",
+        });
     }
     let mut node = Node::new(
         make_id(&authority.name, "trojan"),
@@ -335,7 +411,9 @@ fn parse_trojan(input: &str, source: NodeSource) -> Result<ImportedEntry, Import
         Endpoint::new(authority.host.clone(), authority.port),
         ProtocolSettings::Trojan(TrojanSettings {
             password: Secret::new(authority.userinfo.clone()),
-            flow: get(&authority.query, &["flow"]).unwrap_or_default().to_owned(),
+            flow: get(&authority.query, &["flow"])
+                .unwrap_or_default()
+                .to_owned(),
         }),
     );
     // Trojan is TLS by definition; a link that omits `security` still means TLS.
@@ -407,24 +485,33 @@ fn parse_vmess(
     // The fragment, if any, is not part of the base64 blob.
     let blob = payload.split('#').next().unwrap_or(payload);
     let decoded = decode_base64_utf8(blob).ok_or(ImportError::InvalidBase64 { scheme: "vmess" })?;
-    let value: serde_json::Value = serde_json::from_str(&decoded)
-        .map_err(|_| ImportError::InvalidJson { scheme: "vmess" })?;
+    let value: serde_json::Value =
+        serde_json::from_str(&decoded).map_err(|_| ImportError::InvalidJson { scheme: "vmess" })?;
     if !value.is_object() {
         return Err(ImportError::InvalidJson { scheme: "vmess" });
     }
-    let parsed: VmessPayload = serde_json::from_value(value)
-        .map_err(|_| ImportError::InvalidJson { scheme: "vmess" })?;
+    let parsed: VmessPayload =
+        serde_json::from_value(value).map_err(|_| ImportError::InvalidJson { scheme: "vmess" })?;
 
     let host = parsed.add.unwrap_or_default();
     if host.is_empty() {
-        return Err(ImportError::MissingField { scheme: "vmess", field: "add" });
+        return Err(ImportError::MissingField {
+            scheme: "vmess",
+            field: "add",
+        });
     }
     let port = number_field(parsed.port.as_ref())
         .and_then(|p| u16::try_from(p).ok())
-        .ok_or(ImportError::InvalidField { scheme: "vmess", field: "port" })?;
+        .ok_or(ImportError::InvalidField {
+            scheme: "vmess",
+            field: "port",
+        })?;
     let id = parsed.id.unwrap_or_default();
     if id.is_empty() {
-        return Err(ImportError::MissingField { scheme: "vmess", field: "id" });
+        return Err(ImportError::MissingField {
+            scheme: "vmess",
+            field: "id",
+        });
     }
 
     let alter_id = number_field(parsed.aid.as_ref())
@@ -438,7 +525,12 @@ fn parse_vmess(
         ));
     }
 
-    let name = parsed.ps.unwrap_or_default().chars().take(MAX_NAME_CHARS).collect::<String>();
+    let name = parsed
+        .ps
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_NAME_CHARS)
+        .collect::<String>();
     let mut query: BTreeMap<String, String> = BTreeMap::new();
     if let Some(net) = parsed.net {
         query.insert("type".into(), net);
@@ -476,7 +568,10 @@ fn parse_vmess(
         Endpoint::new(host, port),
         ProtocolSettings::Vmess(VmessSettings {
             id: Secret::new(id),
-            security: parsed.scy.filter(|s| !s.is_empty()).unwrap_or_else(|| "auto".to_owned()),
+            security: parsed
+                .scy
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "auto".to_owned()),
             alter_id,
             level: None,
         }),
@@ -512,38 +607,56 @@ fn parse_shadowsocks(
     //   (b) legacy:  ss://base64(method:password@host:port)
     let (userinfo, endpoint_text) = match body.rsplit_once('@') {
         Some((userinfo, endpoint)) => {
-            let decoded = decode_base64_utf8(userinfo)
-                .unwrap_or_else(|| percent_decode_str(userinfo).decode_utf8_lossy().into_owned());
+            let decoded = decode_base64_utf8(userinfo).unwrap_or_else(|| {
+                percent_decode_str(userinfo)
+                    .decode_utf8_lossy()
+                    .into_owned()
+            });
             (decoded, endpoint.to_owned())
         }
         None => {
-            let decoded = decode_base64_utf8(body)
-                .ok_or(ImportError::InvalidBase64 { scheme: "ss" })?;
-            let (userinfo, endpoint) = decoded
-                .rsplit_once('@')
-                .ok_or(ImportError::InvalidField { scheme: "ss", field: "userinfo" })?;
+            let decoded =
+                decode_base64_utf8(body).ok_or(ImportError::InvalidBase64 { scheme: "ss" })?;
+            let (userinfo, endpoint) =
+                decoded.rsplit_once('@').ok_or(ImportError::InvalidField {
+                    scheme: "ss",
+                    field: "userinfo",
+                })?;
             (userinfo.to_owned(), endpoint.to_owned())
         }
     };
 
-    let (method, password) = userinfo
-        .split_once(':')
-        .ok_or(ImportError::InvalidField { scheme: "ss", field: "method" })?;
+    let (method, password) = userinfo.split_once(':').ok_or(ImportError::InvalidField {
+        scheme: "ss",
+        field: "method",
+    })?;
     if method.is_empty() {
-        return Err(ImportError::MissingField { scheme: "ss", field: "method" });
+        return Err(ImportError::MissingField {
+            scheme: "ss",
+            field: "method",
+        });
     }
 
     let (host, port_text) = endpoint_text
         .rsplit_once(':')
-        .ok_or(ImportError::MissingField { scheme: "ss", field: "port" })?;
+        .ok_or(ImportError::MissingField {
+            scheme: "ss",
+            field: "port",
+        })?;
     let host = strip_brackets(host);
     if host.is_empty() {
-        return Err(ImportError::MissingField { scheme: "ss", field: "host" });
+        return Err(ImportError::MissingField {
+            scheme: "ss",
+            field: "host",
+        });
     }
     let port: u16 = port_text
         .trim()
         .parse()
-        .map_err(|_| ImportError::InvalidField { scheme: "ss", field: "port" })?;
+        .map_err(|_| ImportError::InvalidField {
+            scheme: "ss",
+            field: "port",
+        })?;
 
     let query: BTreeMap<String, String> = query_text
         .map(|text| {
@@ -681,7 +794,10 @@ mod tests {
         match &node.security {
             TransportSecurity::Reality(reality) => {
                 assert_eq!(reality.public_key.expose(), "PUB");
-                assert_eq!(reality.short_id.as_ref().map(|s| s.expose().to_owned()), Some("ab12".into()));
+                assert_eq!(
+                    reality.short_id.as_ref().map(|s| s.expose().to_owned()),
+                    Some("ab12".into())
+                );
                 assert_eq!(reality.spider_x.as_deref(), Some("/"));
                 assert_eq!(reality.fingerprint.as_deref(), Some("chrome"));
                 assert_eq!(reality.server_name.as_deref(), Some("1.2.3.4"));
@@ -718,7 +834,10 @@ mod tests {
             "net": "ws", "type": "none", "host": "cdn.example.com", "path": "/vm",
             "tls": "tls", "sni": "cdn.example.com"
         });
-        let link = format!("vmess://{}", crate::b64::encode_standard(payload.to_string().as_bytes()));
+        let link = format!(
+            "vmess://{}",
+            crate::b64::encode_standard(payload.to_string().as_bytes())
+        );
         let node = node_of(&link);
         assert_eq!(node.name, "JP 02");
         assert_eq!(node.endpoint, Endpoint::new("jp.example.com", 443));
@@ -732,10 +851,17 @@ mod tests {
         let payload = serde_json::json!({
             "ps": "old", "add": "h.example", "port": 443, "id": "u", "aid": 64, "net": "tcp"
         });
-        let link = format!("vmess://{}", crate::b64::encode_standard(payload.to_string().as_bytes()));
+        let link = format!(
+            "vmess://{}",
+            crate::b64::encode_standard(payload.to_string().as_bytes())
+        );
         let node = node_of(&link);
         assert_eq!(node.compatibility, Compatibility::Degraded);
-        assert!(node.notes.first().is_some_and(|n| n.contains("alterId")), "{:?}", node.notes);
+        assert!(
+            node.notes.first().is_some_and(|n| n.contains("alterId")),
+            "{:?}",
+            node.notes
+        );
     }
 
     #[test]
@@ -765,7 +891,11 @@ mod tests {
         let link = format!("ss://{userinfo}@ss.example:8388?plugin=obfs-local%3Bobfs%3Dhttp#P");
         let node = node_of(&link);
         assert_eq!(node.compatibility, Compatibility::Degraded);
-        assert!(node.notes.first().is_some_and(|n| n.contains("obfs-local")), "{:?}", node.notes);
+        assert!(
+            node.notes.first().is_some_and(|n| n.contains("obfs-local")),
+            "{:?}",
+            node.notes
+        );
     }
 
     #[test]
@@ -780,7 +910,10 @@ mod tests {
             match &node.protocol {
                 ProtocolSettings::Socks(s) => {
                     assert_eq!(s.username.as_deref(), Some("user"));
-                    assert_eq!(s.password.as_ref().map(|p| p.expose().to_owned()), Some("pass".into()));
+                    assert_eq!(
+                        s.password.as_ref().map(|p| p.expose().to_owned()),
+                        Some("pass".into())
+                    );
                 }
                 other => panic!("wrong protocol: {other:?}"),
             }
@@ -841,12 +974,12 @@ mod tests {
         for link in [
             "vmess://",
             "vmess://!!!!",
-            "vmess://eyJhIjox",           // valid base64, JSON object, no `add`
+            "vmess://eyJhIjox", // valid base64, JSON object, no `add`
             "ss://",
             "ss://@h:1",
-            "ss://YWJj",                  // base64 without an `@`
-            "socks://h.example",          // no port
-            "vless://uuid@h.example",     // no port
+            "ss://YWJj",              // base64 without an `@`
+            "socks://h.example",      // no port
+            "vless://uuid@h.example", // no port
         ] {
             let result = parse(link, NodeSource::Manual);
             assert!(result.is_err(), "{link} should be an error, got {result:?}");
@@ -855,10 +988,20 @@ mod tests {
 
     #[test]
     fn identifiers_derived_from_names_stay_valid() {
-        for name in ["香港%20%2001", "%F0%9F%8E%89", "", "%2D%2D%2D", &"x".repeat(300)] {
+        for name in [
+            "香港%20%2001",
+            "%F0%9F%8E%89",
+            "",
+            "%2D%2D%2D",
+            &"x".repeat(300),
+        ] {
             let link = format!("vless://uuid@h.example:443?type=tcp#{name}");
             let node = node_of(&link);
-            assert!(xraytui_domain::validate_slug(node.id.as_str()).is_ok(), "{name} -> {}", node.id);
+            assert!(
+                xraytui_domain::validate_slug(node.id.as_str()).is_ok(),
+                "{name} -> {}",
+                node.id
+            );
             assert!(node.name.chars().count() <= MAX_NAME_CHARS);
         }
     }

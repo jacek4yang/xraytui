@@ -69,7 +69,10 @@ fn trojan_node(id: &str, name: &str) -> Node {
         name,
         NodeSource::Manual,
         Endpoint::new(format!("{id}.example.com"), 443),
-        ProtocolSettings::Trojan(TrojanSettings { password: Secret::new("pw"), flow: String::new() }),
+        ProtocolSettings::Trojan(TrojanSettings {
+            password: Secret::new("pw"),
+            flow: String::new(),
+        }),
     )
 }
 
@@ -100,8 +103,10 @@ fn vless_reality_node(id: &str) -> Node {
 }
 
 fn full_state() -> DesiredState {
-    let mut state = DesiredState::default();
-    state.mode = SystemMode::Rule;
+    let mut state = DesiredState {
+        mode: SystemMode::Rule,
+        ..Default::default()
+    };
 
     for node in [
         trojan_node("hk-01", "HK 01"),
@@ -119,7 +124,10 @@ fn full_state() -> DesiredState {
             id: group.clone(),
             name: "Auto HK".into(),
             strategy: GroupStrategy::LeastPing,
-            membership: GroupMembership { include_regex: vec!["^HK".into()], ..Default::default() },
+            membership: GroupMembership {
+                include_regex: vec!["^HK".into()],
+                ..Default::default()
+            },
             manual_selection: None,
             fallback: Some(Target::Direct),
         },
@@ -131,7 +139,10 @@ fn full_state() -> DesiredState {
         Chain {
             id: chain.clone(),
             name: "HK to US".into(),
-            hops: vec![NodeId::new("hk-01").expect("valid"), NodeId::new("us-01").expect("valid")],
+            hops: vec![
+                NodeId::new("hk-01").expect("valid"),
+                NodeId::new("us-01").expect("valid"),
+            ],
             enabled: true,
         },
     );
@@ -147,7 +158,9 @@ fn full_state() -> DesiredState {
     let mut development = EgressProfile::new(
         ProfileId::new("development").expect("valid"),
         "Development",
-        Target::Node { id: NodeId::new("jp-02").expect("valid") },
+        Target::Node {
+            id: NodeId::new("jp-02").expect("valid"),
+        },
     );
     development.socks = Some(ListenerSpec::loopback(12080));
     development.http = Some(ListenerSpec::loopback(12081));
@@ -157,8 +170,11 @@ fn full_state() -> DesiredState {
         "Chat",
         Target::Chain { id: chain },
     );
-    let direct =
-        EgressProfile::new(ProfileId::new("direct").expect("valid"), "Direct", Target::Direct);
+    let direct = EgressProfile::new(
+        ProfileId::new("direct").expect("valid"),
+        "Direct",
+        Target::Direct,
+    );
 
     for profile in [web, development, chat, direct] {
         state.profiles.insert(profile.id.clone(), profile);
@@ -166,8 +182,18 @@ fn full_state() -> DesiredState {
     state.default_profile = Some(ProfileId::new("web").expect("valid"));
 
     for (id, priority, processes, action) in [
-        ("firefox-web", 100, vec!["firefox", "/usr/lib/firefox/firefox"], "web"),
-        ("rust-development", 110, vec!["cargo", "rustc", "rustup", "git"], "development"),
+        (
+            "firefox-web",
+            100,
+            vec!["firefox", "/usr/lib/firefox/firefox"],
+            "web",
+        ),
+        (
+            "rust-development",
+            110,
+            vec!["cargo", "rustc", "rustup", "git"],
+            "development",
+        ),
         ("telegram-chat", 120, vec!["telegram-desktop"], "chat"),
     ] {
         let rule_id = AppRuleId::new(id).expect("valid");
@@ -176,8 +202,13 @@ fn full_state() -> DesiredState {
             ApplicationRule {
                 id: rule_id,
                 priority,
-                process: processes.into_iter().map(|p| AppMatcher(p.to_owned())).collect(),
-                action: RuleAction::Profile { id: ProfileId::new(action).expect("valid") },
+                process: processes
+                    .into_iter()
+                    .map(|p| AppMatcher(p.to_owned()))
+                    .collect(),
+                action: RuleAction::Profile {
+                    id: ProfileId::new(action).expect("valid"),
+                },
                 enabled: true,
                 note: None,
             },
@@ -190,8 +221,13 @@ fn full_state() -> DesiredState {
         ApplicationRule {
             id: steam,
             priority: 130,
-            process: vec![AppMatcher("steam".into()), AppMatcher("/usr/lib/steam/".into())],
-            action: RuleAction::Target { target: Target::Direct },
+            process: vec![
+                AppMatcher("steam".into()),
+                AppMatcher("/usr/lib/steam/".into()),
+            ],
+            action: RuleAction::Target {
+                target: Target::Direct,
+            },
             enabled: true,
             note: None,
         },
@@ -203,8 +239,13 @@ fn full_state() -> DesiredState {
         xraytui_domain::RoutingRule {
             id: private,
             priority: 1000,
-            matcher: RoutingMatch { ip: vec!["geoip:private".into()], ..Default::default() },
-            action: RuleAction::Target { target: Target::Direct },
+            matcher: RoutingMatch {
+                ip: vec!["geoip:private".into()],
+                ..Default::default()
+            },
+            action: RuleAction::Target {
+                target: Target::Direct,
+            },
             enabled: true,
             note: None,
         },
@@ -219,7 +260,9 @@ fn full_state() -> DesiredState {
                 domain: vec!["geosite:category-ads-all".into()],
                 ..Default::default()
             },
-            action: RuleAction::Target { target: Target::Block },
+            action: RuleAction::Target {
+                target: Target::Block,
+            },
             enabled: true,
             note: None,
         },
@@ -231,7 +274,9 @@ fn full_state() -> DesiredState {
             id: fallback,
             priority: 10_000,
             matcher: RoutingMatch::default(),
-            action: RuleAction::Profile { id: ProfileId::new("web").expect("valid") },
+            action: RuleAction::Profile {
+                id: ProfileId::new("web").expect("valid"),
+            },
             enabled: true,
             note: None,
         },
@@ -243,8 +288,11 @@ fn full_state() -> DesiredState {
 #[test]
 fn minimal_configuration_is_accepted() {
     let mut state = DesiredState::default();
-    let profile =
-        EgressProfile::new(ProfileId::new("direct").expect("valid"), "Direct", Target::Direct);
+    let profile = EgressProfile::new(
+        ProfileId::new("direct").expect("valid"),
+        "Direct",
+        Target::Direct,
+    );
     state.profiles.insert(profile.id.clone(), profile);
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
     check("minimal", &compiled.to_json().expect("json"));
@@ -261,7 +309,10 @@ fn full_configuration_with_groups_chains_and_profiles_is_accepted() {
 fn tun_and_dns_configuration_is_accepted() {
     let state = full_state();
     let options = CompileOptions {
-        tun: Some(TunOptions { name: "xraytui0".into(), mtu: 1500 }),
+        tun: Some(TunOptions {
+            name: "xraytui0".into(),
+            mtu: 1500,
+        }),
         dns: DnsOptions {
             enabled: true,
             direct_servers: vec!["127.0.0.53".into(), "localhost".into()],
@@ -303,11 +354,15 @@ fn every_balancer_strategy_is_accepted() {
                 name: "G".into(),
                 strategy,
                 membership: GroupMembership {
-                    nodes: vec![NodeId::new("a").expect("valid"), NodeId::new("b").expect("valid")],
+                    nodes: vec![
+                        NodeId::new("a").expect("valid"),
+                        NodeId::new("b").expect("valid"),
+                    ],
                     ..Default::default()
                 },
-                manual_selection: (strategy == GroupStrategy::Manual)
-                    .then(|| Target::Node { id: NodeId::new("a").expect("valid") }),
+                manual_selection: (strategy == GroupStrategy::Manual).then(|| Target::Node {
+                    id: NodeId::new("a").expect("valid"),
+                }),
                 fallback: None,
             },
         );
@@ -318,7 +373,10 @@ fn every_balancer_strategy_is_accepted() {
         );
         state.profiles.insert(profile.id.clone(), profile);
         let compiled = compile(&state, &CompileOptions::default()).expect("compile");
-        check(&format!("strategy-{strategy:?}"), &compiled.to_json().expect("json"));
+        check(
+            &format!("strategy-{strategy:?}"),
+            &compiled.to_json().expect("json"),
+        );
     }
 }
 
@@ -393,7 +451,9 @@ fn every_transport_and_security_combination_is_accepted() {
             let profile = EgressProfile::new(
                 ProfileId::new("p").expect("valid"),
                 "P",
-                Target::Node { id: NodeId::new("n").expect("valid") },
+                Target::Node {
+                    id: NodeId::new("n").expect("valid"),
+                },
             );
             state.profiles.insert(profile.id.clone(), profile);
             let compiled = compile(&state, &CompileOptions::default()).expect("compile");
@@ -413,7 +473,9 @@ fn vless_reality_configuration_is_accepted() {
     let profile = EgressProfile::new(
         ProfileId::new("p").expect("valid"),
         "P",
-        Target::Node { id: NodeId::new("r").expect("valid") },
+        Target::Node {
+            id: NodeId::new("r").expect("valid"),
+        },
     );
     state.profiles.insert(profile.id.clone(), profile);
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");

@@ -46,7 +46,9 @@ impl Daemon {
 
         let engine_config = build_engine_config(&paths, &config, &state);
         let mut engine = Engine::new(engine_config, info).context("unsupported Xray-core")?;
-        engine.seed(state).context("cannot seed the desired state")?;
+        engine
+            .seed(state)
+            .context("cannot seed the desired state")?;
 
         let (events, _) = xraytui_ipc::server::event_channel();
         Ok(Self {
@@ -79,15 +81,14 @@ impl Daemon {
 
         let shutdown = Arc::clone(&self.shutdown);
         let signal = async move {
-            let mut sigterm = match tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate(),
-            ) {
-                Ok(signal) => signal,
-                Err(error) => {
-                    tracing::error!(%error, "cannot install the SIGTERM handler");
-                    return;
-                }
-            };
+            let mut sigterm =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(signal) => signal,
+                    Err(error) => {
+                        tracing::error!(%error, "cannot install the SIGTERM handler");
+                        return;
+                    }
+                };
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => tracing::info!("interrupted"),
                 _ = sigterm.recv() => tracing::info!("terminated"),
@@ -140,7 +141,10 @@ impl Daemon {
             .apply(state)
             .await
             .map_err(|error| IpcError::Internal(error.to_string()))?;
-        let warnings = engine.compiled().map(|c| c.warnings.clone()).unwrap_or_default();
+        let warnings = engine
+            .compiled()
+            .map(|c| c.warnings.clone())
+            .unwrap_or_default();
         drop(engine);
         self.persist().await?;
         Ok(response_for(outcome, warnings))
@@ -161,9 +165,15 @@ impl Daemon {
         });
         checks.push(DoctorCheck {
             name: "xray-geodata".into(),
-            status: if info.has_geodata { CheckStatus::Pass } else { CheckStatus::Warn },
+            status: if info.has_geodata {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
             detail: match &info.asset_dir {
-                Some(dir) if info.has_geodata => format!("geoip.dat and geosite.dat in {}", dir.display()),
+                Some(dir) if info.has_geodata => {
+                    format!("geoip.dat and geosite.dat in {}", dir.display())
+                }
                 Some(dir) => format!("incomplete geodata in {}", dir.display()),
                 None => "no geodata directory found".into(),
             },
@@ -175,7 +185,11 @@ impl Daemon {
         });
         checks.push(DoctorCheck {
             name: "core".into(),
-            status: if runtime.core.is_usable() { CheckStatus::Pass } else { CheckStatus::Warn },
+            status: if runtime.core.is_usable() {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
             detail: runtime.core.label().to_owned(),
             remedy: (!runtime.core.is_usable())
                 .then(|| "run `xraytui up`, then check `xraytui logs`".to_owned()),
@@ -192,7 +206,11 @@ impl Daemon {
         let (tun_status, tun_detail) = if !tun_device.exists() {
             (CheckStatus::Fail, "/dev/net/tun does not exist".to_owned())
         } else {
-            match std::fs::OpenOptions::new().read(true).write(true).open(tun_device) {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(tun_device)
+            {
                 Ok(_) => (CheckStatus::Pass, "/dev/net/tun is openable".to_owned()),
                 Err(error) => (
                     CheckStatus::Warn,
@@ -214,7 +232,11 @@ impl Daemon {
         let netd = std::path::Path::new("/run/xraytui/netd.sock");
         checks.push(DoctorCheck {
             name: "netd".into(),
-            status: if netd.exists() { CheckStatus::Pass } else { CheckStatus::Warn },
+            status: if netd.exists() {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
             detail: if netd.exists() {
                 "privileged helper socket present".into()
             } else {
@@ -237,7 +259,11 @@ impl Daemon {
 
         checks.push(DoctorCheck {
             name: "lan-exposure".into(),
-            status: if runtime.lan_exposed { CheckStatus::Warn } else { CheckStatus::Pass },
+            status: if runtime.lan_exposed {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Pass
+            },
             detail: if runtime.lan_exposed {
                 "a proxy listener is bound to a non-loopback address".into()
             } else {
@@ -341,6 +367,9 @@ fn build_engine_config(paths: &Paths, config: &ConfigFile, state: &DesiredState)
     }
 }
 
+// The explicit `impl Future + Send` return is what makes the future spawnable;
+// `async fn` in a trait does not promise `Send`.
+#[allow(clippy::manual_async_fn)]
 impl ServerHandler for Daemon {
     fn handle(
         &self,
@@ -391,7 +420,10 @@ impl ServerHandler for Daemon {
                     Ok(Response::Applied {
                         restarted: true,
                         switched: Vec::new(),
-                        warnings: engine.compiled().map(|c| c.warnings.clone()).unwrap_or_default(),
+                        warnings: engine
+                            .compiled()
+                            .map(|c| c.warnings.clone())
+                            .unwrap_or_default(),
                     })
                 }
 
@@ -471,7 +503,13 @@ impl ServerHandler for Daemon {
 
                 Request::Test(target) => self.test(target).await,
 
-                Request::ExplainRoute { domain, ip, port, network, inbound_tag } => {
+                Request::ExplainRoute {
+                    domain,
+                    ip,
+                    port,
+                    network,
+                    inbound_tag,
+                } => {
                     let mut engine = self.engine.lock().await;
                     let client = engine.client().ok_or(IpcError::CoreNotRunning)?;
                     let decision = client
@@ -534,7 +572,11 @@ impl ServerHandler for Daemon {
     }
 
     fn features(&self) -> Vec<String> {
-        let mut features = vec!["profiles".to_owned(), "chains".to_owned(), "groups".to_owned()];
+        let mut features = vec![
+            "profiles".to_owned(),
+            "chains".to_owned(),
+            "groups".to_owned(),
+        ];
         if std::path::Path::new("/run/xraytui/netd.sock").exists() {
             features.push("tun".to_owned());
         }
@@ -549,8 +591,10 @@ impl Daemon {
         target: Target,
     ) -> Result<Response, IpcError> {
         let mut engine = self.engine.lock().await;
-        let outcome =
-            engine.set_profile_target(&profile, target).await.map_err(map_controller_error)?;
+        let outcome = engine
+            .set_profile_target(&profile, target)
+            .await
+            .map_err(map_controller_error)?;
         drop(engine);
         self.persist().await?;
         Ok(response_for(outcome, Vec::new()))
@@ -593,13 +637,19 @@ impl Daemon {
                 drop(engine);
                 self.apply(state).await?;
             } else {
-                engine.seed(state).map_err(|error| IpcError::Internal(error.to_string()))?;
+                engine
+                    .seed(state)
+                    .map_err(|error| IpcError::Internal(error.to_string()))?;
                 drop(engine);
                 self.persist().await?;
             }
         }
 
-        Ok(Response::Imported { added, unsupported, rejected })
+        Ok(Response::Imported {
+            added,
+            unsupported,
+            rejected,
+        })
     }
 
     async fn test(&self, target: TestTarget) -> Result<Response, IpcError> {
@@ -653,10 +703,13 @@ impl Daemon {
             subject,
             result: Box::new(result.clone()),
         });
-        if let TestTarget::Node(id) = &target {
-            if desired.nodes.contains_key(id) {
-                self.engine.lock().await.record_node_health(id.clone(), result.clone());
-            }
+        if let TestTarget::Node(id) = &target
+            && desired.nodes.contains_key(id)
+        {
+            self.engine
+                .lock()
+                .await
+                .record_node_health(id.clone(), result.clone());
         }
         Ok(Response::Probe(Box::new(result)))
     }
@@ -677,9 +730,10 @@ fn origin_kind(source: &xraytui_domain::NodeSource) -> OriginKind {
 fn map_controller_error(error: xraytui_controller::ControllerError) -> IpcError {
     use xraytui_controller::ControllerError;
     match error {
-        ControllerError::NotFound(message) => {
-            IpcError::NotFound { kind: "entity".into(), id: message }
-        }
+        ControllerError::NotFound(message) => IpcError::NotFound {
+            kind: "entity".into(),
+            id: message,
+        },
         ControllerError::Invalid(message) => IpcError::Invalid(message),
         ControllerError::CoreNotRunning => IpcError::CoreNotRunning,
         other => IpcError::Internal(other.to_string()),

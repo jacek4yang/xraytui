@@ -92,9 +92,9 @@ pub fn run_with_environment(
 ) -> Result<std::convert::Infallible, CliError> {
     use std::os::unix::process::CommandExt;
 
-    let (program, arguments) = command.split_first().ok_or_else(|| {
-        CliError::Usage("no command was given after `--`".to_owned())
-    })?;
+    let (program, arguments) = command
+        .split_first()
+        .ok_or_else(|| CliError::Usage("no command was given after `--`".to_owned()))?;
 
     let mut child = std::process::Command::new(program);
     child.args(arguments);
@@ -104,7 +104,10 @@ pub fn run_with_environment(
 
     // `exec` never returns on success.
     let error = child.exec();
-    Err(CliError::Io { context: format!("cannot execute {program}"), source: error })
+    Err(CliError::Io {
+        context: format!("cannot execute {program}"),
+        source: error,
+    })
 }
 
 /// Why the transparent backend could not be used.
@@ -213,14 +216,26 @@ mod tests {
     #[test]
     fn no_proxy_is_always_set_in_both_spellings() {
         let env = ProxyEnvironment::build(None, None, "example.com");
-        assert_eq!(env.variables.get("NO_PROXY").map(String::as_str), Some("example.com"));
-        assert_eq!(env.variables.get("no_proxy").map(String::as_str), Some("example.com"));
+        assert_eq!(
+            env.variables.get("NO_PROXY").map(String::as_str),
+            Some("example.com")
+        );
+        assert_eq!(
+            env.variables.get("no_proxy").map(String::as_str),
+            Some("example.com")
+        );
     }
 
     #[test]
     fn the_default_bypass_list_covers_loopback_and_private_ranges() {
         let list = ProxyEnvironment::default_no_proxy();
-        for expected in ["localhost", "127.0.0.0/8", "::1", "10.0.0.0/8", "192.168.0.0/16"] {
+        for expected in [
+            "localhost",
+            "127.0.0.0/8",
+            "::1",
+            "10.0.0.0/8",
+            "192.168.0.0/16",
+        ] {
             assert!(list.contains(expected), "{expected} missing from {list}");
         }
     }
@@ -249,7 +264,9 @@ mod tests {
         for error in [
             TransparentUnavailable::NoHelper,
             TransparentUnavailable::NoCgroupV2,
-            TransparentUnavailable::NoInbound { profile: "web".into() },
+            TransparentUnavailable::NoInbound {
+                profile: "web".into(),
+            },
         ] {
             let rendered = error.to_string();
             assert!(

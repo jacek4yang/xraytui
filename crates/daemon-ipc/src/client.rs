@@ -57,7 +57,9 @@ pub struct Client {
 
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Client").field("daemon", &self.daemon).finish_non_exhaustive()
+        f.debug_struct("Client")
+            .field("daemon", &self.daemon)
+            .finish_non_exhaustive()
     }
 }
 
@@ -69,10 +71,12 @@ impl Client {
     /// [`IpcClientError::Rejected`] on a version mismatch.
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self, IpcClientError> {
         let path = path.as_ref();
-        let stream = UnixStream::connect(path).await.map_err(|source| IpcClientError::Connect {
-            path: path.display().to_string(),
-            source,
-        })?;
+        let stream = UnixStream::connect(path)
+            .await
+            .map_err(|source| IpcClientError::Connect {
+                path: path.display().to_string(),
+                source,
+            })?;
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
@@ -83,7 +87,9 @@ impl Client {
         write_frame(&mut writer, &hello, MAX_FRAME_BYTES).await?;
         let welcome: Welcome = read_frame(&mut reader, MAX_FRAME_BYTES).await?;
         match welcome {
-            Welcome::Accepted { daemon, features, .. } => Ok(Self {
+            Welcome::Accepted {
+                daemon, features, ..
+            } => Ok(Self {
                 reader,
                 writer,
                 next_id: 1,
@@ -119,19 +125,23 @@ impl Client {
             let reply: Reply = read_frame(&mut self.reader, MAX_FRAME_BYTES).await?;
             if reply.id != id {
                 // A stream belonging to an earlier subscription; ignore it here.
-                if matches!(reply.payload, ReplyPayload::Stream(_) | ReplyPayload::StreamEnd) {
+                if matches!(
+                    reply.payload,
+                    ReplyPayload::Stream(_) | ReplyPayload::StreamEnd
+                ) {
                     continue;
                 }
-                return Err(IpcClientError::Mismatched { got: reply.id, expected: id });
+                return Err(IpcClientError::Mismatched {
+                    got: reply.id,
+                    expected: id,
+                });
             }
             return match reply.payload {
                 ReplyPayload::Ok(response) => Ok(response),
                 ReplyPayload::Err(error) => Err(IpcClientError::Daemon(error)),
-                ReplyPayload::Stream(_) | ReplyPayload::StreamEnd => {
-                    Err(IpcClientError::Daemon(IpcError::Internal(
-                        "daemon streamed a response to a unary request".into(),
-                    )))
-                }
+                ReplyPayload::Stream(_) | ReplyPayload::StreamEnd => Err(IpcClientError::Daemon(
+                    IpcError::Internal("daemon streamed a response to a unary request".into()),
+                )),
             };
         }
     }
@@ -152,11 +162,17 @@ impl Client {
         self.next_id = self.next_id.saturating_add(1);
         write_frame(
             &mut self.writer,
-            &Envelope { id, request: Request::Subscribe(filter) },
+            &Envelope {
+                id,
+                request: Request::Subscribe(filter),
+            },
             MAX_FRAME_BYTES,
         )
         .await?;
-        Ok(EventStream { reader: &mut self.reader, id })
+        Ok(EventStream {
+            reader: &mut self.reader,
+            id,
+        })
     }
 }
 
@@ -194,7 +210,13 @@ mod tests {
             .await
             .expect_err("must fail");
         let rendered = error.to_string();
-        assert!(rendered.contains("cannot reach the xraytui daemon"), "{rendered}");
-        assert!(rendered.contains("systemctl --user start xraytuid.service"), "{rendered}");
+        assert!(
+            rendered.contains("cannot reach the xraytui daemon"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("systemctl --user start xraytuid.service"),
+            "{rendered}"
+        );
     }
 }

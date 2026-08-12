@@ -105,13 +105,22 @@ impl FromStr for Target {
         match kind {
             "node" => NodeId::new(rest)
                 .map(|id| Self::Node { id })
-                .map_err(|source| TargetParseError::BadId { kind: "node", source }),
+                .map_err(|source| TargetParseError::BadId {
+                    kind: "node",
+                    source,
+                }),
             "group" => GroupId::new(rest)
                 .map(|id| Self::Group { id })
-                .map_err(|source| TargetParseError::BadId { kind: "group", source }),
+                .map_err(|source| TargetParseError::BadId {
+                    kind: "group",
+                    source,
+                }),
             "chain" => ChainId::new(rest)
                 .map(|id| Self::Chain { id })
-                .map_err(|source| TargetParseError::BadId { kind: "chain", source }),
+                .map_err(|source| TargetParseError::BadId {
+                    kind: "chain",
+                    source,
+                }),
             other => Err(TargetParseError::UnknownKind(other.to_owned())),
         }
     }
@@ -241,7 +250,11 @@ impl Chain {
     /// Render the hop order for display: `HK -> US`.
     #[must_use]
     pub fn describe(&self) -> String {
-        self.hops.iter().map(NodeId::to_string).collect::<Vec<_>>().join(" -> ")
+        self.hops
+            .iter()
+            .map(NodeId::to_string)
+            .collect::<Vec<_>>()
+            .join(" -> ")
     }
 
     /// Index of the terminal hop, i.e. the exit node.
@@ -500,7 +513,10 @@ impl FromStr for RuleAction {
         if let Some(rest) = trimmed.strip_prefix("profile:") {
             return ProfileId::new(rest)
                 .map(|id| Self::Profile { id })
-                .map_err(|source| TargetParseError::BadId { kind: "profile", source });
+                .map_err(|source| TargetParseError::BadId {
+                    kind: "profile",
+                    source,
+                });
         }
         Target::from_str(trimmed).map(|target| Self::Target { target })
     }
@@ -697,7 +713,9 @@ impl FromStr for SystemMode {
             "direct" => Ok(Self::Direct),
             "global" => Ok(Self::Global),
             "rule" => Ok(Self::Rule),
-            other => Err(format!("unknown mode '{other}'; expected off, direct, global or rule")),
+            other => Err(format!(
+                "unknown mode '{other}'; expected off, direct, global or rule"
+            )),
         }
     }
 }
@@ -708,7 +726,13 @@ mod tests {
 
     #[test]
     fn target_tokens_round_trip() {
-        for token in ["node:hk-01", "group:auto-hk", "chain:hk-us", "direct", "block"] {
+        for token in [
+            "node:hk-01",
+            "group:auto-hk",
+            "chain:hk-us",
+            "direct",
+            "block",
+        ] {
             let parsed: Target = token.parse().expect("parse");
             assert_eq!(parsed.to_token(), token);
         }
@@ -732,12 +756,18 @@ mod tests {
 
     #[test]
     fn matcher_shapes_match_upstream_rules() {
-        assert_eq!(AppMatcher("firefox".into()).shape(), MatcherShape::ProcessName);
+        assert_eq!(
+            AppMatcher("firefox".into()).shape(),
+            MatcherShape::ProcessName
+        );
         assert_eq!(
             AppMatcher("/usr/lib/firefox/firefox".into()).shape(),
             MatcherShape::AbsolutePath
         );
-        assert_eq!(AppMatcher("/usr/bin/".into()).shape(), MatcherShape::Directory);
+        assert_eq!(
+            AppMatcher("/usr/bin/".into()).shape(),
+            MatcherShape::Directory
+        );
         assert_eq!(AppMatcher("self/".into()).shape(), MatcherShape::XraySelf);
         assert_eq!(AppMatcher("xray/".into()).shape(), MatcherShape::XraySelf);
     }
@@ -760,7 +790,15 @@ mod tests {
             mode = mode.next();
             seen.push(mode);
         }
-        assert_eq!(seen, vec![SystemMode::Off, SystemMode::Rule, SystemMode::Global, SystemMode::Direct]);
+        assert_eq!(
+            seen,
+            vec![
+                SystemMode::Off,
+                SystemMode::Rule,
+                SystemMode::Global,
+                SystemMode::Direct
+            ]
+        );
         assert_eq!(mode.next(), SystemMode::Off);
     }
 
@@ -785,7 +823,10 @@ mod tests {
     #[test]
     fn empty_matcher_is_catch_all() {
         assert!(RoutingMatch::default().is_catch_all());
-        let m = RoutingMatch { domain: vec!["x".into()], ..Default::default() };
+        let m = RoutingMatch {
+            domain: vec!["x".into()],
+            ..Default::default()
+        };
         assert!(!m.is_catch_all());
         assert!(m.condition_kinds().contains("domain"));
     }

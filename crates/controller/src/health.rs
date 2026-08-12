@@ -81,20 +81,27 @@ pub async fn probe_through_socks(request: &ProbeRequest) -> ProbeResult {
 }
 
 async fn run(request: &ProbeRequest) -> Result<(), ProbeOutcome> {
-    let mut stream = TcpStream::connect(request.socks)
-        .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+    let mut stream =
+        TcpStream::connect(request.socks)
+            .await
+            .map_err(|error| ProbeOutcome::ConnectFailed {
+                detail: describe(&error),
+            })?;
 
     // SOCKS5 greeting, no authentication.
     stream
         .write_all(&[0x05, 0x01, 0x00])
         .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+        .map_err(|error| ProbeOutcome::ConnectFailed {
+            detail: describe(&error),
+        })?;
     let mut greeting = [0_u8; 2];
     stream
         .read_exact(&mut greeting)
         .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+        .map_err(|error| ProbeOutcome::ConnectFailed {
+            detail: describe(&error),
+        })?;
     if greeting != [0x05, 0x00] {
         return Err(ProbeOutcome::ConnectFailed {
             detail: "local SOCKS listener refused the handshake".into(),
@@ -112,15 +119,21 @@ async fn run(request: &ProbeRequest) -> Result<(), ProbeOutcome> {
     stream
         .write_all(&connect)
         .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+        .map_err(|error| ProbeOutcome::ConnectFailed {
+            detail: describe(&error),
+        })?;
 
     let mut reply = [0_u8; 4];
     stream
         .read_exact(&mut reply)
         .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+        .map_err(|error| ProbeOutcome::ConnectFailed {
+            detail: describe(&error),
+        })?;
     if reply.first() != Some(&0x05) {
-        return Err(ProbeOutcome::ConnectFailed { detail: "not a SOCKS5 reply".into() });
+        return Err(ProbeOutcome::ConnectFailed {
+            detail: "not a SOCKS5 reply".into(),
+        });
     }
     match reply.get(1) {
         Some(0x00) => {}
@@ -129,7 +142,11 @@ async fn run(request: &ProbeRequest) -> Result<(), ProbeOutcome> {
                 detail: format!("proxy refused with SOCKS5 code {code}"),
             });
         }
-        None => return Err(ProbeOutcome::ConnectFailed { detail: "truncated reply".into() }),
+        None => {
+            return Err(ProbeOutcome::ConnectFailed {
+                detail: "truncated reply".into(),
+            });
+        }
     }
     // Consume the bound address.
     let skip = match reply.get(3) {
@@ -140,16 +157,24 @@ async fn run(request: &ProbeRequest) -> Result<(), ProbeOutcome> {
             stream
                 .read_exact(&mut length)
                 .await
-                .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+                .map_err(|error| ProbeOutcome::ConnectFailed {
+                    detail: describe(&error),
+                })?;
             usize::from(length.first().copied().unwrap_or(0)) + 2
         }
-        _ => return Err(ProbeOutcome::ConnectFailed { detail: "unknown address type".into() }),
+        _ => {
+            return Err(ProbeOutcome::ConnectFailed {
+                detail: "unknown address type".into(),
+            });
+        }
     };
     let mut discard = vec![0_u8; skip];
     stream
         .read_exact(&mut discard)
         .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+        .map_err(|error| ProbeOutcome::ConnectFailed {
+            detail: describe(&error),
+        })?;
 
     let Some(path) = &request.http_path else {
         return Ok(());
@@ -163,7 +188,9 @@ async fn run(request: &ProbeRequest) -> Result<(), ProbeOutcome> {
     stream
         .write_all(get.as_bytes())
         .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+        .map_err(|error| ProbeOutcome::ConnectFailed {
+            detail: describe(&error),
+        })?;
 
     // Only the status line is read: the probe measures reachability, never
     // content. Reading a bounded prefix also caps what a hostile endpoint can
@@ -172,7 +199,9 @@ async fn run(request: &ProbeRequest) -> Result<(), ProbeOutcome> {
     let read = stream
         .read(&mut buffer)
         .await
-        .map_err(|error| ProbeOutcome::ConnectFailed { detail: describe(&error) })?;
+        .map_err(|error| ProbeOutcome::ConnectFailed {
+            detail: describe(&error),
+        })?;
     if read == 0 {
         return Err(ProbeOutcome::ConnectFailed {
             detail: "endpoint closed the connection without answering".into(),
@@ -207,46 +236,57 @@ mod tests {
 
     #[test]
     fn requests_are_built_from_http_urls_only() {
-        let socks: SocketAddr = "127.0.0.1:1080".parse().unwrap_or_else(|_| {
-            unreachable!("literal address")
-        });
-        let request =
-            ProbeRequest::from_url(socks, "http://cp.example/generate_204", Duration::from_secs(1))
-                .unwrap_or_else(|| unreachable!("valid URL"));
+        let socks: SocketAddr = "127.0.0.1:1080"
+            .parse()
+            .unwrap_or_else(|_| unreachable!("literal address"));
+        let request = ProbeRequest::from_url(
+            socks,
+            "http://cp.example/generate_204",
+            Duration::from_secs(1),
+        )
+        .unwrap_or_else(|| unreachable!("valid URL"));
         assert_eq!(request.host, "cp.example");
         assert_eq!(request.port, 80);
         assert_eq!(request.http_path.as_deref(), Some("/generate_204"));
         assert_eq!(request.kind(), ProbeKind::HttpRequest);
 
-        let https =
-            ProbeRequest::from_url(socks, "https://example.com/", Duration::from_secs(1))
-                .unwrap_or_else(|| unreachable!("valid URL"));
+        let https = ProbeRequest::from_url(socks, "https://example.com/", Duration::from_secs(1))
+            .unwrap_or_else(|| unreachable!("valid URL"));
         assert_eq!(https.port, 443);
 
-        assert!(ProbeRequest::from_url(socks, "ftp://example.com", Duration::from_secs(1)).is_none());
+        assert!(
+            ProbeRequest::from_url(socks, "ftp://example.com", Duration::from_secs(1)).is_none()
+        );
         assert!(ProbeRequest::from_url(socks, "not a url", Duration::from_secs(1)).is_none());
     }
 
     #[tokio::test]
     async fn a_closed_listener_is_a_connect_failure_not_a_hang() {
         let request = ProbeRequest {
-            socks: "127.0.0.1:1".parse().unwrap_or_else(|_| unreachable!("literal")),
+            socks: "127.0.0.1:1"
+                .parse()
+                .unwrap_or_else(|_| unreachable!("literal")),
             host: "example.invalid".into(),
             port: 80,
             http_path: None,
             timeout: Duration::from_millis(500),
         };
         let result = probe_through_socks(&request).await;
-        assert!(matches!(result.outcome, ProbeOutcome::ConnectFailed { .. }), "{result:?}");
+        assert!(
+            matches!(result.outcome, ProbeOutcome::ConnectFailed { .. }),
+            "{result:?}"
+        );
         assert_eq!(result.latency_ms, None);
     }
 
     #[tokio::test]
     async fn a_listener_that_never_answers_times_out() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap_or_else(|_| {
-            unreachable!("bind loopback")
-        });
-        let address = listener.local_addr().unwrap_or_else(|_| unreachable!("addr"));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap_or_else(|_| unreachable!("bind loopback"));
+        let address = listener
+            .local_addr()
+            .unwrap_or_else(|_| unreachable!("addr"));
         // Accept but never reply.
         tokio::spawn(async move {
             let _keep = listener.accept().await;

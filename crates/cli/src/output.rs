@@ -72,7 +72,11 @@ pub fn profile_table(runtime: &RuntimeState, desired: &DesiredState) -> String {
         runtime.tun.label(),
         runtime.mode,
         runtime.dns.label(),
-        if runtime.core.is_usable() { "healthy" } else { runtime.core.label() }
+        if runtime.core.is_usable() {
+            "healthy"
+        } else {
+            runtime.core.label()
+        }
     );
     let _ = writeln!(
         out,
@@ -146,10 +150,22 @@ pub fn dwmblocks_line(runtime: &RuntimeState) -> String {
     if !runtime.core.is_usable() {
         return format!("xray {}", runtime.core.label());
     }
-    let down = runtime.profiles.iter().filter(|p| p.health.state() == HealthState::Down).count();
+    let down = runtime
+        .profiles
+        .iter()
+        .filter(|p| p.health.state() == HealthState::Down)
+        .count();
     let mode = runtime.mode.as_str();
-    let tun = if runtime.tun.label() == "on" { "tun" } else { "—" };
-    let health = if down == 0 { String::new() } else { format!(" !{down}") };
+    let tun = if runtime.tun.label() == "on" {
+        "tun"
+    } else {
+        "—"
+    };
+    let health = if down == 0 {
+        String::new()
+    } else {
+        format!(" !{down}")
+    };
     format!(
         "{mode} {tun} ↑{} ↓{}{health}",
         human_rate(runtime.total_traffic.uplink_bps),
@@ -166,8 +182,16 @@ pub fn shell_status(runtime: &RuntimeState) -> String {
     let _ = writeln!(out, "XRAYTUI_TUN={}", runtime.tun.label());
     let _ = writeln!(out, "XRAYTUI_DNS={}", runtime.dns.label());
     let _ = writeln!(out, "XRAYTUI_PROFILES={}", runtime.profiles.len());
-    let _ = writeln!(out, "XRAYTUI_UPLINK_BYTES={}", runtime.total_traffic.uplink_bytes);
-    let _ = writeln!(out, "XRAYTUI_DOWNLINK_BYTES={}", runtime.total_traffic.downlink_bytes);
+    let _ = writeln!(
+        out,
+        "XRAYTUI_UPLINK_BYTES={}",
+        runtime.total_traffic.uplink_bytes
+    );
+    let _ = writeln!(
+        out,
+        "XRAYTUI_DOWNLINK_BYTES={}",
+        runtime.total_traffic.downlink_bytes
+    );
     for profile in &runtime.profiles {
         let key = profile.id.as_str().to_uppercase().replace('-', "_");
         let _ = writeln!(out, "XRAYTUI_PROFILE_{key}={}", profile.target.to_token());
@@ -249,7 +273,9 @@ mod tests {
     fn the_profile_table_has_the_specified_shape() {
         let mut desired = DesiredState::default();
         let id = ProfileId::new("web").expect("valid");
-        desired.profiles.insert(id.clone(), EgressProfile::new(id, "Web", Target::Direct));
+        desired
+            .profiles
+            .insert(id.clone(), EgressProfile::new(id, "Web", Target::Direct));
         let table = profile_table(&runtime(), &desired);
         assert!(table.starts_with("Profiles\n"), "{table}");
         assert!(table.contains("web"), "{table}");
@@ -285,7 +311,10 @@ mod tests {
     fn the_status_bar_line_is_short_and_informative() {
         let line = dwmblocks_line(&runtime());
         // Byte length, not character count: the arrows are multi-byte.
-        assert!(line.chars().count() < 48, "{line} is too long for a status bar");
+        assert!(
+            line.chars().count() < 48,
+            "{line} is too long for a status bar"
+        );
         assert!(line.contains("rule"), "{line}");
         assert!(line.contains("1.2 MiB/s"), "{line}");
     }

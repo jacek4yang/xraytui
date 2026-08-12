@@ -18,14 +18,21 @@ fn node(id: &str, name: &str) -> Node {
         name,
         NodeSource::Manual,
         Endpoint::new(format!("{id}.example.com"), 443),
-        ProtocolSettings::Trojan(TrojanSettings { password: Secret::new("pw"), flow: String::new() }),
+        ProtocolSettings::Trojan(TrojanSettings {
+            password: Secret::new("pw"),
+            flow: String::new(),
+        }),
     )
 }
 
 fn base_state() -> DesiredState {
     let mut state = DesiredState::default();
-    for (id, name) in [("hk-01", "HK 01"), ("hk-02", "HK 02"), ("jp-02", "JP 02"), ("us-01", "US 01")]
-    {
+    for (id, name) in [
+        ("hk-01", "HK 01"),
+        ("hk-02", "HK 02"),
+        ("jp-02", "JP 02"),
+        ("us-01", "US 01"),
+    ] {
         let n = node(id, name);
         state.nodes.insert(n.id.clone(), n);
     }
@@ -74,7 +81,12 @@ fn blackhole_is_the_first_outbound() {
     let mut state = base_state();
     state.profiles.insert(
         ProfileId::new("web").expect("valid"),
-        profile("web", Target::Node { id: NodeId::new("hk-01").expect("valid") }),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
     );
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
     assert_eq!(compiled.config.outbounds[0].tag, tags::CONTROL_BLOCK);
@@ -85,11 +97,23 @@ fn blackhole_is_the_first_outbound() {
 fn every_profile_gets_its_own_selector_balancer() {
     let mut state = base_state();
     for (id, target) in [
-        ("web", Target::Node { id: NodeId::new("hk-01").expect("valid") }),
-        ("development", Target::Node { id: NodeId::new("jp-02").expect("valid") }),
+        (
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+        (
+            "development",
+            Target::Node {
+                id: NodeId::new("jp-02").expect("valid"),
+            },
+        ),
         ("direct", Target::Direct),
     ] {
-        state.profiles.insert(ProfileId::new(id).expect("valid"), profile(id, target));
+        state
+            .profiles
+            .insert(ProfileId::new(id).expect("valid"), profile(id, target));
     }
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
 
@@ -107,21 +131,32 @@ fn every_profile_gets_its_own_selector_balancer() {
             .selector_overrides
             .contains(&("profile/web/selector".into(), "node/hk-01/out".into()))
     );
-    assert!(
-        compiled
-            .selector_overrides
-            .contains(&("profile/development/selector".into(), "node/jp-02/out".into()))
-    );
+    assert!(compiled.selector_overrides.contains(&(
+        "profile/development/selector".into(),
+        "node/jp-02/out".into()
+    )));
 }
 
 #[test]
 fn switching_one_profile_changes_only_that_selector() {
     let mut state = base_state();
     for (id, target) in [
-        ("web", Target::Node { id: NodeId::new("hk-01").expect("valid") }),
-        ("development", Target::Node { id: NodeId::new("jp-02").expect("valid") }),
+        (
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+        (
+            "development",
+            Target::Node {
+                id: NodeId::new("jp-02").expect("valid"),
+            },
+        ),
     ] {
-        state.profiles.insert(ProfileId::new(id).expect("valid"), profile(id, target));
+        state
+            .profiles
+            .insert(ProfileId::new(id).expect("valid"), profile(id, target));
     }
     let before = compile(&state, &CompileOptions::default()).expect("compile");
 
@@ -129,14 +164,19 @@ fn switching_one_profile_changes_only_that_selector() {
         .profiles
         .get_mut(&ProfileId::new("development").expect("valid"))
         .expect("profile")
-        .target = Target::Node { id: NodeId::new("us-01").expect("valid") };
+        .target = Target::Node {
+        id: NodeId::new("us-01").expect("valid"),
+    };
     let after = compile(&state, &CompileOptions::default()).expect("compile");
 
     assert_eq!(
         find_balancer(&before, "profile/web/selector").selector,
         find_balancer(&after, "profile/web/selector").selector
     );
-    assert_eq!(find_balancer(&after, "profile/development/selector").selector, vec!["node/us-01/out"]);
+    assert_eq!(
+        find_balancer(&after, "profile/development/selector").selector,
+        vec!["node/us-01/out"]
+    );
     // The outbound set is unchanged, which is what makes this a pure API switch
     // rather than a restart.
     let before_tags: Vec<&String> = before.config.outbounds.iter().map(|o| &o.tag).collect();
@@ -147,10 +187,20 @@ fn switching_one_profile_changes_only_that_selector() {
 #[test]
 fn per_profile_listeners_route_to_their_own_selector() {
     let mut state = base_state();
-    let mut web = profile("web", Target::Node { id: NodeId::new("hk-01").expect("valid") });
+    let mut web = profile(
+        "web",
+        Target::Node {
+            id: NodeId::new("hk-01").expect("valid"),
+        },
+    );
     web.socks = Some(ListenerSpec::loopback(11080));
     web.http = Some(ListenerSpec::loopback(11081));
-    let mut dev = profile("development", Target::Node { id: NodeId::new("jp-02").expect("valid") });
+    let mut dev = profile(
+        "development",
+        Target::Node {
+            id: NodeId::new("jp-02").expect("valid"),
+        },
+    );
     dev.socks = Some(ListenerSpec::loopback(12080));
     state.profiles.insert(web.id.clone(), web);
     state.profiles.insert(dev.id.clone(), dev);
@@ -168,7 +218,10 @@ fn per_profile_listeners_route_to_their_own_selector() {
         .iter()
         .find(|r| r.rule_tag.as_deref() == Some("rule/profile/web/inbound"))
         .expect("web inbound rule");
-    assert_eq!(web_rule.balancer_tag.as_deref(), Some("profile/web/selector"));
+    assert_eq!(
+        web_rule.balancer_tag.as_deref(),
+        Some("profile/web/selector")
+    );
     assert_eq!(
         web_rule.inbound_tag,
         vec!["inbound/profile/web/socks", "inbound/profile/web/http"]
@@ -208,14 +261,22 @@ fn groups_compile_through_a_loopback_second_stage() {
             id: group_id.clone(),
             name: "Auto HK".into(),
             strategy: GroupStrategy::LeastPing,
-            membership: GroupMembership { include_regex: vec!["^HK".into()], ..Default::default() },
+            membership: GroupMembership {
+                include_regex: vec!["^HK".into()],
+                ..Default::default()
+            },
             manual_selection: None,
             fallback: None,
         },
     );
     state.profiles.insert(
         ProfileId::new("web").expect("valid"),
-        profile("web", Target::Group { id: group_id.clone() }),
+        profile(
+            "web",
+            Target::Group {
+                id: group_id.clone(),
+            },
+        ),
     );
 
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
@@ -242,7 +303,10 @@ fn groups_compile_through_a_loopback_second_stage() {
         .find(|r| r.rule_tag.as_deref() == Some("rule/group/auto-hk/stage2"))
         .expect("stage 2 rule");
     assert_eq!(stage2.inbound_tag, vec!["group/auto-hk/entry"]);
-    assert_eq!(stage2.balancer_tag.as_deref(), Some("group/auto-hk/balancer"));
+    assert_eq!(
+        stage2.balancer_tag.as_deref(),
+        Some("group/auto-hk/balancer")
+    );
 
     // 4. The balancer's candidates are the matching members.
     let balancer = find_balancer(&compiled, "group/auto-hk/balancer");
@@ -254,7 +318,10 @@ fn groups_compile_through_a_loopback_second_stage() {
 
     // 5. leastPing needs liveness data, so an observatory is emitted.
     let observatory = compiled.config.observatory.as_ref().expect("observatory");
-    assert_eq!(observatory.subject_selector, vec!["node/hk-01/out", "node/hk-02/out"]);
+    assert_eq!(
+        observatory.subject_selector,
+        vec!["node/hk-01/out", "node/hk-02/out"]
+    );
 }
 
 #[test]
@@ -276,8 +343,15 @@ fn empty_group_blocks_rather_than_failing_the_whole_config() {
         },
     );
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
-    assert_eq!(find_balancer(&compiled, "group/empty/balancer").selector, vec!["control/block"]);
-    assert!(compiled.warnings.iter().any(|w| w.contains("group.empty")), "{:?}", compiled.warnings);
+    assert_eq!(
+        find_balancer(&compiled, "group/empty/balancer").selector,
+        vec!["control/block"]
+    );
+    assert!(
+        compiled.warnings.iter().any(|w| w.contains("group.empty")),
+        "{:?}",
+        compiled.warnings
+    );
 }
 
 #[test]
@@ -289,7 +363,10 @@ fn chains_link_hops_with_dialer_proxy_in_traffic_order() {
         Chain {
             id: chain_id.clone(),
             name: "HK to US".into(),
-            hops: vec![NodeId::new("hk-01").expect("valid"), NodeId::new("us-01").expect("valid")],
+            hops: vec![
+                NodeId::new("hk-01").expect("valid"),
+                NodeId::new("us-01").expect("valid"),
+            ],
             enabled: true,
         },
     );
@@ -327,7 +404,10 @@ fn chains_link_hops_with_dialer_proxy_in_traffic_order() {
         vec!["chain/hk-us/terminal"]
     );
     // Hop outbounds are clones: the original node definition is untouched.
-    assert_eq!(find_outbound(&compiled, "node/hk-01/out").tag, "node/hk-01/out");
+    assert_eq!(
+        find_outbound(&compiled, "node/hk-01/out").tag,
+        "node/hk-01/out"
+    );
 }
 
 #[test]
@@ -357,7 +437,10 @@ fn three_hop_chain_links_backwards_from_the_terminal() {
     };
     assert_eq!(dialer("chain/abc/hop0"), None);
     assert_eq!(dialer("chain/abc/hop1").as_deref(), Some("chain/abc/hop0"));
-    assert_eq!(dialer("chain/abc/terminal").as_deref(), Some("chain/abc/hop1"));
+    assert_eq!(
+        dialer("chain/abc/terminal").as_deref(),
+        Some("chain/abc/hop1")
+    );
 }
 
 #[test]
@@ -365,7 +448,12 @@ fn application_rules_compile_to_the_process_matcher() {
     let mut state = base_state();
     state.profiles.insert(
         ProfileId::new("development").expect("valid"),
-        profile("development", Target::Node { id: NodeId::new("jp-02").expect("valid") }),
+        profile(
+            "development",
+            Target::Node {
+                id: NodeId::new("jp-02").expect("valid"),
+            },
+        ),
     );
     let rule_id = AppRuleId::new("rust-development").expect("valid");
     state.app_rules.insert(
@@ -378,7 +466,9 @@ fn application_rules_compile_to_the_process_matcher() {
                 AppMatcher("/usr/bin/rustc".into()),
                 AppMatcher("/opt/rust/".into()),
             ],
-            action: RuleAction::Profile { id: ProfileId::new("development").expect("valid") },
+            action: RuleAction::Profile {
+                id: ProfileId::new("development").expect("valid"),
+            },
             enabled: true,
             note: None,
         },
@@ -391,7 +481,10 @@ fn application_rules_compile_to_the_process_matcher() {
         .find(|r| r.rule_tag.as_deref() == Some("rule/app/rust-development"))
         .expect("app rule");
     assert_eq!(rule.process, vec!["cargo", "/usr/bin/rustc", "/opt/rust/"]);
-    assert_eq!(rule.balancer_tag.as_deref(), Some("profile/development/selector"));
+    assert_eq!(
+        rule.balancer_tag.as_deref(),
+        Some("profile/development/selector")
+    );
 }
 
 #[test]
@@ -399,7 +492,12 @@ fn generated_rule_order_puts_safety_first_and_catch_all_last() {
     let mut state = base_state();
     state.mode = SystemMode::Rule;
     state.default_profile = Some(ProfileId::new("web").expect("valid"));
-    let mut web = profile("web", Target::Node { id: NodeId::new("hk-01").expect("valid") });
+    let mut web = profile(
+        "web",
+        Target::Node {
+            id: NodeId::new("hk-01").expect("valid"),
+        },
+    );
     web.socks = Some(ListenerSpec::loopback(11080));
     state.profiles.insert(web.id.clone(), web);
 
@@ -409,8 +507,13 @@ fn generated_rule_order_puts_safety_first_and_catch_all_last() {
         xraytui_domain::RoutingRule {
             id: block_id,
             priority: 500,
-            matcher: RoutingMatch { domain: vec!["geosite:category-ads".into()], ..Default::default() },
-            action: RuleAction::Target { target: Target::Block },
+            matcher: RoutingMatch {
+                domain: vec!["geosite:category-ads".into()],
+                ..Default::default()
+            },
+            action: RuleAction::Target {
+                target: Target::Block,
+            },
             enabled: true,
             note: None,
         },
@@ -421,27 +524,48 @@ fn generated_rule_order_puts_safety_first_and_catch_all_last() {
         xraytui_domain::RoutingRule {
             id: proxy_id,
             priority: 900,
-            matcher: RoutingMatch { ip: vec!["geoip:cn".into()], ..Default::default() },
-            action: RuleAction::Target { target: Target::Direct },
+            matcher: RoutingMatch {
+                ip: vec!["geoip:cn".into()],
+                ..Default::default()
+            },
+            action: RuleAction::Target {
+                target: Target::Direct,
+            },
             enabled: true,
             note: None,
         },
     );
 
-    let mut options = CompileOptions::default();
-    options.tun = Some(TunOptions { name: "xraytui0".into(), mtu: 1500 });
+    let mut options = CompileOptions {
+        tun: Some(TunOptions {
+            name: "xraytui0".into(),
+            mtu: 1500,
+        }),
+        ..Default::default()
+    };
     options.dns.enabled = true;
     let compiled = compile(&state, &options).expect("compile");
 
     let order = rule_tags(&compiled);
-    let index = |tag: &str| order.iter().position(|t| t == tag).unwrap_or_else(|| panic!("{tag} missing: {order:?}"));
+    let index = |tag: &str| {
+        order
+            .iter()
+            .position(|t| t == tag)
+            .unwrap_or_else(|| panic!("{tag} missing: {order:?}"))
+    };
 
-    assert_eq!(order.first().map(String::as_str), Some("rule/system/core-bypass"));
+    assert_eq!(
+        order.first().map(String::as_str),
+        Some("rule/system/core-bypass")
+    );
     assert!(index("rule/system/dns-intercept") < index("rule/profile/web/inbound"));
     assert!(index("rule/profile/web/inbound") < index("rule/system/private-direct"));
     assert!(index("rule/system/private-direct") < index("rule/user/ads"));
     assert!(index("rule/user/ads") < index("rule/user/cn-direct"));
-    assert_eq!(order.last().map(String::as_str), Some("rule/system/mode-fallback"));
+    assert_eq!(
+        order.last().map(String::as_str),
+        Some("rule/system/mode-fallback")
+    );
 
     // The catch-all must actually be a catch-all with a target. Upstream refuses
     // a rule with zero conditions, so the broadest legal condition stands in.
@@ -462,8 +586,13 @@ fn block_rules_are_emitted_before_proxy_rules_regardless_of_priority() {
         xraytui_domain::RoutingRule {
             id: low_priority_block,
             priority: 9000,
-            matcher: RoutingMatch { domain: vec!["bad.example".into()], ..Default::default() },
-            action: RuleAction::Target { target: Target::Block },
+            matcher: RoutingMatch {
+                domain: vec!["bad.example".into()],
+                ..Default::default()
+            },
+            action: RuleAction::Target {
+                target: Target::Block,
+            },
             enabled: true,
             note: None,
         },
@@ -474,16 +603,27 @@ fn block_rules_are_emitted_before_proxy_rules_regardless_of_priority() {
         xraytui_domain::RoutingRule {
             id: early_proxy,
             priority: 10,
-            matcher: RoutingMatch { domain: vec!["example".into()], ..Default::default() },
-            action: RuleAction::Target { target: Target::Direct },
+            matcher: RoutingMatch {
+                domain: vec!["example".into()],
+                ..Default::default()
+            },
+            action: RuleAction::Target {
+                target: Target::Direct,
+            },
             enabled: true,
             note: None,
         },
     );
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
     let order = rule_tags(&compiled);
-    let block = order.iter().position(|t| t == "rule/user/late-block").expect("block rule");
-    let proxy = order.iter().position(|t| t == "rule/user/early-proxy").expect("proxy rule");
+    let block = order
+        .iter()
+        .position(|t| t == "rule/user/late-block")
+        .expect("block rule");
+    let proxy = order
+        .iter()
+        .position(|t| t == "rule/user/early-proxy")
+        .expect("proxy rule");
     assert!(block < proxy, "{order:?}");
 }
 
@@ -493,7 +633,12 @@ fn modes_change_only_the_fallback_rule() {
     state.default_profile = Some(ProfileId::new("web").expect("valid"));
     state.profiles.insert(
         ProfileId::new("web").expect("valid"),
-        profile("web", Target::Node { id: NodeId::new("hk-01").expect("valid") }),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
     );
 
     let mut fallback_of = |mode: SystemMode| {
@@ -504,17 +649,34 @@ fn modes_change_only_the_fallback_rule() {
         (last.outbound_tag, last.balancer_tag)
     };
 
-    assert_eq!(fallback_of(SystemMode::Direct), (Some("control/direct".into()), None));
-    assert_eq!(fallback_of(SystemMode::Off), (Some("control/direct".into()), None));
-    assert_eq!(fallback_of(SystemMode::Global), (None, Some("profile/web/selector".into())));
-    assert_eq!(fallback_of(SystemMode::Rule), (None, Some("profile/web/selector".into())));
+    assert_eq!(
+        fallback_of(SystemMode::Direct),
+        (Some("control/direct".into()), None)
+    );
+    assert_eq!(
+        fallback_of(SystemMode::Off),
+        (Some("control/direct".into()), None)
+    );
+    assert_eq!(
+        fallback_of(SystemMode::Global),
+        (None, Some("profile/web/selector".into()))
+    );
+    assert_eq!(
+        fallback_of(SystemMode::Rule),
+        (None, Some("profile/web/selector".into()))
+    );
 }
 
 #[test]
 fn kill_switch_controls_the_balancer_fallback() {
     let mut state = base_state();
     let make = |kill_switch: KillSwitch, fallback: Option<Target>| {
-        let mut p = profile("web", Target::Node { id: NodeId::new("hk-01").expect("valid") });
+        let mut p = profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        );
         p.kill_switch = kill_switch;
         p.fallback = fallback;
         p
@@ -528,7 +690,9 @@ fn kill_switch_controls_the_balancer_fallback() {
         (KillSwitch::FallbackOnly, None, Some("control/block")),
         (
             KillSwitch::FallbackOnly,
-            Some(Target::Node { id: NodeId::new("us-01").expect("valid") }),
+            Some(Target::Node {
+                id: NodeId::new("us-01").expect("valid"),
+            }),
             Some("node/us-01/out"),
         ),
     ] {
@@ -536,7 +700,9 @@ fn kill_switch_controls_the_balancer_fallback() {
         state.profiles.insert(p.id.clone(), p);
         let compiled = compile(&state, &CompileOptions::default()).expect("compile");
         assert_eq!(
-            find_balancer(&compiled, "profile/web/selector").fallback_tag.as_deref(),
+            find_balancer(&compiled, "profile/web/selector")
+                .fallback_tag
+                .as_deref(),
             expected,
             "kill switch {kill_switch:?}"
         );
@@ -555,7 +721,12 @@ fn default_configuration_emits_no_observatory() {
     let mut state = base_state();
     state.profiles.insert(
         ProfileId::new("web").expect("valid"),
-        profile("web", Target::Node { id: NodeId::new("hk-01").expect("valid") }),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
     );
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
     assert!(compiled.config.observatory.is_none());
@@ -595,7 +766,10 @@ fn tun_inbound_has_no_port_and_carries_the_interface_name() {
     );
     state.default_profile = Some(ProfileId::new("web").expect("valid"));
     let options = CompileOptions {
-        tun: Some(TunOptions { name: "xraytui0".into(), mtu: 1420 }),
+        tun: Some(TunOptions {
+            name: "xraytui0".into(),
+            mtu: 1420,
+        }),
         ..Default::default()
     };
     let compiled = compile(&state, &options).expect("compile");
@@ -617,27 +791,52 @@ fn tun_inbound_has_no_port_and_carries_the_interface_name() {
 fn output_is_byte_stable_across_compilations() {
     let mut state = base_state();
     for (id, target) in [
-        ("web", Target::Node { id: NodeId::new("hk-01").expect("valid") }),
-        ("development", Target::Node { id: NodeId::new("jp-02").expect("valid") }),
+        (
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+        (
+            "development",
+            Target::Node {
+                id: NodeId::new("jp-02").expect("valid"),
+            },
+        ),
     ] {
         let mut p = profile(id, target);
-        p.socks = Some(ListenerSpec::loopback(if id == "web" { 11080 } else { 12080 }));
+        p.socks = Some(ListenerSpec::loopback(if id == "web" {
+            11080
+        } else {
+            12080
+        }));
         state.profiles.insert(p.id.clone(), p);
     }
-    let a = compile(&state, &CompileOptions::default()).expect("compile").to_json().expect("json");
-    let b = compile(&state, &CompileOptions::default()).expect("compile").to_json().expect("json");
+    let a = compile(&state, &CompileOptions::default())
+        .expect("compile")
+        .to_json()
+        .expect("json");
+    let b = compile(&state, &CompileOptions::default())
+        .expect("compile")
+        .to_json()
+        .expect("json");
     assert_eq!(a, b);
     // And stable across a clone that reorders insertion.
-    let mut reordered = DesiredState::default();
-    reordered.mode = state.mode;
-    reordered.default_profile = state.default_profile.clone();
+    let mut reordered = DesiredState {
+        mode: state.mode,
+        default_profile: state.default_profile.clone(),
+        ..Default::default()
+    };
     for (id, node) in state.nodes.iter().rev() {
         reordered.nodes.insert(id.clone(), node.clone());
     }
     for (id, p) in state.profiles.iter().rev() {
         reordered.profiles.insert(id.clone(), p.clone());
     }
-    let c = compile(&reordered, &CompileOptions::default()).expect("compile").to_json().expect("json");
+    let c = compile(&reordered, &CompileOptions::default())
+        .expect("compile")
+        .to_json()
+        .expect("json");
     assert_eq!(a, c);
 }
 
@@ -646,7 +845,12 @@ fn invalid_state_is_refused_with_the_diagnostic_codes() {
     let mut state = DesiredState::default();
     state.profiles.insert(
         ProfileId::new("web").expect("valid"),
-        profile("web", Target::Node { id: NodeId::new("missing").expect("valid") }),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("missing").expect("valid"),
+            },
+        ),
     );
     let err = compile(&state, &CompileOptions::default()).expect_err("must refuse");
     match err {
@@ -660,9 +864,15 @@ fn invalid_state_is_refused_with_the_diagnostic_codes() {
 #[test]
 fn tag_round_trip_holds_for_every_target_kind() {
     let targets = [
-        Target::Node { id: NodeId::new("hk-01").expect("valid") },
-        Target::Chain { id: ChainId::new("hk-us").expect("valid") },
-        Target::Group { id: GroupId::new("auto").expect("valid") },
+        Target::Node {
+            id: NodeId::new("hk-01").expect("valid"),
+        },
+        Target::Chain {
+            id: ChainId::new("hk-us").expect("valid"),
+        },
+        Target::Group {
+            id: GroupId::new("auto").expect("valid"),
+        },
         Target::Direct,
         Target::Block,
     ];
@@ -671,7 +881,10 @@ fn tag_round_trip_holds_for_every_target_kind() {
         assert_eq!(target_for_tag(&tag), Some(target.clone()), "tag {tag}");
     }
     assert_eq!(target_for_tag("chain/hk-us/hop0"), None);
-    assert_eq!(profile_of_selector("profile/web/selector").map(|p| p.to_string()), Some("web".into()));
+    assert_eq!(
+        profile_of_selector("profile/web/selector").map(|p| p.to_string()),
+        Some("web".into())
+    );
     assert_eq!(profile_of_selector("node/x/out"), None);
 }
 
@@ -699,13 +912,25 @@ fn owned_tags_cover_everything_the_generation_created() {
 
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
     for outbound in &compiled.config.outbounds {
-        assert!(compiled.owned_tags.contains(&outbound.tag), "{} not owned", outbound.tag);
+        assert!(
+            compiled.owned_tags.contains(&outbound.tag),
+            "{} not owned",
+            outbound.tag
+        );
     }
     for inbound in &compiled.config.inbounds {
-        assert!(compiled.owned_tags.contains(&inbound.tag), "{} not owned", inbound.tag);
+        assert!(
+            compiled.owned_tags.contains(&inbound.tag),
+            "{} not owned",
+            inbound.tag
+        );
     }
     for balancer in &compiled.config.routing.as_ref().expect("routing").balancers {
-        assert!(compiled.owned_tags.contains(&balancer.tag), "{} not owned", balancer.tag);
+        assert!(
+            compiled.owned_tags.contains(&balancer.tag),
+            "{} not owned",
+            balancer.tag
+        );
     }
 }
 
@@ -726,7 +951,9 @@ fn manual_group_selection_becomes_a_runtime_override() {
                 ],
                 ..Default::default()
             },
-            manual_selection: Some(Target::Node { id: NodeId::new("hk-02").expect("valid") }),
+            manual_selection: Some(Target::Node {
+                id: NodeId::new("hk-02").expect("valid"),
+            }),
             fallback: None,
         },
     );
@@ -743,7 +970,11 @@ fn manual_group_selection_becomes_a_runtime_override() {
 #[test]
 fn disabled_profiles_and_nodes_are_omitted() {
     let mut state = base_state();
-    state.nodes.get_mut(&NodeId::new("us-01").expect("valid")).expect("node").enabled = false;
+    state
+        .nodes
+        .get_mut(&NodeId::new("us-01").expect("valid"))
+        .expect("node")
+        .enabled = false;
     let mut disabled = profile("off", Target::Direct);
     disabled.enabled = false;
     state.profiles.insert(disabled.id.clone(), disabled);
@@ -753,7 +984,13 @@ fn disabled_profiles_and_nodes_are_omitted() {
     );
 
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
-    assert!(compiled.config.outbounds.iter().all(|o| o.tag != "node/us-01/out"));
+    assert!(
+        compiled
+            .config
+            .outbounds
+            .iter()
+            .all(|o| o.tag != "node/us-01/out")
+    );
     assert!(
         compiled
             .config
@@ -769,9 +1006,15 @@ fn disabled_profiles_and_nodes_are_omitted() {
 #[test]
 fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
     let mut state = base_state();
-    state.profiles.insert(ProfileId::new("web").expect("valid"), profile("web", Target::Direct));
+    state.profiles.insert(
+        ProfileId::new("web").expect("valid"),
+        profile("web", Target::Direct),
+    );
     let options = CompileOptions {
-        tun: Some(TunOptions { name: "xraytui0".into(), mtu: 1500 }),
+        tun: Some(TunOptions {
+            name: "xraytui0".into(),
+            mtu: 1500,
+        }),
         dns: DnsOptions {
             enabled: true,
             direct_servers: vec!["127.0.0.53".into()],
@@ -796,9 +1039,19 @@ fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
         .expect("dns intercept rule");
     assert_eq!(intercept.port.as_deref(), Some("53"));
     assert_eq!(intercept.outbound_tag.as_deref(), Some("control/dns"));
-    assert!(intercept.inbound_tag.contains(&"inbound/system/tun".to_owned()));
+    assert!(
+        intercept
+            .inbound_tag
+            .contains(&"inbound/system/tun".to_owned())
+    );
 
-    assert!(compiled.config.outbounds.iter().any(|o| o.tag == "control/dns"));
+    assert!(
+        compiled
+            .config
+            .outbounds
+            .iter()
+            .any(|o| o.tag == "control/dns")
+    );
 }
 
 #[test]
@@ -841,13 +1094,23 @@ fn every_generated_rule_has_exactly_one_target() {
         },
     );
     let options = CompileOptions {
-        tun: Some(TunOptions { name: "xraytui0".into(), mtu: 1500 }),
-        dns: DnsOptions { enabled: true, ..Default::default() },
+        tun: Some(TunOptions {
+            name: "xraytui0".into(),
+            mtu: 1500,
+        }),
+        dns: DnsOptions {
+            enabled: true,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let compiled = compile(&state, &options).expect("compile");
     for rule in &compiled.config.routing.as_ref().expect("routing").rules {
-        assert!(rule.has_target(), "rule {:?} has no unique target", rule.rule_tag);
+        assert!(
+            rule.has_target(),
+            "rule {:?} has no unique target",
+            rule.rule_tag
+        );
         assert_eq!(rule.rule_type, "field");
         assert!(rule.rule_tag.is_some());
     }

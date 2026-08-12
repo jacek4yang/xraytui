@@ -456,15 +456,39 @@ mod tests {
             vec!["xraytui", "app", "list"],
             vec!["xraytui", "app", "assign", "web", "firefox"],
             vec!["xraytui", "app", "unassign", "firefox-web"],
-            vec!["xraytui", "exec", "--profile", "web", "--", "curl", "-s", "example.com"],
-            vec!["xraytui", "exec", "--transparent", "--profile", "web", "--", "curl", "x"],
+            vec![
+                "xraytui",
+                "exec",
+                "--profile",
+                "web",
+                "--",
+                "curl",
+                "-s",
+                "example.com",
+            ],
+            vec![
+                "xraytui",
+                "exec",
+                "--transparent",
+                "--profile",
+                "web",
+                "--",
+                "curl",
+                "x",
+            ],
             vec!["xraytui", "node", "list"],
             vec!["xraytui", "node", "show", "hk-01"],
             vec!["xraytui", "node", "import", "vless://x@h:443"],
             vec!["xraytui", "node", "import", "--stdin"],
             vec!["xraytui", "node", "import", "--file", "/tmp/links.txt"],
             vec!["xraytui", "node", "import", "--clipboard"],
-            vec!["xraytui", "node", "import", "--xray-json", "/tmp/config.json"],
+            vec![
+                "xraytui",
+                "node",
+                "import",
+                "--xray-json",
+                "/tmp/config.json",
+            ],
             vec!["xraytui", "node", "remove", "hk-01"],
             vec!["xraytui", "node", "test", "hk-01"],
             vec!["xraytui", "node", "share", "hk-01"],
@@ -497,8 +521,16 @@ mod tests {
     fn the_dmenu_pipeline_from_the_specification_parses() {
         Cli::try_parse_from(["xraytui", "profile", "list", "--format", "dmenu"]).expect("list");
         Cli::try_parse_from(["xraytui", "profile", "select-from-stdin"]).expect("select");
-        Cli::try_parse_from(["xraytui", "target", "list", "--profile", "development", "--format", "dmenu"])
-            .expect("targets");
+        Cli::try_parse_from([
+            "xraytui",
+            "target",
+            "list",
+            "--profile",
+            "development",
+            "--format",
+            "dmenu",
+        ])
+        .expect("targets");
         Cli::try_parse_from(["xraytui", "profile", "set-target", "development", "--stdin"])
             .expect("set from stdin");
         Cli::try_parse_from(["xraytui", "status", "--format", "dwmblocks"]).expect("status");
@@ -507,8 +539,9 @@ mod tests {
     #[test]
     fn exec_requires_a_command_after_the_separator() {
         assert!(Cli::try_parse_from(["xraytui", "exec", "--profile", "web"]).is_err());
-        let cli = Cli::try_parse_from(["xraytui", "exec", "--profile", "web", "--", "sh", "-c", "x"])
-            .expect("parse");
+        let cli =
+            Cli::try_parse_from(["xraytui", "exec", "--profile", "web", "--", "sh", "-c", "x"])
+                .expect("parse");
         match cli.command {
             Some(Command::Exec(args)) => {
                 // The argument vector is preserved verbatim; nothing is passed

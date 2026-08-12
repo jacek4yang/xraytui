@@ -64,7 +64,10 @@ pub struct Endpoint {
 impl Endpoint {
     /// Construct an endpoint.
     pub fn new(address: impl Into<String>, port: u16) -> Self {
-        Self { address: address.into(), port }
+        Self {
+            address: address.into(),
+            port,
+        }
     }
 
     /// Render as `host:port`, bracketing IPv6 literals.
@@ -427,19 +430,15 @@ pub struct MkcpTransport {
 /// Transport-layer security.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "security", rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TransportSecurity {
     /// No TLS.
+    #[default]
     None,
     /// Standard TLS.
     Tls(TlsSettings),
     /// REALITY.
     Reality(RealitySettings),
-}
-
-impl Default for TransportSecurity {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl TransportSecurity {
@@ -660,11 +659,21 @@ impl Node {
             }
             ProtocolSettings::Http(h) => {
                 parts.push(h.username.clone().unwrap_or_default());
-                parts.push(h.password.as_ref().map(Secret::fingerprint).unwrap_or_default());
+                parts.push(
+                    h.password
+                        .as_ref()
+                        .map(Secret::fingerprint)
+                        .unwrap_or_default(),
+                );
             }
             ProtocolSettings::Socks(s) => {
                 parts.push(s.username.clone().unwrap_or_default());
-                parts.push(s.password.as_ref().map(Secret::fingerprint).unwrap_or_default());
+                parts.push(
+                    s.password
+                        .as_ref()
+                        .map(Secret::fingerprint)
+                        .unwrap_or_default(),
+                );
             }
             ProtocolSettings::Wireguard(w) => parts.push(w.secret_key.fingerprint()),
             ProtocolSettings::Hysteria(h) => parts.push(h.auth.fingerprint()),
@@ -703,7 +712,12 @@ impl Node {
             TransportSecurity::Reality(r) => {
                 parts.push(r.server_name.clone().unwrap_or_default());
                 parts.push(r.public_key.fingerprint());
-                parts.push(r.short_id.as_ref().map(Secret::fingerprint).unwrap_or_default());
+                parts.push(
+                    r.short_id
+                        .as_ref()
+                        .map(Secret::fingerprint)
+                        .unwrap_or_default(),
+                );
             }
         }
         parts.join("|")
@@ -819,7 +833,10 @@ mod tests {
 
     #[test]
     fn ipv6_authority_is_bracketed() {
-        assert_eq!(Endpoint::new("2001:db8::1", 443).authority(), "[2001:db8::1]:443");
+        assert_eq!(
+            Endpoint::new("2001:db8::1", 443).authority(),
+            "[2001:db8::1]:443"
+        );
         assert_eq!(Endpoint::new("1.2.3.4", 443).authority(), "1.2.3.4:443");
     }
 
@@ -862,13 +879,18 @@ mod tests {
 
     #[test]
     fn unsupported_reason_descriptions_are_short() {
-        let reason = UnsupportedReason::ForeignCore { core: "sing-box".into() };
+        let reason = UnsupportedReason::ForeignCore {
+            core: "sing-box".into(),
+        };
         assert_eq!(reason.describe(), "requires sing-box");
     }
 
     #[test]
     fn http_outbound_cannot_carry_udp() {
-        let http = ProtocolSettings::Http(HttpProxySettings { username: None, password: None });
+        let http = ProtocolSettings::Http(HttpProxySettings {
+            username: None,
+            password: None,
+        });
         assert!(!http.supports_udp());
         let socks = ProtocolSettings::Socks(SocksSettings {
             username: None,

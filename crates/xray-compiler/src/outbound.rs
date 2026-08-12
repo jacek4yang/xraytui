@@ -296,19 +296,28 @@ fn stream_settings(node: &Node, dialer_proxy: Option<&str>) -> StreamSettings {
             // they are translated into the replacement `finalmask` masks here.
             stream.kcp_settings = Some(Value::Object(Map::new()));
             let mut masks: Vec<XrayMask> = Vec::new();
-            if let Some(header) = m.header_type.as_deref() {
-                if let Some(mask_type) = mkcp_header_mask(header) {
-                    masks.push(XrayMask { mask_type: mask_type.to_owned(), settings: None });
-                }
+            if let Some(header) = m.header_type.as_deref()
+                && let Some(mask_type) = mkcp_header_mask(header)
+            {
+                masks.push(XrayMask {
+                    mask_type: mask_type.to_owned(),
+                    settings: None,
+                });
             }
             masks.push(match &m.seed {
                 Some(seed) => XrayMask {
                     mask_type: "mkcp-aes128gcm".to_owned(),
                     settings: Some(json!({ "password": seed.expose() })),
                 },
-                None => XrayMask { mask_type: "mkcp-original".to_owned(), settings: None },
+                None => XrayMask {
+                    mask_type: "mkcp-original".to_owned(),
+                    settings: None,
+                },
             });
-            stream.finalmask = Some(FinalMask { tcp: Vec::new(), udp: masks });
+            stream.finalmask = Some(FinalMask {
+                tcp: Vec::new(),
+                udp: masks,
+            });
         }
     }
 
@@ -329,7 +338,10 @@ fn stream_settings(node: &Node, dialer_proxy: Option<&str>) -> StreamSettings {
 
 fn tls_json(tls: &TlsSettings, node: &Node) -> Value {
     let mut settings = Map::new();
-    let sni = tls.server_name.clone().unwrap_or_else(|| node.endpoint.address.clone());
+    let sni = tls
+        .server_name
+        .clone()
+        .unwrap_or_else(|| node.endpoint.address.clone());
     settings.insert("serverName".into(), json!(sni));
     if !tls.alpn.is_empty() {
         settings.insert("alpn".into(), json!(tls.alpn));
@@ -347,7 +359,10 @@ fn tls_json(tls: &TlsSettings, node: &Node) -> Value {
 
 fn reality_json(reality: &RealitySettings, node: &Node) -> Value {
     let mut settings = Map::new();
-    let sni = reality.server_name.clone().unwrap_or_else(|| node.endpoint.address.clone());
+    let sni = reality
+        .server_name
+        .clone()
+        .unwrap_or_else(|| node.endpoint.address.clone());
     settings.insert("serverName".into(), json!(sni));
     settings.insert("publicKey".into(), json!(reality.public_key.expose()));
     if let Some(short_id) = &reality.short_id {
@@ -435,10 +450,19 @@ mod tests {
         assert_eq!(outbound.protocol, "vless");
         let json = serde_json::to_value(&outbound).expect("serialise");
         assert_eq!(json["settings"]["vnext"][0]["address"], "example.com");
-        assert_eq!(json["settings"]["vnext"][0]["users"][0]["flow"], "xtls-rprx-vision");
+        assert_eq!(
+            json["settings"]["vnext"][0]["users"][0]["flow"],
+            "xtls-rprx-vision"
+        );
         assert_eq!(json["streamSettings"]["security"], "reality");
-        assert_eq!(json["streamSettings"]["realitySettings"]["publicKey"], "PUBKEY");
-        assert_eq!(json["streamSettings"]["realitySettings"]["serverName"], "www.example.org");
+        assert_eq!(
+            json["streamSettings"]["realitySettings"]["publicKey"],
+            "PUBKEY"
+        );
+        assert_eq!(
+            json["streamSettings"]["realitySettings"]["serverName"],
+            "www.example.org"
+        );
         assert!(json["streamSettings"].get("sockopt").is_none());
     }
 
@@ -447,7 +471,10 @@ mod tests {
         let node = vless_node();
         let outbound = build(&node, "chain/c/hop1", Some("chain/c/hop0")).expect("build");
         let json = serde_json::to_value(&outbound).expect("serialise");
-        assert_eq!(json["streamSettings"]["sockopt"]["dialerProxy"], "chain/c/hop0");
+        assert_eq!(
+            json["streamSettings"]["sockopt"]["dialerProxy"],
+            "chain/c/hop0"
+        );
         // The terminal's own transport and security must survive chaining.
         assert_eq!(json["streamSettings"]["security"], "reality");
         assert_eq!(json["streamSettings"]["network"], "raw");
@@ -465,7 +492,10 @@ mod tests {
         let json = serde_json::to_value(&outbound).expect("serialise");
         assert_eq!(json["streamSettings"]["network"], "ws");
         assert_eq!(json["streamSettings"]["wsSettings"]["path"], "/ws");
-        assert_eq!(json["streamSettings"]["wsSettings"]["host"], "cdn.example.com");
+        assert_eq!(
+            json["streamSettings"]["wsSettings"]["host"],
+            "cdn.example.com"
+        );
     }
 
     #[test]
@@ -474,8 +504,15 @@ mod tests {
         node.security = TransportSecurity::Tls(TlsSettings::default());
         let outbound = build(&node, "node/x", None).expect("build");
         let json = serde_json::to_value(&outbound).expect("serialise");
-        assert_eq!(json["streamSettings"]["tlsSettings"]["serverName"], "example.com");
-        assert!(json["streamSettings"]["tlsSettings"].get("allowInsecure").is_none());
+        assert_eq!(
+            json["streamSettings"]["tlsSettings"]["serverName"],
+            "example.com"
+        );
+        assert!(
+            json["streamSettings"]["tlsSettings"]
+                .get("allowInsecure")
+                .is_none()
+        );
     }
 
     #[test]
@@ -488,7 +525,10 @@ mod tests {
             level: None,
         });
         let err = build(&node, "node/x", None).expect_err("must reject");
-        assert!(matches!(err, CompileError::UnsupportedNode { .. }), "{err:?}");
+        assert!(
+            matches!(err, CompileError::UnsupportedNode { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -527,6 +567,9 @@ mod tests {
         }));
         assert!(build(&node, "node/x", None).is_ok());
         let err = build(&node, "chain/c/hop1", Some("chain/c/hop0")).expect_err("must reject");
-        assert!(matches!(err, CompileError::UnsupportedNode { .. }), "{err:?}");
+        assert!(
+            matches!(err, CompileError::UnsupportedNode { .. }),
+            "{err:?}"
+        );
     }
 }

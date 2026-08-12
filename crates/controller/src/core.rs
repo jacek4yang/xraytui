@@ -23,7 +23,11 @@ use crate::ControllerError;
 ///
 /// Below 1.8.0 there is no `ruleTag`, no `RemoveRule` and no `ListRule`, so a
 /// generation could not be reconciled against a live core.
-pub const MINIMUM_XRAY_VERSION: Version = Version { major: 1, minor: 8, patch: 0 };
+pub const MINIMUM_XRAY_VERSION: Version = Version {
+    major: 1,
+    minor: 8,
+    patch: 0,
+};
 
 /// A parsed `major.minor.patch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,7 +59,11 @@ impl Version {
                 .map(|p| p.trim_end_matches(|c: char| !c.is_ascii_digit()))
                 .and_then(|p| p.parse::<u32>().ok())
                 .unwrap_or(0);
-            return Some(Self { major, minor, patch });
+            return Some(Self {
+                major,
+                minor,
+                patch,
+            });
         }
         None
     }
@@ -102,8 +110,9 @@ impl CoreInfo {
 pub fn discover_binary(configured: &str) -> Result<PathBuf, ControllerError> {
     if !configured.is_empty() {
         let path = PathBuf::from(configured);
-        return canonical_executable(&path)
-            .ok_or_else(|| ControllerError::CoreNotFound { searched: configured.to_owned() });
+        return canonical_executable(&path).ok_or_else(|| ControllerError::CoreNotFound {
+            searched: configured.to_owned(),
+        });
     }
     let path_var = std::env::var("PATH").unwrap_or_default();
     for dir in path_var.split(':').filter(|d| !d.is_empty()) {
@@ -153,7 +162,9 @@ pub fn discover_asset_dir(configured: Option<&Path>, binary: &Path) -> Option<Pa
         .into_iter()
         .map(PathBuf::from),
     );
-    candidates.into_iter().find(|dir| dir.join("geoip.dat").is_file())
+    candidates
+        .into_iter()
+        .find(|dir| dir.join("geoip.dat").is_file())
 }
 
 /// Run `xray version` and record what it says.
@@ -217,17 +228,22 @@ pub async fn validate_config(
         .stderr(Stdio::piped());
     apply_environment(&mut command, info);
 
-    let output = command.output().await.map_err(|source| ControllerError::CoreSpawn {
-        binary: info.binary.display().to_string(),
-        source,
-    })?;
+    let output = command
+        .output()
+        .await
+        .map_err(|source| ControllerError::CoreSpawn {
+            binary: info.binary.display().to_string(),
+            source,
+        })?;
     if output.status.success() {
         return Ok(());
     }
     let detail = String::from_utf8_lossy(&output.stdout)
         .lines()
         .chain(String::from_utf8_lossy(&output.stderr).lines())
-        .filter(|line| line.contains("Failed") || line.contains("error") || line.contains("invalid"))
+        .filter(|line| {
+            line.contains("Failed") || line.contains("error") || line.contains("invalid")
+        })
         .map(str::trim)
         .collect::<Vec<_>>()
         .join("; ");
@@ -373,10 +389,12 @@ pub async fn spawn(info: &CoreInfo, spec: &LaunchSpec) -> Result<RunningCore, Co
         .process_group(0);
     apply_environment(&mut command, info);
 
-    let mut child = command.spawn().map_err(|source| ControllerError::CoreSpawn {
-        binary: info.binary.display().to_string(),
-        source,
-    })?;
+    let mut child = command
+        .spawn()
+        .map_err(|source| ControllerError::CoreSpawn {
+            binary: info.binary.display().to_string(),
+            source,
+        })?;
 
     // Drain the core's output into the log so a full pipe buffer can never block
     // it. Lines are also kept in a bounded ring for the Logs page.
@@ -535,7 +553,12 @@ pub async fn run_health_gate(
 
     Ok((
         client,
-        HealthReport { capabilities, failed_listeners, failed_overrides, outbound_tags },
+        HealthReport {
+            capabilities,
+            failed_listeners,
+            failed_overrides,
+            outbound_tags,
+        },
     ))
 }
 
@@ -607,24 +630,73 @@ mod tests {
     #[test]
     fn version_parses_the_real_banner() {
         let banner = "Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0 (go1.26.1 linux/amd64)";
-        assert_eq!(Version::parse(banner), Some(Version { major: 26, minor: 3, patch: 27 }));
+        assert_eq!(
+            Version::parse(banner),
+            Some(Version {
+                major: 26,
+                minor: 3,
+                patch: 27
+            })
+        );
     }
 
     #[test]
     fn version_parses_tolerantly() {
-        assert_eq!(Version::parse("Xray v1.8.4 x"), Some(Version { major: 1, minor: 8, patch: 4 }));
-        assert_eq!(Version::parse("Xray 1.8 x"), Some(Version { major: 1, minor: 8, patch: 0 }));
+        assert_eq!(
+            Version::parse("Xray v1.8.4 x"),
+            Some(Version {
+                major: 1,
+                minor: 8,
+                patch: 4
+            })
+        );
+        assert_eq!(
+            Version::parse("Xray 1.8 x"),
+            Some(Version {
+                major: 1,
+                minor: 8,
+                patch: 0
+            })
+        );
         assert_eq!(Version::parse("no version here"), None);
         assert_eq!(Version::parse(""), None);
     }
 
     #[test]
     fn version_ordering_drives_the_minimum() {
-        assert!(Version { major: 26, minor: 3, patch: 27 } >= MINIMUM_XRAY_VERSION);
-        assert!(Version { major: 1, minor: 8, patch: 0 } >= MINIMUM_XRAY_VERSION);
-        assert!(Version { major: 1, minor: 7, patch: 9 } < MINIMUM_XRAY_VERSION);
+        assert!(
+            Version {
+                major: 26,
+                minor: 3,
+                patch: 27
+            } >= MINIMUM_XRAY_VERSION
+        );
+        assert!(
+            Version {
+                major: 1,
+                minor: 8,
+                patch: 0
+            } >= MINIMUM_XRAY_VERSION
+        );
+        assert!(
+            Version {
+                major: 1,
+                minor: 7,
+                patch: 9
+            } < MINIMUM_XRAY_VERSION
+        );
         // Numeric, not lexical: 26.3.9 must sort below 26.3.27.
-        assert!(Version { major: 26, minor: 3, patch: 9 } < Version { major: 26, minor: 3, patch: 27 });
+        assert!(
+            Version {
+                major: 26,
+                minor: 3,
+                patch: 9
+            } < Version {
+                major: 26,
+                minor: 3,
+                patch: 27
+            }
+        );
     }
 
     #[test]
@@ -645,7 +717,10 @@ mod tests {
     #[test]
     fn missing_binaries_are_reported_not_guessed() {
         let error = discover_binary("/nonexistent/xray").expect_err("must fail");
-        assert!(matches!(error, ControllerError::CoreNotFound { .. }), "{error:?}");
+        assert!(
+            matches!(error, ControllerError::CoreNotFound { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -682,7 +757,10 @@ mod tests {
         assert!(!unhealthy.is_healthy());
         let description = unhealthy.describe();
         assert!(description.contains("127.0.0.1:1080"), "{description}");
-        assert!(description.contains("profile/web/selector"), "{description}");
+        assert!(
+            description.contains("profile/web/selector"),
+            "{description}"
+        );
     }
 
     #[test]
@@ -702,13 +780,19 @@ mod tests {
     #[tokio::test]
     async fn listener_check_fails_for_a_closed_port() {
         assert!(
-            !listener_accepts("127.0.0.1:1".parse().expect("addr"), Duration::from_millis(200)).await
+            !listener_accepts(
+                "127.0.0.1:1".parse().expect("addr"),
+                Duration::from_millis(200)
+            )
+            .await
         );
     }
 
     #[tokio::test]
     async fn listener_check_succeeds_for_an_open_port() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind");
         let address = listener.local_addr().expect("addr");
         assert!(listener_accepts(address, Duration::from_millis(500)).await);
     }
