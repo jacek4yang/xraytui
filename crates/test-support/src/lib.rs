@@ -26,6 +26,7 @@ pub mod http_fixture;
 
 pub use http_fixture::HttpFixtureServer;
 
+
 /// Bind an ephemeral loopback port and return it.
 ///
 /// The listener is dropped before returning, so there is a small race window.
@@ -51,18 +52,51 @@ pub fn free_port() -> io::Result<u16> {
 /// egress identity observable end to end.
 pub struct MockEgress {
     name: String,
+    mode: EgressMode,
     socks_addr: SocketAddr,
     identity_addr: SocketAddr,
     connections: Arc<AtomicU64>,
     tasks: Vec<JoinHandle<()>>,
 }
 
+/// What the SOCKS5 front end does with a CONNECT request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressMode {
+    /// Ignore the requested destination and splice to this egress's own identity
+    /// service. Use for an exit node, where the point is to observe *which*
+    /// egress the traffic left through.
+    Identify,
+    /// Connect to the destination that was actually requested. Use for an
+    /// intermediate chain hop, where the traffic has to keep travelling.
+    Forward,
+}
+
 impl MockEgress {
-    /// Start an egress named `name`.
+    /// Start an identifying egress named `name`.
     ///
     /// # Errors
     /// Propagates bind failures.
     pub async fn start(name: impl Into<String>) -> io::Result<Self> {
+        Self::start_with_mode(name, EgressMode::Identify).await
+    }
+
+    /// Start a faithfully forwarding egress, for use as an intermediate hop.
+    ///
+    /// A chain can only be proven with one of these in front: an identifying
+    /// egress would swallow the connection at the first hop, so reaching the
+    /// exit would be indistinguishable from never leaving hop one.
+    ///
+    /// # Errors
+    /// Propagates bind failures.
+    pub async fn start_forwarding(name: impl Into<String>) -> io::Result<Self> {
+        Self::start_with_mode(name, EgressMode::Forward).await
+    }
+
+    /// Start an egress with an explicit mode.
+    ///
+    /// # Errors
+    /// Propagates bind failures.
+    pub async fn start_with_mode(name: impl Into<String>, mode: EgressMode) -> io::Result<Self> {
         let name = name.into();
 
         let identity_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -102,13 +136,14 @@ impl MockEgress {
                 let counter = Arc::clone(&counter);
                 tokio::spawn(async move {
                     counter.fetch_add(1, Ordering::Relaxed);
-                    let _ = serve_socks5(stream, identity_addr).await;
+                    let _ = serve_socks5(stream, identity_addr, mode).await;
                 });
             }
         });
 
         Ok(Self {
             name,
+            mode,
             socks_addr,
             identity_addr,
             connections,
@@ -145,6 +180,12 @@ impl MockEgress {
     pub fn connection_count(&self) -> u64 {
         self.connections.load(Ordering::Relaxed)
     }
+
+    /// What this egress does with a CONNECT request.
+    #[must_use]
+    pub fn mode(&self) -> EgressMode {
+        self.mode
+    }
 }
 
 impl Drop for MockEgress {
@@ -155,8 +196,14 @@ impl Drop for MockEgress {
     }
 }
 
-/// Minimal SOCKS5 server: no authentication, CONNECT only, fixed destination.
-async fn serve_socks5(mut client: TcpStream, forward_to: SocketAddr) -> io::Result<()> {
+/// Minimal SOCKS5 server: no authentication, CONNECT only.
+async fn serve_socks5(
+    mut client: TcpStream,
+    identity: SocketAddr,
+    mode: EgressMode,
+) -> io::Result<()> {
+    let mut requested_host = String::new();
+    let mut requested_port: u16 = 0;
     // Greeting: VER NMETHODS METHODS...
     let mut header = [0_u8; 2];
     client.read_exact(&mut header).await?;
@@ -180,16 +227,19 @@ async fn serve_socks5(mut client: TcpStream, forward_to: SocketAddr) -> io::Resu
         0x01 => {
             let mut address = [0_u8; 4];
             client.read_exact(&mut address).await?;
+            requested_host = std::net::Ipv4Addr::from(address).to_string();
         }
         0x03 => {
             let mut length = [0_u8; 1];
             client.read_exact(&mut length).await?;
             let mut host = vec![0_u8; usize::from(length[0])];
             client.read_exact(&mut host).await?;
+            requested_host = String::from_utf8_lossy(&host).into_owned();
         }
         0x04 => {
             let mut address = [0_u8; 16];
             client.read_exact(&mut address).await?;
+            requested_host = std::net::Ipv6Addr::from(address).to_string();
         }
         _ => {
             client.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
@@ -198,13 +248,27 @@ async fn serve_socks5(mut client: TcpStream, forward_to: SocketAddr) -> io::Resu
     }
     let mut port = [0_u8; 2];
     client.read_exact(&mut port).await?;
+    requested_port = u16::from_be_bytes(port);
+
+    let upstream = match mode {
+        // Substituting the identity service for the requested destination is
+        // what makes the egress observable end to end.
+        EgressMode::Identify => TcpStream::connect(identity).await,
+        EgressMode::Forward => {
+            TcpStream::connect((requested_host.as_str(), requested_port)).await
+        }
+    };
+    let mut upstream = match upstream {
+        Ok(stream) => stream,
+        Err(error) => {
+            // SOCKS5 "host unreachable".
+            client.write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            return Err(error);
+        }
+    };
 
     // Success, bound address 0.0.0.0:0.
     client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
-
-    // Splice to the identity service rather than to the requested destination.
-    // That substitution is the whole point: it makes the egress identifiable.
-    let mut upstream = TcpStream::connect(forward_to).await?;
     let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     Ok(())
 }

@@ -25,19 +25,23 @@ xraytui-netd-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "process", "net", "time", "io-util", "fs", "signal", "sync"] }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 time = { workspace = true }
 rand = { workspace = true }
 futures-util = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["process", "fs"] }
 sha2 = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "net", "time", "io-util", "fs", "signal", "sync"] }
+xraytui-xray-api = { workspace = true }
+xraytui-test-support = { workspace = true }
+url = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
 proptest = { workspace = true }
