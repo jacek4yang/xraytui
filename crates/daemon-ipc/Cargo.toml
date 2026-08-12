@@ -13,16 +13,17 @@ unsafe_code = "forbid"
 [dependencies]
 xraytui-domain = { workspace = true }
 xraytui-secrets = { workspace = true }
+xraytui-config = { workspace = true }
 serde = { workspace = true }
 ciborium = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
 futures-util = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }

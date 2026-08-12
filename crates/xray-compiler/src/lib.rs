@@ -549,7 +549,6 @@ impl<'a> Builder<'a> {
                 (KillSwitch::Block, _) => Some(tags::CONTROL_BLOCK.to_owned()),
                 (_, Some(target)) => Some(self.target_tag(target)),
                 (KillSwitch::FallbackOnly, None) => Some(tags::CONTROL_BLOCK.to_owned()),
-                (KillSwitch::Off, Some(target)) => Some(self.target_tag(target)),
             };
             if fallback_tag.is_some() {
                 observed.insert(target_tag.clone());

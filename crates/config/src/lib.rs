@@ -14,13 +14,15 @@
 pub mod migrate;
 pub mod paths;
 mod schema;
+pub mod store;
 
 use std::path::{Path, PathBuf};
 
 pub use paths::{Paths, ensure_private_dir, write_private_atomic};
 pub use schema::{
-    ConfigFile, CoreSection, DnsSection, HealthSection, ReleaseChannel, RuntimeSection,
-    SubscriptionSection, TunSection, UiSection,
+    ConfigFile, CoreSection, DnsManager, DnsSection, FailurePolicy, HealthSection,
+    ReleaseChannel, RuntimeSection, SubscriptionSection, TunSection, UiSection,
+    is_valid_interface_name,
 };
 
 /// Current schema version of `config.toml` and the policy files.

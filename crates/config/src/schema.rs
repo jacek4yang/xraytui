@@ -163,8 +163,15 @@ pub struct CoreSection {
     /// Xray log level.
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    /// Prefer a Unix-domain commander socket over loopback TCP.
-    #[serde(default = "crate::schema::default_true")]
+    /// Ask for a Unix-domain commander socket instead of loopback TCP.
+    ///
+    /// **Not supported by any released Xray-core to date.** `app/commander`
+    /// calls `net.Listen("tcp", listen)` unconditionally, so a filesystem path
+    /// makes the core fail to start with "missing port in address". The option
+    /// exists so the safer transport can be switched on the day upstream gains
+    /// it; until then leave it false and read the residual risk in
+    /// `docs/THREAT-MODEL.md`, T1.
+    #[serde(default)]
     pub api_unix_socket: bool,
     /// Collect traffic statistics.
     #[serde(default = "crate::schema::default_true")]
@@ -196,7 +203,7 @@ impl Default for CoreSection {
             release_channel: ReleaseChannel::default(),
             pinned_version: None,
             log_level: default_log_level(),
-            api_unix_socket: true,
+            api_unix_socket: false,
             stats: true,
             sniffing: false,
             lan_access: false,
@@ -679,6 +686,8 @@ mod tests {
         assert_eq!(config.tun.mode, SystemMode::Off);
         assert_eq!(config.dns.manager, DnsManager::None);
         assert!(!config.ui.mouse);
-        assert!(config.core.api_unix_socket);
+        // Loopback TCP, because the pinned Xray release cannot serve the
+        // commander on a Unix socket.
+        assert!(!config.core.api_unix_socket);
     }
 }

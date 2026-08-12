@@ -3298,7 +3298,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "xraytui-cli",
- "xraytui-tui",
 ]
 
 [[package]]
@@ -3327,7 +3326,7 @@ dependencies = [
  "xraytui-import",
  "xraytui-ipc",
  "xraytui-secrets",
- "xraytui-tui",
+ "xraytui-test-support",
 ]
 
 [[package]]
@@ -3432,6 +3431,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "xraytui-config",
  "xraytui-domain",
  "xraytui-secrets",
 ]
@@ -3622,13 +3622,17 @@ dependencies = [
  "anyhow",
  "clap",
  "rustix 1.1.4",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "xraytui-config",
  "xraytui-controller",
  "xraytui-domain",
+ "xraytui-import",
  "xraytui-ipc",
+ "xraytui-xray-api",
+ "xraytui-xray-compiler",
 ]
 
 [[package]]

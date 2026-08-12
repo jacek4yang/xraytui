@@ -16,7 +16,6 @@ unsafe_code = "forbid"
 
 [dependencies]
 xraytui-cli = { workspace = true }
-xraytui-tui = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

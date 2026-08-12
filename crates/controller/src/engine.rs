@@ -12,9 +12,11 @@ use xraytui_xray_api::{ApiClient, ApiEndpoint};
 use xraytui_xray_compiler::{CompileOptions, Compiled, compile, tags};
 
 use crate::core::{
-    self, CoreInfo, HealthGate, LaunchSpec, RestartPolicy, RunningCore, Version, unix_now,
+    self, CoreInfo, HealthGate, LaunchSpec, RestartPolicy, RunningCore, unix_now,
 };
 use crate::ControllerError;
+#[cfg(test)]
+use crate::core::Version;
 
 /// Static settings the engine needs that are not part of the routing model.
 #[derive(Debug, Clone)]
