@@ -10,6 +10,12 @@ per-scenario state.
 
 ### Added
 
+* A scheduler, shared by health probes and subscription updates: intervals with
+  a floor, doubling backoff to a cap, jitter derived from a hash of the entry's
+  key rather than a random number so deadlines are reproducible and stable
+  across restarts, a bounded number of jobs per tick, and prioritisation that
+  probes what a profile is using before what nobody has selected.
+
 * Subscription fetching, as four stages of which only the last can change
   anything: fetch (streamed under a size cap, conditional on the recorded
   `ETag`), normalise (base64 or plain, bounded-regex filters, dedup), diff
@@ -79,8 +85,6 @@ per-scenario state.
 
 ### Known limitations
 
-* Nothing runs on a schedule: health probes and subscription updates both work
-  on demand only.
 
 * The interface can switch profiles, cycle the mode and probe nodes, but cannot
   yet create a node, edit a rule or add a subscription; those stay CLI-only.

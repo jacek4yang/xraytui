@@ -45,6 +45,11 @@ The central claim of the project is implemented and proven by test:
   key is pressed by a test; every pane is drawn into a buffer at sizes from
   80x24 down to 1x1 and asserted not to overflow; the restore sequence is
   asserted byte for byte (scenario L).
+* **Probes and subscription updates run on their own**, prioritised so the node
+  a profile is using is checked before one nobody has selected, backed off on
+  failure, jittered from a hash of the entry's key so a restart does not re-roll
+  into a stampede, and bounded per tick so a laptop waking from suspend queues
+  rather than floods.
 * **A subscription updates transactionally**, against a real HTTP server: a
   provider that adds, renames and drops nodes in one update produces exactly
   those three changes; a profile pointing at a renamed node keeps working; and
@@ -63,7 +68,7 @@ Run on 2026-08-12 with Rust 1.95.0 and Xray-core v26.3.27.
 | `cargo fmt --all --check` | **pass** (no output) |
 | `cargo check --workspace --all-targets` | **pass** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **pass**, no warnings |
-| `cargo test --workspace` | **pass**, 628 tests, 0 failures |
+| `cargo test --workspace` | **pass**, 665 tests, 0 failures |
 | `sudo ./scripts/netns-test.sh` | **pass**, 9 privileged tests, 0 failures |
 | `cargo doc --workspace --no-deps` | **pass**, 0 warnings |
 | `cargo build --release --workspace` | **pass** |
@@ -89,9 +94,9 @@ been reviewed or accepted; treat the dependency set as unaudited.
 | `xraytui-config` | 34 | permissions, atomicity, schema rejection, migration ladder |
 | `xraytui-cli` | 33 + 11 | the 11 run the real `xraytui`/`xraytuid` binaries |
 | `xraytui-ipc` | 25 | framing limits, version negotiation, streaming, filters |
-| `xraytui-controller` | 24 + 6 | the 6 are the acceptance scenarios against a real core |
+| `xraytui-controller` | 49 + 6 | includes the scheduler; the 6 are the acceptance scenarios against a real core |
 | `xraytui-netd-protocol` | 17 | validation of the privileged operation set |
-| `xraytuid` | 13 + 9 | includes the netd request builder and the helper server |
+| `xraytuid` | 30 + 9 | includes the netd request builder and the sweeper |
 | `xtask` | 8 + 5 | the 5 are the no-shell and unsafe-confinement invariants |
 | others | remainder | secrets, xray-model, xray-api, test-support |
 
@@ -147,7 +152,7 @@ absent one:
 5. **Health probing is not scheduled.** `xraytui node test` probes on demand and
    works; the periodic sweep with prioritisation and backoff is not wired up.
 
-6. **The DNS backends have not been driven against a live resolver.** The
+5. **The DNS backends have not been driven against a live resolver.** The
    systemd-resolved client is written against the documented `resolve1`
    interface and its marshalling is tested byte for byte; `resolvconf` is tested
    against a stand-in that records its argv and stdin. Neither has talked to the
@@ -278,12 +283,13 @@ once.
 
 ## The next single most important thing
 
-The scheduler. Health probes and subscription updates both work on demand and
-neither runs on its own, so a long-running daemon's picture of the world goes
-stale until somebody asks. Both need the same thing — a timer with
-prioritisation, jitter and backoff — and building it once serves both.
+Per-profile `tproxy` inbounds, to finish scenario M. It is the last acceptance
+scenario with a genuine hole rather than a missing test environment: the cgroup
+classification and the marking behind it are implemented and proven in a
+namespace, and what is missing is a listener per profile and a policy rule per
+mark so that the mark chooses an *exit* rather than only whether traffic enters
+the tunnel.
 
-After that, in order: per-profile `tproxy` inbounds to finish scenario M;
-driving the DNS backends against a live systemd-resolved; a durable state store
-so runtime history survives a restart; editing from the interface; and
-`cargo audit`/`cargo deny`.
+After that, in order: driving the DNS backends against a live systemd-resolved;
+a durable state store so runtime history survives a restart; editing from the
+interface; and `cargo audit`/`cargo deny`.

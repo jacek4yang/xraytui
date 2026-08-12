@@ -3638,6 +3638,7 @@ dependencies = [
  "xraytui-ipc",
  "xraytui-linux-net",
  "xraytui-netd-protocol",
+ "xraytui-secrets",
  "xraytui-subscription",
  "xraytui-xray-api",
  "xraytui-xray-compiler",

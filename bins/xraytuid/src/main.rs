@@ -15,6 +15,7 @@
 mod daemon;
 mod lock;
 mod netd;
+mod sweeper;
 
 use std::path::PathBuf;
 

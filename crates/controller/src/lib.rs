@@ -30,6 +30,7 @@
 pub mod core;
 pub mod engine;
 pub mod health;
+pub mod schedule;
 
 pub use core::{
     CoreInfo, HealthGate, HealthReport, LaunchSpec, RestartPolicy, RunningCore, Version,
@@ -37,6 +38,7 @@ pub use core::{
 };
 pub use engine::{ApplyOutcome, ChangePlan, Engine, EngineConfig};
 pub use health::{ProbeRequest, probe_through_socks};
+pub use schedule::{Entry, Schedule, node_priorities, priority};
 
 /// Everything that can go wrong in the controller.
 #[derive(Debug, thiserror::Error)]

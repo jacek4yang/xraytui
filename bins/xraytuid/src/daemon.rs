@@ -26,6 +26,8 @@ pub struct Daemon {
     /// The daemon's side of the privilege boundary. Present whether or not a
     /// helper is installed; asking it is how the daemon finds out.
     netd: Arc<crate::netd::Netd>,
+    /// The periodic worker: health probes and subscription updates.
+    sweeper: Arc<crate::sweeper::Sweeper>,
 }
 
 impl Daemon {
@@ -58,6 +60,7 @@ impl Daemon {
             netd: Arc::new(crate::netd::Netd::new(std::path::PathBuf::from(
                 xraytui_netd_protocol::DEFAULT_SOCKET,
             ))),
+            sweeper: Arc::new(crate::sweeper::Sweeper::new()),
             paths,
             config,
             engine: Arc::new(Mutex::new(engine)),
@@ -108,6 +111,18 @@ impl Daemon {
         let handler = Arc::new(self);
         let broadcaster = Arc::clone(&handler);
         let ticker = tokio::spawn(async move { broadcaster.broadcast_state_periodically().await });
+        let sweeper_task = tokio::spawn({
+            let handler = Arc::clone(&handler);
+            async move {
+                let mut interval = tokio::time::interval(crate::sweeper::TICK);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    handler.sweep().await;
+                }
+            }
+        });
+
         let heartbeat = tokio::spawn({
             let netd = Arc::clone(&netd);
             let engine = Arc::clone(&engine);
@@ -129,6 +144,7 @@ impl Daemon {
         server.serve(Arc::clone(&handler), signal).await;
         ticker.abort();
         heartbeat.abort();
+        sweeper_task.abort();
 
         // Order matters on the way out: give the machine's networking back
         // before stopping the core, so there is never a window where the
@@ -191,6 +207,9 @@ impl Daemon {
         let desired = engine.desired().clone();
         drop(engine);
         self.persist().await?;
+        self.sweeper
+            .reconcile(&self.config, &desired, xraytui_linux_net::lease::now())
+            .await;
         self.reconcile_tunnel(&desired).await?;
         Ok(response_for(outcome, warnings))
     }
@@ -238,6 +257,44 @@ impl Daemon {
         out.sort();
         out.dedup();
         out
+    }
+
+    /// Run whatever the schedule says is due.
+    ///
+    /// Failures are recorded rather than propagated: a node that cannot be
+    /// reached is exactly what a probe is for, and a provider that is down
+    /// should back off rather than fill the log.
+    async fn sweep(&self) {
+        let now = xraytui_linux_net::lease::now();
+        let done = self
+            .sweeper
+            .tick(now, |job: crate::sweeper::Job| async move {
+                match job {
+                crate::sweeper::Job::ProbeNode(id) => {
+                    match self.test(TestTarget::Node(id.clone())).await {
+                        Ok(_) => true,
+                        Err(error) => {
+                            tracing::debug!(node = %id, %error, "scheduled probe failed");
+                            false
+                        }
+                    }
+                }
+                crate::sweeper::Job::UpdateSubscription(id) => {
+                    match self.subscription_update(std::slice::from_ref(&id)).await {
+                        Ok(_) => true,
+                        Err(error) => {
+                            tracing::warn!(subscription = %id, %error, "scheduled update failed");
+                            false
+                        }
+                    }
+                }
+                }
+            })
+            .await;
+        if !done.is_empty() {
+            let keys: Vec<String> = done.iter().map(crate::sweeper::Job::key).collect();
+            tracing::debug!(jobs = ?keys, "scheduled work finished");
+        }
     }
 
     /// Fetch a subscription and describe what an update would do.
@@ -492,6 +549,24 @@ impl Daemon {
             },
             remedy: (!reachable)
                 .then(|| "sudo systemctl enable --now xraytui-netd.service".to_owned()),
+        });
+
+        let scheduled = self.sweeper.len().await;
+        let next = self.sweeper.next_due().await;
+        checks.push(DoctorCheck {
+            name: "scheduler".into(),
+            status: CheckStatus::Pass,
+            detail: match (scheduled, next) {
+                (0, _) => "nothing is scheduled; probes and subscription updates run on \
+                           demand only"
+                    .to_owned(),
+                (count, Some(at)) => {
+                    let now = xraytui_linux_net::lease::now();
+                    format!("{count} scheduled; next in {}s", at.saturating_sub(now))
+                }
+                (count, None) => format!("{count} scheduled"),
+            },
+            remedy: None,
         });
 
         checks.push(DoctorCheck {
