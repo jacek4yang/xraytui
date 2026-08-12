@@ -10,6 +10,16 @@ per-scenario state.
 
 ### Added
 
+* Subscription fetching, as four stages of which only the last can change
+  anything: fetch (streamed under a size cap, conditional on the recorded
+  `ETag`), normalise (base64 or plain, bounded-regex filters, dedup), diff
+  (identity by canonical fingerprint, so a rename keeps the node's identifier
+  and the profiles pointing at it), and apply (on a clone, validated before it
+  is returned). Refuses to remove a node something points at, and refuses an
+  update that would empty the node list — a provider outage looks exactly like
+  one. `xraytui subscription diff` and `update` share the code, so the preview
+  cannot disagree with what it previews.
+
 * The interactive interface (`xraytui`, or `xraytui tui`): six panes, an
   incremental filter, a target picker that switches a profile without restarting
   the core, and a key reference generated from the same table the tests press.
@@ -69,11 +79,13 @@ per-scenario state.
 
 ### Known limitations
 
+* Nothing runs on a schedule: health probes and subscription updates both work
+  on demand only.
+
 * The interface can switch profiles, cycle the mode and probe nodes, but cannot
   yet create a node, edit a rule or add a subscription; those stay CLI-only.
 * Per-profile transparent egress: cgroup classification and marking work, but
   selecting a different exit per profile needs a `tproxy` inbound per profile.
-* Subscriptions cannot be fetched; nodes can be imported by hand.
 * Runtime history is in memory only.
 * The DNS backends have not been driven against a live resolver.
 

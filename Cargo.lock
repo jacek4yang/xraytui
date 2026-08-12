@@ -3530,6 +3530,7 @@ dependencies = [
  "xraytui-domain",
  "xraytui-import",
  "xraytui-secrets",
+ "xraytui-test-support",
 ]
 
 [[package]]
@@ -3637,6 +3638,7 @@ dependencies = [
  "xraytui-ipc",
  "xraytui-linux-net",
  "xraytui-netd-protocol",
+ "xraytui-subscription",
  "xraytui-xray-api",
  "xraytui-xray-compiler",
 ]

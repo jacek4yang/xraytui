@@ -31,6 +31,7 @@ pub mod runtime;
 pub mod state;
 pub mod subscription;
 
+pub use ids::fresh_suffix;
 pub use ids::{
     AppRuleId, ChainId, GenerationId, GroupId, IdError, NodeId, ProfileId, RoutingRuleId,
     SubscriptionId, slugify, validate_slug,
@@ -51,6 +52,7 @@ pub use runtime::{
     ConnectionRecord, CoreStatus, DnsStatus, HealthRecord, HealthState, ProbeKind, ProbeOutcome,
     ProbeResult, ProfileRuntime, RuntimeState, TrafficCounters, TunStatus,
 };
+pub use state::regex::{Error as PatternError, Regex as Pattern};
 pub use state::{DesiredState, Diagnostic, Severity};
 pub use subscription::{DiffCounts, NodeChange, Subscription, SubscriptionDiff, SubscriptionMeta};
 

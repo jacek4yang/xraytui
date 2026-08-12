@@ -445,12 +445,23 @@ impl DesiredState {
     }
 
     fn validate_chains(&self, out: &mut Vec<Diagnostic>) {
-        for id in self.chains.keys() {
+        for (id, chain) in &self.chains {
             for error in self.validate_chain(id) {
-                out.push(
+                // A disabled chain is not compiled, so a dangling reference in
+                // one cannot stop the core from starting. Reporting it as an
+                // error anyway would mean a subscription update that removes a
+                // hop leaves the user unable to save *anything* until they
+                // delete the chain — when what they usually want is to disable
+                // it, keep the hops, and repair it later.
+                let diagnostic = if chain.enabled {
                     Diagnostic::error("chain.invalid", error.to_string())
-                        .about(format!("chain '{id}'")),
-                );
+                } else {
+                    Diagnostic::warning(
+                        "chain.invalid-disabled",
+                        format!("{error} (the chain is disabled, so it is not compiled)"),
+                    )
+                };
+                out.push(diagnostic.about(format!("chain '{id}'")));
             }
         }
     }
@@ -737,7 +748,15 @@ fn compile_patterns(patterns: &[String]) -> Vec<regex::Regex> {
 
 // A tiny regex shim so the domain crate does not pull the full `regex` crate
 // into every consumer. Only the subset used by group filters is implemented.
-mod regex {
+/// A deliberately small, bounded regular-expression engine.
+///
+/// Group filters and subscription filters both run patterns over text that a
+/// provider controls. A general-purpose backtracking engine given
+/// provider-controlled input is a denial of service waiting to be handed to
+/// you, so this one has a hard step budget and a hard pattern-length limit, and
+/// rejects the constructs that make backtracking explode rather than trying to
+/// survive them.
+pub mod regex {
     /// Minimal anchored-substring matcher supporting a useful subset of regex.
     ///
     /// Supported: literal text, `.`, `*`, `+`, `?`, `^`, `$`, `[abc]`, `[^abc]`,

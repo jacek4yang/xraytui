@@ -22,6 +22,7 @@ xraytui-config = { workspace = true }
 xraytui-ipc = { workspace = true }
 xraytui-domain = { workspace = true }
 xraytui-import = { workspace = true }
+xraytui-subscription = { workspace = true }
 xraytui-xray-api = { workspace = true }
 xraytui-xray-compiler = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time", "signal", "process", "fs"] }

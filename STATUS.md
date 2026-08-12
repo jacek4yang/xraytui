@@ -1,9 +1,10 @@
 # Status
 
-**Not production ready**, but no longer missing a whole component. Nine of the
-fourteen mandatory acceptance scenarios are implemented and passing against a
-real Xray-core, a real kernel or a real terminal buffer; three more pass in part;
-two are not implemented and are marked as such below rather than claimed.
+**Not production ready**, but every mandatory component now exists. Ten of the
+fourteen acceptance scenarios are implemented and passing against a real
+Xray-core, a real kernel, a real HTTP server or a real terminal buffer; three
+more pass in part; one is not implemented and is marked as such below rather
+than claimed.
 
 Read this file before trusting anything the README says.
 
@@ -44,6 +45,11 @@ The central claim of the project is implemented and proven by test:
   key is pressed by a test; every pane is drawn into a buffer at sizes from
   80x24 down to 1x1 and asserted not to overflow; the restore sequence is
   asserted byte for byte (scenario L).
+* **A subscription updates transactionally**, against a real HTTP server: a
+  provider that adds, renames and drops nodes in one update produces exactly
+  those three changes; a profile pointing at a renamed node keeps working; and
+  an update that would break a profile, empty the node list or arrive as an
+  error page is refused with nothing written (scenario G).
 * The **CLI and daemon** talk to each other over a versioned CBOR socket, with
   the documented output formats and exit codes, proven by running the real
   binaries against each other.
@@ -57,7 +63,7 @@ Run on 2026-08-12 with Rust 1.95.0 and Xray-core v26.3.27.
 | `cargo fmt --all --check` | **pass** (no output) |
 | `cargo check --workspace --all-targets` | **pass** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **pass**, no warnings |
-| `cargo test --workspace` | **pass**, 571 tests, 0 failures |
+| `cargo test --workspace` | **pass**, 628 tests, 0 failures |
 | `sudo ./scripts/netns-test.sh` | **pass**, 9 privileged tests, 0 failures |
 | `cargo doc --workspace --no-deps` | **pass**, 0 warnings |
 | `cargo build --release --workspace` | **pass** |
@@ -76,6 +82,7 @@ been reviewed or accepted; treat the dependency set as unaudited.
 |---|---|---|
 | `xraytui-linux-net` | 108 + 9 | the 9 are the privileged tests, run only in a namespace |
 | `xraytui-import` | 67 | includes proptests asserting no panic on arbitrary input |
+| `xraytui-subscription` | 49 + 8 | the 8 run the whole pipeline against a real HTTP server |
 | `xraytui-domain` | 55 | includes proptests for the slug and bounded-regex code |
 | `xraytui-xray-compiler` | 41 + 6 | the 6 are validated by a real `xray run -test` |
 | `xraytui-tui` | 65 | every key pressed; every pane drawn into a buffer |
@@ -97,8 +104,8 @@ been reviewed or accepted; treat the dependency set as unaudited.
 | **C** | shared TUN rule mode, per-app routing in a netns | **passing** — `linux-net/tests/netns.rs`; the kernel's own `ip route get` is the oracle |
 | D | two apps concurrently plus DNS following policy | **partial** — the two-app half is scenario A; the DNS backends are implemented and unit-tested but no live resolver was driven |
 | **E** | two-hop chain reaches the terminal through hop 1 | **passing** — proven by a connection count at the transit hop |
-| F | import valid/malformed/unsupported node representations | **passing at unit level** — 67 tests including proptests; not wired to a live subscription |
-| G | subscription add/change/remove with diff and rollback | **not implemented** — the diff types and transactional model exist; the fetcher does not |
+| **F** | import valid/malformed/unsupported node representations | **passing** — 67 unit tests including proptests, and exercised end to end through the subscription pipeline |
+| **G** | subscription add/change/remove with diff and rollback | **passing** — `subscription/tests/transaction.rs`, against `HttpFixtureServer` |
 | H | terminal and PNG QR round-trip decode | **passing at unit level** — `render_png` → `decode_png` reproduces the exact string |
 | **I** | kill Xray in restore mode | **passing** — listener death observed, backoff restart scheduled and verified |
 | **J** | kill the daemon while TUN is active; lease expiry cleanup | **passing** — both mechanisms: the connection closing releases immediately, and an expired lease is reclaimed by the reaper |
@@ -127,26 +134,20 @@ absent one:
    gap is specifically *two instances of the same executable* taking different
    exits.
 
-2. **Subscriptions cannot be fetched.** The domain model, diff types, transaction
-   semantics, HTTP fixture server and size caps are all in place; the client that
-   performs the fetch is not. `xraytui node import --file` and `--stdin` do work,
-   so a subscription can be updated by hand with `curl | xraytui node import
-   --stdin`.
-
-3. **The state store is a stub.** Runtime history and health history live in
+2. **The state store is a stub.** Runtime history and health history live in
    memory and are lost when the daemon restarts. Policy is durable — it is TOML
    on disk — so nothing the user configured is at risk.
 
-4. **`xraytui app assign` prints the TOML to add** rather than editing the file.
+3. **`xraytui app assign` prints the TOML to add** rather than editing the file.
    Application rules are compiled and routed correctly once present; only the
    editing command is missing.
 
-5. **No `cargo audit`/`cargo deny` run.** See above.
+4. **No `cargo audit`/`cargo deny` run.** See above.
 
-6. **Health probing is not scheduled.** `xraytui node test` probes on demand and
+5. **Health probing is not scheduled.** `xraytui node test` probes on demand and
    works; the periodic sweep with prioritisation and backoff is not wired up.
 
-7. **The DNS backends have not been driven against a live resolver.** The
+6. **The DNS backends have not been driven against a live resolver.** The
    systemd-resolved client is written against the documented `resolve1`
    interface and its marshalling is tested byte for byte; `resolvconf` is tested
    against a stand-in that records its argv and stdin. Neither has talked to the
@@ -277,13 +278,12 @@ once.
 
 ## The next single most important thing
 
-The subscription fetcher (scenario G). It is the last mandatory feature that
-needs new network code, and it is the one piece that stands between "a proxy
-client you can use" and "a proxy client you can keep up to date". The domain
-model, the diff types, the transactional update, the size caps and the HTTP
-fixture server all already exist; what is missing is the client that performs the
-fetch and the scheduler that decides when.
+The scheduler. Health probes and subscription updates both work on demand and
+neither runs on its own, so a long-running daemon's picture of the world goes
+stale until somebody asks. Both need the same thing — a timer with
+prioritisation, jitter and backoff — and building it once serves both.
 
 After that, in order: per-profile `tproxy` inbounds to finish scenario M;
-driving the DNS backends against a live systemd-resolved; editing from the
-interface; and `cargo audit`/`cargo deny`.
+driving the DNS backends against a live systemd-resolved; a durable state store
+so runtime history survives a restart; editing from the interface; and
+`cargo audit`/`cargo deny`.

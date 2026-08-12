@@ -240,6 +240,155 @@ impl Daemon {
         out
     }
 
+    /// Fetch a subscription and describe what an update would do.
+    ///
+    /// Changes nothing. The same function produces the diff that
+    /// [`Daemon::subscription_update`] applies, so a preview cannot disagree
+    /// with the thing it previews.
+    async fn subscription_diff(
+        &self,
+        id: &xraytui_domain::SubscriptionId,
+    ) -> Result<xraytui_domain::SubscriptionDiff, IpcError> {
+        let (subscription, state) = {
+            let engine = self.engine.lock().await;
+            let desired = engine.desired();
+            let subscription =
+                desired
+                    .subscriptions
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| IpcError::NotFound {
+                        kind: "subscription".into(),
+                        id: id.to_string(),
+                    })?;
+            (subscription, desired.clone())
+        };
+
+        let options = self.fetch_options(&subscription).await;
+        let fetched = xraytui_subscription::fetch(&subscription.url, &subscription.meta, &options)
+            .await
+            .map_err(|error| IpcError::Internal(error.to_string()))?;
+
+        let (body, meta) = match fetched {
+            xraytui_subscription::Fetched::Unchanged => {
+                // Nothing to compare against; an empty diff is the honest answer
+                // and costs the provider nothing.
+                return Ok(xraytui_domain::SubscriptionDiff {
+                    changes: Vec::new(),
+                    meta: subscription.meta.clone(),
+                    deduplicated: 0,
+                    filtered_out: 0,
+                });
+            }
+            xraytui_subscription::Fetched::Body { text, meta } => (text, meta),
+        };
+
+        let normalised = xraytui_subscription::normalise(&subscription, &body)
+            .map_err(|error| IpcError::Invalid(error.to_string()))?;
+        Ok(xraytui_subscription::compute(id, &state, &normalised, meta))
+    }
+
+    /// Update one or more subscriptions, each transactionally.
+    ///
+    /// Every subscription is applied on its own: one provider being down, or
+    /// sending something that would empty a user's node list, must not stop the
+    /// others from updating.
+    async fn subscription_update(
+        &self,
+        ids: &[xraytui_domain::SubscriptionId],
+    ) -> Result<Response, IpcError> {
+        let mut warnings = Vec::new();
+        let mut applied = 0usize;
+
+        for id in ids {
+            let diff = match self.subscription_diff(id).await {
+                Ok(diff) => diff,
+                Err(error) => {
+                    warnings.push(format!("{id}: {error}"));
+                    continue;
+                }
+            };
+            if diff.changes.is_empty() {
+                continue;
+            }
+
+            let (state, subscription) = {
+                let engine = self.engine.lock().await;
+                let desired = engine.desired().clone();
+                let Some(subscription) = desired.subscriptions.get(id).cloned() else {
+                    continue;
+                };
+                (desired, subscription)
+            };
+
+            match xraytui_subscription::apply(
+                &state,
+                &subscription,
+                &diff,
+                xraytui_subscription::apply::ApplyOptions::default(),
+            ) {
+                Ok((next, outcome)) => {
+                    warnings.extend(outcome.warnings.iter().map(|w| format!("{id}: {w}")));
+                    // The engine decides whether this needs a restart or a
+                    // handful of API calls, exactly as any other state change
+                    // does.
+                    self.apply(next).await?;
+                    applied += 1;
+                    tracing::info!(
+                        subscription = %id,
+                        added = outcome.added,
+                        changed = outcome.changed,
+                        removed = outcome.removed,
+                        "subscription updated"
+                    );
+                }
+                Err(error) => warnings.push(format!("{id}: {error}")),
+            }
+        }
+
+        Ok(Response::Applied {
+            restarted: applied > 0,
+            switched: Vec::new(),
+            warnings,
+        })
+    }
+
+    /// Build the fetch options for a subscription, resolving `fetch_via_profile`.
+    ///
+    /// Fetching through a profile is how a user reaches a provider their network
+    /// blocks. The profile is resolved to its **own loopback SOCKS listener**,
+    /// which is the only address that can appear here — never a remote proxy
+    /// somebody could put in a configuration file.
+    async fn fetch_options(
+        &self,
+        subscription: &xraytui_domain::Subscription,
+    ) -> xraytui_subscription::FetchOptions {
+        let mut options = xraytui_subscription::FetchOptions::for_subscription(subscription);
+        options.timeout = Duration::from_millis(self.config.subscription.timeout_ms);
+        options.max_bytes = options
+            .max_bytes
+            .min(self.config.subscription.max_response_bytes);
+
+        if let Some(profile) = &subscription.fetch_via_profile {
+            let engine = self.engine.lock().await;
+            let listener = engine
+                .runtime()
+                .profiles
+                .iter()
+                .find(|entry| entry.id == *profile)
+                .and_then(|entry| entry.socks_listen.clone());
+            match listener {
+                Some(address) => options.proxy = Some(format!("socks5h://{address}")),
+                None => tracing::warn!(
+                    %profile,
+                    "this subscription asks to be fetched through a profile with no \
+                     running SOCKS listener; fetching directly instead"
+                ),
+            }
+        }
+        options
+    }
+
     async fn doctor(&self) -> DoctorReport {
         let mut checks = Vec::new();
         let engine = self.engine.lock().await;
@@ -643,13 +792,26 @@ impl ServerHandler for Daemon {
 
                 Request::Doctor => Ok(Response::Doctor(Box::new(self.doctor().await))),
 
-                Request::SubscriptionDiff(_)
-                | Request::SubscriptionUpdate(_)
-                | Request::SubscriptionUpdateAll => Err(IpcError::Invalid(
-                    "subscription fetching is not wired into this daemon build; \
-                     see STATUS.md for what is implemented"
-                        .into(),
-                )),
+                Request::SubscriptionDiff(id) => {
+                    let diff = self.subscription_diff(&id).await?;
+                    Ok(Response::Diff(Box::new(diff)))
+                }
+
+                Request::SubscriptionUpdate(id) => self.subscription_update(&[id]).await,
+
+                Request::SubscriptionUpdateAll => {
+                    let ids: Vec<xraytui_domain::SubscriptionId> = self
+                        .engine
+                        .lock()
+                        .await
+                        .desired()
+                        .subscriptions
+                        .values()
+                        .filter(|subscription| subscription.enabled)
+                        .map(|subscription| subscription.id.clone())
+                        .collect();
+                    self.subscription_update(&ids).await
+                }
 
                 Request::TunPlan => {
                     let state = self.engine.lock().await.desired().clone();
