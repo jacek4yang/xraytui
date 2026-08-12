@@ -249,6 +249,32 @@ fn the_cli_talks_to_the_daemon_in_every_output_format() {
 }
 
 #[test]
+fn the_interface_refuses_a_terminal_it_cannot_take_over_and_says_why() {
+    require_xray!("tui");
+    let Some(daemon) = Daemon::start() else {
+        panic!("the daemon did not come up");
+    };
+
+    // Under a test harness standard output is a pipe, not a terminal, so
+    // entering raw mode fails. What matters is that the failure is reported
+    // rather than the process hanging or leaving the terminal altered.
+    let output = daemon.cli(&["tui"]);
+    assert!(
+        !output.status.success(),
+        "the interface cannot run without a terminal"
+    );
+    let message = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        message.contains("terminal"),
+        "the reason must name the terminal: {message}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("\u{1b}[?1049h"),
+        "nothing may be left on the alternate screen"
+    );
+}
+
+#[test]
 fn tun_plan_describes_the_changes_without_making_any() {
     require_xray!("tun plan");
     let Some(daemon) = Daemon::start() else {

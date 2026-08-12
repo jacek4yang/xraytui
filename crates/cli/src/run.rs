@@ -60,14 +60,20 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
     }
 
     let socket = paths.control_socket();
+
+    // The interface opens its own connections — one for requests and one for
+    // the log stream — so it is dispatched before the shared client is made.
+    if matches!(cli.command, None | Some(Command::Tui)) {
+        return xraytui_tui::run(socket)
+            .await
+            .map_err(|error| CliError::Other(error.to_string()));
+    }
+
     let mut client = Client::connect(&socket).await?;
 
     match cli.command {
-        None | Some(Command::Tui) => Err(CliError::Other(
-            "the interactive interface is not part of this build; \
-             use the subcommands, or see STATUS.md"
-                .to_owned(),
-        )),
+        // Handled above, before the client was connected.
+        None | Some(Command::Tui) => Ok(()),
 
         Some(Command::Status) => status(&mut client, cli.format).await,
         Some(Command::Up) => simple(&mut client, Request::Up, "core started", cli.quiet).await,

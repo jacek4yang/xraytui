@@ -18,7 +18,7 @@ xraytui-import = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "macros"] }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 nucleo-matcher = { workspace = true }
@@ -28,4 +28,5 @@ futures-util = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-insta = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

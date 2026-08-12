@@ -10,6 +10,12 @@ per-scenario state.
 
 ### Added
 
+* The interactive interface (`xraytui`, or `xraytui tui`): six panes, an
+  incremental filter, a target picker that switches a profile without restarting
+  the core, and a key reference generated from the same table the tests press.
+  Designed for 80x24; degrades by dropping panes rather than wrapping; restores
+  the terminal on a clean exit, an error and a panic.
+
 * `xraytui-linux-net` and `xraytui-netd`: the privileged network backend and the
   helper that speaks the operation set. A safe rtnetlink client, persistent TUN
   creation, the project's nftables table, cgroup v2 classification by `pidfd`,
@@ -63,7 +69,8 @@ per-scenario state.
 
 ### Known limitations
 
-* No TUI.
+* The interface can switch profiles, cycle the mode and probe nodes, but cannot
+  yet create a node, edit a rule or add a subscription; those stay CLI-only.
 * Per-profile transparent egress: cgroup classification and marking work, but
   selecting a different exit per profile needs a `tproxy` inbound per profile.
 * Subscriptions cannot be fetched; nodes can be imported by hand.

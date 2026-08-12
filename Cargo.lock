@@ -3327,6 +3327,7 @@ dependencies = [
  "xraytui-ipc",
  "xraytui-secrets",
  "xraytui-test-support",
+ "xraytui-tui",
 ]
 
 [[package]]
@@ -3552,10 +3553,10 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "futures-util",
- "insta",
  "nucleo-matcher",
  "ratatui",
  "serde",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",

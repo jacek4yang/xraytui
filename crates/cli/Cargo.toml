@@ -14,6 +14,7 @@ unsafe_code = "forbid"
 xraytui-domain = { workspace = true }
 xraytui-secrets = { workspace = true }
 xraytui-ipc = { workspace = true }
+xraytui-tui = { workspace = true }
 xraytui-import = { workspace = true }
 xraytui-config = { workspace = true }
 clap = { workspace = true }

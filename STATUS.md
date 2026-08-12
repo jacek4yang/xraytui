@@ -1,9 +1,9 @@
 # Status
 
-**Not production ready**, but no longer missing its privileged half. Eight of
-the fourteen mandatory acceptance scenarios are implemented and passing against
-a real Xray-core or a real kernel; three more pass in part; three are not
-implemented and are marked as such below rather than claimed.
+**Not production ready**, but no longer missing a whole component. Nine of the
+fourteen mandatory acceptance scenarios are implemented and passing against a
+real Xray-core, a real kernel or a real terminal buffer; three more pass in part;
+two are not implemented and are marked as such below rather than claimed.
 
 Read this file before trusting anything the README says.
 
@@ -40,6 +40,10 @@ The central claim of the project is implemented and proven by test:
   in part; see below).
 * **State this project did not create is left alone.** A route and a rule put in
   the same table by something else survive a full teardown.
+* **The interface runs at 80x24 and gives the terminal back.** Every documented
+  key is pressed by a test; every pane is drawn into a buffer at sizes from
+  80x24 down to 1x1 and asserted not to overflow; the restore sequence is
+  asserted byte for byte (scenario L).
 * The **CLI and daemon** talk to each other over a versioned CBOR socket, with
   the documented output formats and exit codes, proven by running the real
   binaries against each other.
@@ -53,7 +57,7 @@ Run on 2026-08-12 with Rust 1.95.0 and Xray-core v26.3.27.
 | `cargo fmt --all --check` | **pass** (no output) |
 | `cargo check --workspace --all-targets` | **pass** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **pass**, no warnings |
-| `cargo test --workspace` | **pass**, 500 tests, 0 failures |
+| `cargo test --workspace` | **pass**, 571 tests, 0 failures |
 | `sudo ./scripts/netns-test.sh` | **pass**, 9 privileged tests, 0 failures |
 | `cargo doc --workspace --no-deps` | **pass**, 0 warnings |
 | `cargo build --release --workspace` | **pass** |
@@ -74,8 +78,9 @@ been reviewed or accepted; treat the dependency set as unaudited.
 | `xraytui-import` | 67 | includes proptests asserting no panic on arbitrary input |
 | `xraytui-domain` | 55 | includes proptests for the slug and bounded-regex code |
 | `xraytui-xray-compiler` | 41 + 6 | the 6 are validated by a real `xray run -test` |
+| `xraytui-tui` | 65 | every key pressed; every pane drawn into a buffer |
 | `xraytui-config` | 34 | permissions, atomicity, schema rejection, migration ladder |
-| `xraytui-cli` | 33 + 10 | the 10 run the real `xraytui`/`xraytuid` binaries |
+| `xraytui-cli` | 33 + 11 | the 11 run the real `xraytui`/`xraytuid` binaries |
 | `xraytui-ipc` | 25 | framing limits, version negotiation, streaming, filters |
 | `xraytui-controller` | 24 + 6 | the 6 are the acceptance scenarios against a real core |
 | `xraytui-netd-protocol` | 17 | validation of the privileged operation set |
@@ -98,7 +103,7 @@ been reviewed or accepted; treat the dependency set as unaudited.
 | **I** | kill Xray in restore mode | **passing** — listener death observed, backoff restart scheduled and verified |
 | **J** | kill the daemon while TUN is active; lease expiry cleanup | **passing** — both mechanisms: the connection closing releases immediately, and an expired lease is reclaimed by the reaper |
 | **K** | repeated TUN enable/disable leaves no residue | **passing** — three cycles, four independent checks after each |
-| L | TUI usable at 80x24, restores the terminal | **not implemented** — see below |
+| **L** | TUI usable at 80x24, restores the terminal | **passing** — `crates/tui`; drawn into a `TestBackend`, restore sequence asserted |
 | M | cgroup v2 exact-instance isolation | **partial** — classification by `pidfd` and per-cgroup marking are implemented and proven in a namespace; per-profile *transparent egress* is not (see below) |
 | N | clean build and install; nothing runs as root | **partial** — build, install manifest and units are done and verified; a from-scratch install on a clean Arch host was not performed |
 
@@ -122,30 +127,26 @@ absent one:
    gap is specifically *two instances of the same executable* taking different
    exits.
 
-2. **The TUI does not exist.** `xraytui` with no subcommand, and `xraytui tui`,
-   print a message saying so and exit non-zero. Everything the TUI would show is
-   available through the CLI, including `--format json` for scripting.
-
-3. **Subscriptions cannot be fetched.** The domain model, diff types, transaction
+2. **Subscriptions cannot be fetched.** The domain model, diff types, transaction
    semantics, HTTP fixture server and size caps are all in place; the client that
    performs the fetch is not. `xraytui node import --file` and `--stdin` do work,
    so a subscription can be updated by hand with `curl | xraytui node import
    --stdin`.
 
-4. **The state store is a stub.** Runtime history and health history live in
+3. **The state store is a stub.** Runtime history and health history live in
    memory and are lost when the daemon restarts. Policy is durable — it is TOML
    on disk — so nothing the user configured is at risk.
 
-5. **`xraytui app assign` prints the TOML to add** rather than editing the file.
+4. **`xraytui app assign` prints the TOML to add** rather than editing the file.
    Application rules are compiled and routed correctly once present; only the
    editing command is missing.
 
-6. **No `cargo audit`/`cargo deny` run.** See above.
+5. **No `cargo audit`/`cargo deny` run.** See above.
 
-7. **Health probing is not scheduled.** `xraytui node test` probes on demand and
+6. **Health probing is not scheduled.** `xraytui node test` probes on demand and
    works; the periodic sweep with prioritisation and backoff is not wired up.
 
-8. **The DNS backends have not been driven against a live resolver.** The
+7. **The DNS backends have not been driven against a live resolver.** The
    systemd-resolved client is written against the documented `resolve1`
    interface and its marshalling is tested byte for byte; `resolvconf` is tested
    against a stand-in that records its argv and stdin. Neither has talked to the
@@ -266,13 +267,23 @@ The tier-one target is current Arch Linux with systemd, nftables and cgroup v2.
 Nothing here was tested on Arch. The IPv6 path in particular has been written
 and unit-tested but never executed against a kernel that has IPv6.
 
+## Editing from the interface
+
+The interface can point a profile at a target, cycle the mode, start and stop the
+core, and probe a node. It cannot yet create a node, edit a rule or add a
+subscription — those are CLI-only. That is a deliberate order of work: switching
+a profile is what people do many times a day, and creating a node is what they do
+once.
+
 ## The next single most important thing
 
-The TUI (scenario L). It is now the only entirely unimplemented component that
-the specification names as mandatory, every piece of state it needs is already
-reachable through one IPC call, and the CLI it would sit on top of is complete
-and tested.
+The subscription fetcher (scenario G). It is the last mandatory feature that
+needs new network code, and it is the one piece that stands between "a proxy
+client you can use" and "a proxy client you can keep up to date". The domain
+model, the diff types, the transactional update, the size caps and the HTTP
+fixture server all already exist; what is missing is the client that performs the
+fetch and the scheduler that decides when.
 
-After that, in order: the subscription fetcher (scenario G), which is the last
-feature that requires new network code; per-profile `tproxy` inbounds to finish
-scenario M; and driving the DNS backends against a live systemd-resolved.
+After that, in order: per-profile `tproxy` inbounds to finish scenario M;
+driving the DNS backends against a live systemd-resolved; editing from the
+interface; and `cargo audit`/`cargo deny`.
