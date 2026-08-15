@@ -1,59 +1,37 @@
 # Third-party notices
 
-xraytui is GPL-3.0-or-later. This file records what it depends on and under what
-terms. Generate the authoritative, version-exact inventory with:
+xraytui is GPL-3.0-or-later. It links the Rust crates below; the table is
+generated from `Cargo.lock` by `cargo deny list`, so it cannot drift from what
+is actually built.
 
-```sh
-cargo install cargo-about && cargo about generate about.hbs
-# or
-cargo tree --format '{p} {l}' --prefix none | sort -u
-```
+| Licence | Crates |
+|---|---|
+| `Apache-2.0` | 232 |
+| `Apache-2.0 WITH LLVM-exception` | 7 |
+| `BSD-2-Clause` | 2 |
+| `BSD-3-Clause` | 4 |
+| `BSL-1.0` | 1 |
+| `GPL-3.0-or-later` | 20 |
+| `ISC` | 7 |
+| `LGPL-2.1-or-later` | 2 |
+| `MIT` | 282 |
+| `MPL-2.0` | 2 |
+| `Unicode-3.0` | 19 |
+| `Unlicense` | 3 |
+| `Zlib` | 3 |
 
-That has **not** been run for this revision; see `STATUS.md`.
+Two crates offer a licence not in the allow-list as one option of a dual
+licence — `ryu` (Apache-2.0 OR BSL-1.0) and `r-efi` (MIT OR Apache-2.0 OR
+LGPL-2.1-or-later). Both are taken under their permissive option, which is what
+`cargo deny check` resolves and accepts.
 
 ## Xray-core
 
-xraytui does not link, embed, fork or reimplement Xray-core. It runs the official
-`xray` binary as a supervised external process and speaks to it over its gRPC
-API. Xray-core is licensed under the **Mozilla Public License 2.0**
-(<https://github.com/XTLS/Xray-core/blob/main/LICENSE>) and is a separate work,
-obtained and installed independently by the user or their distribution.
+Xray-core is **not** linked, vendored or redistributed here. xraytui supervises
+it as an external process, the way a service manager does. It is MPL-2.0 and is
+obtained from its own official releases or from the distribution's `xray`
+package. The protobuf definitions under `vendor/xray-proto/` are copied from
+Xray-core to generate the gRPC client, and carry Xray-core's licence.
 
-The protobuf definitions under `vendor/xray-proto/` are copied verbatim from
-XTLS/Xray-core at tag `v26.3.27`, commit
-`d2758a023cd7f4174a5a5fa4ff66e487d4342ba0`, and remain under the MPL-2.0. They
-are vendored so that an ordinary build never fetches code from a moving branch.
-Modifying those files would trigger MPL-2.0's file-level copyleft; they are not
-modified.
-
-## Rust dependencies
-
-Direct dependencies and their usual licences. Verify with `cargo about` before a
-release rather than trusting this table.
-
-| Crate | Purpose | Licence |
-|---|---|---|
-| tokio, tokio-util, tokio-stream | async runtime | MIT |
-| tonic, tonic-prost, prost, prost-types | gRPC and protobuf | MIT / Apache-2.0 |
-| hyper-util, tower, http | transport for tonic | MIT |
-| serde, serde_json, toml, ciborium | serialisation | MIT / Apache-2.0 |
-| clap, clap_complete, clap_mangen | command line, completions, man pages | MIT / Apache-2.0 |
-| ratatui, crossterm, unicode-width | terminal interface | MIT |
-| rustix, libc, nix, socket2 | Linux syscalls | Apache-2.0 WITH LLVM-exception / MIT / BSD-3 |
-| reqwest | HTTP client, rustls only, no OpenSSL | MIT / Apache-2.0 |
-| qrcode, image, rqrr | QR generation and decoding | MIT / Apache-2.0 |
-| secrecy, zeroize | secret handling | MIT / Apache-2.0 |
-| rusqlite | embedded state store | MIT |
-| uuid, ipnet, base64, hex, url, percent-encoding | small utilities | MIT / Apache-2.0 |
-| tracing, tracing-subscriber | structured logging | MIT |
-| thiserror, anyhow | error types | MIT / Apache-2.0 |
-| proptest, tempfile, insta, assert_cmd, predicates | testing | MIT / Apache-2.0 |
-
-`rustls` is used in preference to OpenSSL throughout, so xraytui carries no
-dependency on a system TLS library.
-
-## Data files
-
-`geoip.dat` and `geosite.dat` are **not** distributed with xraytui. They are
-provided by the user's distribution (`xray-geoip`, `xray-geosite` on Arch) under
-their own terms, and are only read, never modified.
+Full licence texts ship with each crate in the Cargo registry and with
+Xray-core's own distribution.

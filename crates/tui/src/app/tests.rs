@@ -37,6 +37,7 @@ fn subscription(id: &str, url: &str) -> xraytui_domain::Subscription {
         exclude_regex: Vec::new(),
         max_nodes: None,
         max_response_bytes: None,
+        allow_plaintext: false,
         meta: xraytui_domain::SubscriptionMeta::default(),
     }
 }

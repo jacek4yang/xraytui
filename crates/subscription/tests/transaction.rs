@@ -31,6 +31,7 @@ fn subscription(url: String) -> Subscription {
         exclude_regex: Vec::new(),
         max_nodes: None,
         max_response_bytes: None,
+        allow_plaintext: false,
         meta: SubscriptionMeta::default(),
     }
 }

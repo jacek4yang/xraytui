@@ -197,6 +197,10 @@ pub async fn run(socket: std::path::PathBuf) -> Result<(), RunError> {
                             exclude_regex: Vec::new(),
                             max_response_bytes: None,
                             max_nodes: None,
+                            // The interface deliberately does not offer this:
+                            // accepting a plaintext subscription should be a
+                            // deliberate command-line act, not a checkbox.
+                            allow_plaintext: false,
                             meta: xraytui_domain::SubscriptionMeta::default(),
                         };
                         let mut next = app.desired.clone();

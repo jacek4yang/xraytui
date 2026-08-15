@@ -146,6 +146,7 @@ impl FetchOptions {
                 .map_or(DEFAULT_MAX_RESPONSE_BYTES, |bytes| {
                     bytes.min(DEFAULT_MAX_RESPONSE_BYTES)
                 }),
+            allow_plaintext: subscription.allow_plaintext,
             ..Self::default()
         }
     }
@@ -506,6 +507,7 @@ mod tests {
             exclude_regex: Vec::new(),
             max_nodes: None,
             max_response_bytes: None,
+            allow_plaintext: false,
             meta: SubscriptionMeta::default(),
         }
     }

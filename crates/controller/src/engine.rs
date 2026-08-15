@@ -290,6 +290,22 @@ impl Engine {
     /// [`ApplyOutcome::RolledBack`] is returned rather than an error, unless the
     /// rollback itself fails.
     pub async fn apply(&mut self, next: DesiredState) -> Result<ApplyOutcome, ControllerError> {
+        // Every mutation arrives here — set-target, set-mode, a whole replaced
+        // state from the CLI or the interface — so this is the one place the
+        // model has to be checked. Validating only where a whole state is
+        // carried left the narrow requests unguarded: `profile set-target work
+        // node:does-not-exist` was accepted, reported success, and restarted
+        // the core onto a profile pointing at nothing.
+        let errors: Vec<String> = next
+            .validate()
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity == xraytui_domain::Severity::Error)
+            .map(|diagnostic| format!("[{}] {}", diagnostic.code, diagnostic.message))
+            .collect();
+        if !errors.is_empty() {
+            return Err(ControllerError::Invalid(errors.join("; ")));
+        }
+
         match self.plan(&next) {
             ChangePlan::NoChange => {
                 self.desired = next;

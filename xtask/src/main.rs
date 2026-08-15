@@ -40,6 +40,8 @@ enum Task {
     Manifest(InstallArgs),
     /// Export a self-contained, downloadable recovery checkpoint.
     Checkpoint(CheckpointArgs),
+    /// Build the distributable binary archive and its checksum.
+    Dist,
 }
 
 #[derive(Debug, clap::Args)]
@@ -111,6 +113,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Task::Checkpoint(args) => checkpoint(&args),
+        Task::Dist => dist(),
     }
 }
 
@@ -442,6 +445,67 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>> {
     }
     out.sort();
     Ok(out)
+}
+
+/// Build a portable binary archive from a staged installation tree.
+///
+/// The tree comes from the same manifest `install` uses, so the archive cannot
+/// drift from what a package would place. Deterministic: sorted, root-owned,
+/// fixed mtime, `gzip -n`.
+fn dist() -> Result<()> {
+    let root = workspace_root()?;
+    let version = env!("CARGO_PKG_VERSION");
+    let name = format!("xraytui-{version}");
+    let out = root.join("target/dist");
+    let staging = out.join(&name);
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    std::fs::create_dir_all(&staging)?;
+
+    let args = InstallArgs {
+        prefix: PathBuf::from("usr"),
+        destdir: Some(staging.clone()),
+        dry_run: false,
+        systemd: true,
+    };
+    install(&args)?;
+
+    // The packaging sources travel with the archive so somebody can rebuild a
+    // package from it without the repository.
+    let packaging = staging.join("packaging");
+    std::fs::create_dir_all(&packaging)?;
+    for entry in ["arch", "systemd", "completions", "man"] {
+        let from = root.join("packaging").join(entry);
+        if from.is_dir() {
+            copy_tree(&from, &packaging.join(entry))?;
+        }
+    }
+
+    let archive = out.join(format!("{name}.tar.gz"));
+    tar_directory(&out, &name, &archive)?;
+    let sum = sha256_of(&archive)?;
+    std::fs::write(
+        out.join(format!("{name}.tar.gz.sha256")),
+        format!("{sum}  {name}.tar.gz\n"),
+    )?;
+    println!("{}", archive.display());
+    println!("{sum}  {name}.tar.gz");
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------- checkpointing

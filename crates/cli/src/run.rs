@@ -1458,13 +1458,161 @@ async fn subscription(
             }
             Ok(())
         }
-        SubscriptionCommand::Add { .. }
-        | SubscriptionCommand::Update { .. }
-        | SubscriptionCommand::Diff { .. } => Err(CliError::Other(
-            "subscription fetching is not part of this build; see STATUS.md for what \
-             is implemented. Nodes can still be imported with `xraytui node import`."
-                .to_owned(),
-        )),
+        SubscriptionCommand::Add {
+            url,
+            name,
+            allow_plaintext,
+        } => {
+            let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+                return Err(CliError::Other("unexpected response".into()));
+            };
+            let name = name.unwrap_or_else(|| subscription_name_from(&url));
+            let id = xraytui_domain::SubscriptionId::new(xraytui_domain::slugify(&name))
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            if desired.subscriptions.contains_key(&id) {
+                return Err(CliError::Other(format!(
+                    "subscription '{id}' already exists"
+                )));
+            }
+            let mut next = (*desired).clone();
+            next.subscriptions.insert(
+                id.clone(),
+                xraytui_domain::Subscription {
+                    id: id.clone(),
+                    name,
+                    url: xraytui_secrets::Secret::new(url),
+                    enabled: true,
+                    // Six hours: often enough that a provider's changes arrive
+                    // the same day, rare enough that a laptop is not fetching
+                    // on every wake.
+                    update_interval_secs: Some(6 * 60 * 60),
+                    fetch_via_profile: None,
+                    include_regex: Vec::new(),
+                    exclude_regex: Vec::new(),
+                    max_response_bytes: None,
+                    max_nodes: None,
+                    allow_plaintext,
+                    meta: xraytui_domain::SubscriptionMeta::default(),
+                },
+            );
+            // The URL is never echoed: it carries a bearer token.
+            set_desired(
+                client,
+                next,
+                false,
+                &format!("subscription '{id}' added; run `xraytui subscription update {id}`"),
+            )
+            .await
+        }
+
+        SubscriptionCommand::Update { id, all, yes: _ } => {
+            let request = match (id, all) {
+                (Some(id), _) => Request::SubscriptionUpdate(parse_id::<
+                    xraytui_domain::SubscriptionId,
+                >(
+                    &id, "subscription"
+                )?),
+                (None, true) => Request::SubscriptionUpdateAll,
+                (None, false) => {
+                    return Err(CliError::Usage(
+                        "name a subscription, or pass --all".to_owned(),
+                    ));
+                }
+            };
+            let response = ask(client, request).await?;
+            print_subscription_result(&response);
+            Ok(())
+        }
+
+        SubscriptionCommand::Diff { id } => {
+            let response = ask(
+                client,
+                Request::SubscriptionDiff(parse_id::<xraytui_domain::SubscriptionId>(
+                    &id,
+                    "subscription",
+                )?),
+            )
+            .await?;
+            print_subscription_result(&response);
+            Ok(())
+        }
+
+        SubscriptionCommand::Remove { id } => {
+            let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+                return Err(CliError::Other("unexpected response".into()));
+            };
+            let id = parse_id::<xraytui_domain::SubscriptionId>(&id, "subscription")?;
+            let mut next = (*desired).clone();
+            if next.subscriptions.remove(&id).is_none() {
+                return Err(CliError::Other(format!("no subscription '{id}'")));
+            }
+            // The nodes it owns go with it: leaving them behind would leave
+            // entries nobody can update and nobody remembers agreeing to.
+            let owned: Vec<_> = next
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.source.subscription() == Some(&id))
+                .map(|(node_id, _)| node_id.clone())
+                .collect();
+            for node in &owned {
+                next.nodes.remove(node);
+            }
+            set_desired(
+                client,
+                next,
+                false,
+                &format!("subscription '{id}' removed with {} node(s)", owned.len()),
+            )
+            .await
+        }
+    }
+}
+
+/// A readable name from a URL, when the user did not give one.
+///
+/// The host, not the whole URL: a subscription URL carries a token, and a
+/// token in a display name would end up in every listing and every log.
+fn subscription_name_from(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|host| host.split('@').next_back())
+        .map_or_else(|| "subscription".to_owned(), str::to_owned)
+}
+
+/// Print an update or diff result.
+fn print_subscription_result(response: &Response) {
+    match response {
+        Response::Diff(diff) => {
+            let counts = diff.counts();
+            println!(
+                "{} added, {} changed, {} removed, {} unsupported, {} rejected",
+                counts.added, counts.changed, counts.removed, counts.unsupported, counts.rejected
+            );
+            for change in &diff.changes {
+                match change {
+                    xraytui_domain::NodeChange::Added { node } => {
+                        println!("  + {}", node.name);
+                    }
+                    xraytui_domain::NodeChange::Changed { id, fields, .. } => {
+                        println!("  ~ {id} ({})", fields.join(", "));
+                    }
+                    other => println!("  · {other:?}"),
+                }
+            }
+        }
+        Response::Imported { added, .. } => {
+            println!("{} node(s) imported", added.len());
+        }
+        Response::Applied { warnings, .. } => {
+            for warning in warnings {
+                eprintln!("xraytui: {warning}");
+            }
+            if warnings.is_empty() {
+                println!("up to date");
+            }
+        }
+        other => println!("{other:?}"),
     }
 }
 

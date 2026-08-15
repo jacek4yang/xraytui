@@ -310,6 +310,7 @@ mod tests {
             exclude_regex: Vec::new(),
             max_nodes: None,
             max_response_bytes: None,
+            allow_plaintext: false,
             meta: xraytui_domain::SubscriptionMeta::default(),
         };
         state

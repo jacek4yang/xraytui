@@ -586,6 +586,10 @@ pub enum SubscriptionCommand {
         /// Display name.
         #[arg(long)]
         name: Option<String>,
+        /// Allow plain HTTP. The URL carries a token, so this hands that token
+        /// to every device on the path; only for providers offering nothing else.
+        #[arg(long)]
+        allow_plaintext: bool,
     },
     /// Update one subscription, or every enabled one with `--all`.
     Update {
@@ -597,6 +601,11 @@ pub enum SubscriptionCommand {
         /// Do not ask for confirmation.
         #[arg(long, short)]
         yes: bool,
+    },
+    /// Remove a subscription and the nodes it owns.
+    Remove {
+        /// Subscription identifier.
+        id: String,
     },
     /// Show what an update would change, without committing it.
     Diff {

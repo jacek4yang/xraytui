@@ -67,3 +67,23 @@ which Xray-core releases each version is tested against.
 
 A compromised proxy endpoint, a malicious Xray-core binary installed by the
 administrator, and an attacker who already has the user's UID.
+
+## Dependency advisories
+
+Run on 2026-08-15 with `cargo audit` and `cargo deny check` against
+`Cargo.lock`. **0 vulnerabilities.** Three warnings, each reviewed rather than
+silenced; the policy that encodes them is `deny.toml`.
+
+| Advisory | Crate | Kind | Reachable from | Decision |
+|---|---|---|---|---|
+| RUSTSEC-2024-0436 | `paste` 1.0.15 | unmaintained | ratatui, compile time only | Accepted. A proc-macro produces no runtime code of its own; nothing an attacker controls reaches it. |
+| RUSTSEC-2026-0002 | `lru` 0.12.5 | unsound | ratatui's layout cache; rqrr's decoder | Accepted. Both callers feed it data this program just produced — a rendered pane, an image it encoded — not attacker-chosen input. |
+| RUSTSEC-2026-0253 | `lru` 0.12.5 | unsound | as above | Accepted, same reasoning. |
+
+The `lru` fixes are in 0.13, which ratatui has not moved to. Upgrading ratatui
+out from under a working interface to resolve an unreachable soundness bug
+would trade a real risk for a theoretical one; the follow-up is to take the
+upgrade when ratatui does.
+
+A critical or high advisory reachable from a production path blocks a release.
+These are neither.

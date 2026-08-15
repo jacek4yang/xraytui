@@ -94,8 +94,8 @@ number nobody can reproduce is not evidence.
 | `cargo doc --workspace --no-deps` | not re-run at this commit |
 | `cargo build --release --workspace` | not re-run at this commit |
 | `cargo xtask install --prefix /usr --destdir …` | not re-run at this commit |
-| `cargo audit` | **not run** — not installed here |
-| `cargo deny check` | **not run** — not installed here |
+| `cargo audit` | **pass**, 0 vulnerabilities, 3 reviewed warnings |
+| `cargo deny check` | **pass** |
 | live systemd-resolved | **not run** — no D-Bus system bus |
 | clean Arch package build | **not run** — no container runtime |
 | IPv6 runtime | **not run** — this kernel has no IPv6 |
@@ -103,9 +103,14 @@ number nobody can reproduce is not evidence.
 Toolchain actually used: `rustc 1.95.0 (59807616e 2026-04-14)`,
 Xray-core `26.3.27` (`d2758a0`, go1.26.1), kernel `6.18.5-fc-v20`.
 
-No advisory has been reviewed or accepted yet; treat the dependency set as
-unaudited until `cargo audit` and `cargo deny` have been run and their results
-recorded here.
+Three advisories were reviewed and accepted with written reasoning in
+`SECURITY.md`: one unmaintained proc-macro and two `lru` soundness warnings,
+all reachable only through ratatui and rqrr on data this program produced
+itself. No vulnerability was found.
+
+`./scripts/release-smoke.sh` — **pass**, the whole user workflow through the
+real binaries against local fixtures, including a killed core being noticed and
+restarted.
 
 ### Test breakdown
 

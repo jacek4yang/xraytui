@@ -36,6 +36,16 @@ pub struct Subscription {
     /// Optional per-subscription override of the global node count cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_nodes: Option<usize>,
+    /// Allow fetching over plain HTTP.
+    ///
+    /// Off by default, and named here rather than only in an error message,
+    /// because the refusal tells the user to set it: a diagnostic that names a
+    /// setting which does not exist is worse than no diagnostic at all.
+    ///
+    /// The URL carries a bearer token, so plain HTTP means handing that token
+    /// to every device on the path. Some providers still offer nothing else.
+    #[serde(default)]
+    pub allow_plaintext: bool,
     /// Cached HTTP validators and server-reported metadata.
     #[serde(default)]
     pub meta: SubscriptionMeta,
@@ -292,6 +302,7 @@ mod tests {
             exclude_regex: vec![],
             max_response_bytes: None,
             max_nodes: None,
+            allow_plaintext: false,
             meta: SubscriptionMeta::default(),
         };
         let rendered = format!("{sub:?}");

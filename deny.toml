@@ -1,0 +1,46 @@
+# Dependency policy. See SECURITY.md for the reasoning behind each ignore.
+
+[advisories]
+ignore = [
+    # `paste` is a proc-macro that is unmaintained, not vulnerable. It runs at
+    # compile time, produces no code of its own at runtime, and reaches this
+    # tree only through ratatui. Nothing an attacker controls touches it.
+    "RUSTSEC-2024-0436",
+    # Two soundness advisories against `lru` 0.12. Both are reachable only
+    # through ratatui's internal layout cache and rqrr's decoder, on data this
+    # program produced itself — a rendered pane, an image it just encoded — and
+    # neither is a use-after-free that untrusted input can steer. The fixes are
+    # in a 0.13 that ratatui has not yet moved to; upgrading ratatui out from
+    # under a working interface for an unreachable soundness bug would trade a
+    # real risk for a theoretical one.
+    "RUSTSEC-2026-0002",
+    "RUSTSEC-2026-0253",
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "Unlicense",
+    # This project's own licence.
+    "GPL-3.0-or-later",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions are allowed: pinning the whole tree to one version of every
+# transitive dependency is a bigger source of breakage than the duplication is
+# of risk, and this is an application rather than a library.
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
