@@ -3,11 +3,27 @@
 ## Repository
 - Current branch: `release/v1`
 - Current HEAD: see the manifest; 001 was exported from the verified baseline
-- Last exported checkpoint: 002
+- Last exported checkpoint: 003
 - Latest local tag: `recovery-baseline`
 - Expected worktree state: clean
 
-## Completed in the Latest Slice (slice 1)
+## Completed in the Latest Slice (slice 2)
+- `crates/domain/src/draft.rs`: one shared `NodeDraft` that both the CLI and the
+  interface build nodes through. Every field is an `Option`, so an edit can tell
+  "leave this alone" from "set this to empty" — `--flow ''` clears a flow. A
+  field belonging to another protocol is refused, never dropped. Security is
+  inferred (`--public-key` implies REALITY), and `allow_insecure` is never set
+  from a form. 18 tests.
+- CLI: `node add`, `node edit`, `group add/remove`, `chain add/remove`,
+  `rule enable/disable/remove`, `profile add/remove/listeners`, all through one
+  `set_desired` helper that reports a rolled-back change as a failure.
+- **`app assign` and `app unassign` printed a TOML snippet and exited 1.** They
+  now mutate. This is the exact anti-pattern the brief names.
+- Removal refuses to strand a reference: a group or chain a profile still points
+  at cannot be removed, and removing a profile takes its application rules with
+  it and says so.
+
+## Previously (slice 1)
 - Real SQLite state store: mode, tunnel state, per-profile targets, last-known-good
   generation, subscription fetch metadata, bounded per-subject health history,
   and a transaction log whose unfinished rows are what `recover()` reports as an
@@ -38,23 +54,25 @@
 - Test evidence: none yet. Everything is UNEXECUTED at this commit.
 
 ## Current Incomplete Slice
-- Slice 2: the typed configuration surface. Nothing started.
-- Missing behaviour: nodes can be imported but not typed in; groups, chains and
-  rules can only be created by editing TOML by hand. `NodeCommand` has no
-  `Add`/`Edit`; `GroupCommand`/`ChainCommand` have no `Add`/`Remove`.
-- Current failing test: none. 718 workspace tests pass.
+- Slice 3: the daily-use TUI. Nothing started.
+- Missing behaviour: the interface can list and select but cannot create or
+  edit. It needs node add/edit forms built on `NodeDraft`, a subscription
+  workflow, profile listener editing, application assignment, rule
+  enable/disable, and a QR view.
+- Current failing test: none. 738 workspace tests pass.
 
 ## Exact Next Action
-- Build the shared typed node builder used by both the CLI and the TUI.
-- First command: `cargo test -p xraytui-domain draft`
-- First file: `crates/domain/src/draft.rs` (new).
+- Add the pure editing state machine the interface will drive.
+- First command: `cargo test -p xraytui-tui`
+- First file: `crates/tui/src/app.rs` — read how `Action` and the existing
+  overlays work before adding a form; the reducer is pure and must stay so.
 
 ## Remaining v1.0 Gates
 - [x] Slice 0a — recovery, branch, checkpoint tooling, checkpoint 000
 - [x] Slice 0b — baseline verified here: 703 workspace tests, 12 + 1 privileged,
       scenario M re-run and passing, STATUS.md re-measured
 - [x] Slice 1 — durable SQLite state, migrations, `xraytui init`, SIGPIPE fix
-- [ ] Slice 2 — typed configuration surface shared by CLI and TUI
+- [x] Slice 2 — typed configuration surface, one mutation path, `app assign` fixed
 - [ ] Slice 3 — daily-use TUI
 - [ ] Slice 4 — DNS, recovery and reliability
 - [ ] Slice 5 — release smoke test, dist, packaging, RC tag

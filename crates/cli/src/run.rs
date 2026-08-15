@@ -121,7 +121,7 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
         }
         Some(Command::Target(command)) => target(&mut client, command, cli.format).await,
         Some(Command::App(command)) => app(&mut client, command, cli.format).await,
-        Some(Command::Node(command)) => node(&mut client, command, cli.format, cli.quiet).await,
+        Some(Command::Node(command)) => node(&mut client, *command, cli.format, cli.quiet).await,
         Some(Command::Group(command)) => group(&mut client, command, cli.format).await,
         Some(Command::Chain(command)) => chain(&mut client, command, cli.format).await,
         Some(Command::Rule(command)) => rule(&mut client, command, cli.format).await,
@@ -215,6 +215,99 @@ fn init(paths: &xraytui_config::Paths, force: bool) -> Result<(), CliError> {
     println!("  systemctl --user enable --now xraytuid.service");
     println!("  xraytui node import --stdin       # paste share links, then Ctrl-D");
     println!("  xraytui                           # the interface");
+    Ok(())
+}
+
+/// Set or clear a profile's listeners. A port of 0 removes one.
+fn apply_listeners(
+    profile: &mut xraytui_domain::EgressProfile,
+    socks: Option<u16>,
+    http: Option<u16>,
+    transparent: Option<u16>,
+) {
+    // Loopback only. A listener on 0.0.0.0 is an open proxy for the network the
+    // machine is on, and that is never something a flag should do by accident.
+    let spec = |port: u16| (port != 0).then(|| xraytui_domain::ListenerSpec::loopback(port));
+    if let Some(port) = socks {
+        profile.socks = spec(port);
+    }
+    if let Some(port) = http {
+        profile.http = spec(port);
+    }
+    if let Some(port) = transparent {
+        profile.transparent = spec(port);
+    }
+}
+
+/// Enable or disable a rule, whichever kind it is.
+async fn set_rule_enabled(client: &mut Client, rule: &str, enabled: bool) -> Result<(), CliError> {
+    let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+        return Err(CliError::Other("unexpected response".into()));
+    };
+    let mut next = (*desired).clone();
+    let mut found = false;
+    if let Ok(id) = xraytui_domain::AppRuleId::new(rule)
+        && let Some(entry) = next.app_rules.get_mut(&id)
+    {
+        entry.enabled = enabled;
+        found = true;
+    }
+    if let Ok(id) = xraytui_domain::RoutingRuleId::new(rule)
+        && let Some(entry) = next.routing_rules.get_mut(&id)
+    {
+        entry.enabled = enabled;
+        found = true;
+    }
+    if !found {
+        return Err(CliError::Other(format!("no rule '{rule}'")));
+    }
+    let verb = if enabled { "enabled" } else { "disabled" };
+    set_desired(client, next, false, &format!("rule '{rule}' {verb}")).await
+}
+
+/// Apply a typed mutation: the daemon validates it, applies it, persists it, and
+/// rolls back if reconciliation fails.
+///
+/// Every mutating command goes through here so there is exactly one answer to
+/// "is this allowed", one place that reports a rollback, and one place the
+/// interface will call too.
+async fn set_desired(
+    client: &mut Client,
+    next: xraytui_domain::DesiredState,
+    quiet: bool,
+    message: &str,
+) -> Result<(), CliError> {
+    let response = ask(client, Request::SetDesired(Box::new(next))).await?;
+    report_applied(&response)?;
+    if !quiet {
+        println!("{message}");
+    }
+    Ok(())
+}
+
+/// Turn an `Applied` response into output, or into a failure.
+///
+/// A rolled-back change is a *failure*: the configuration it produced did not
+/// pass its health checks and the previous one was restored, so reporting
+/// success and exiting 0 would tell a script the opposite of what happened.
+fn report_applied(response: &Response) -> Result<(), CliError> {
+    if let Response::Applied {
+        rolled_back,
+        warnings,
+        ..
+    } = response
+    {
+        for warning in warnings {
+            eprintln!("xraytui: warning: {warning}");
+        }
+        if *rolled_back {
+            return Err(CliError::Other(
+                "the change was rolled back: the configuration it produced did not pass its \
+                 health checks, and the previous one was restored. Nothing was saved."
+                    .to_owned(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -517,6 +610,91 @@ async fn profile(
             Ok(())
         }
 
+        ProfileCommand::Add {
+            profile,
+            name,
+            target,
+            socks,
+            http,
+            transparent,
+        } => {
+            let id = parse_id::<xraytui_domain::ProfileId>(&profile, "profile")?;
+            if desired.profiles.contains_key(&id) {
+                return Err(CliError::Other(format!(
+                    "profile '{profile}' already exists"
+                )));
+            }
+            let target = match target.as_deref() {
+                Some(token) => {
+                    token
+                        .parse()
+                        .map_err(|error: xraytui_domain::TargetParseError| {
+                            CliError::Usage(error.to_string())
+                        })?
+                }
+                None => Target::Direct,
+            };
+            let mut entry = xraytui_domain::EgressProfile::new(
+                id.clone(),
+                name.unwrap_or_else(|| profile.clone()),
+                target,
+            );
+            apply_listeners(&mut entry, socks, http, transparent);
+            let mut next = (*desired).clone();
+            next.profiles.insert(id, entry);
+            set_desired(client, next, quiet, &format!("profile '{profile}' added")).await
+        }
+
+        ProfileCommand::Remove { profile } => {
+            let id = parse_id::<xraytui_domain::ProfileId>(&profile, "profile")?;
+            let mut next = (*desired).clone();
+            if next.profiles.remove(&id).is_none() {
+                return Err(CliError::Other(format!("no profile '{profile}'")));
+            }
+            // A rule pointing at a profile that no longer exists would fail
+            // validation, so the rules go with it and the user is told.
+            let orphaned: Vec<_> = next
+                .app_rules
+                .iter()
+                .filter(|(_, rule)| {
+                    matches!(&rule.action, xraytui_domain::RuleAction::Profile { id: p } if p == &id)
+                })
+                .map(|(rule_id, _)| rule_id.clone())
+                .collect();
+            for rule in &orphaned {
+                next.app_rules.remove(rule);
+            }
+            if next.default_profile.as_ref() == Some(&id) {
+                next.default_profile = next.profiles.keys().next().cloned();
+            }
+            if !orphaned.is_empty() && !quiet {
+                println!("also removed {} application rule(s)", orphaned.len());
+            }
+            set_desired(client, next, quiet, &format!("profile '{profile}' removed")).await
+        }
+
+        ProfileCommand::Listeners {
+            profile,
+            socks,
+            http,
+            transparent,
+        } => {
+            let id = parse_id::<xraytui_domain::ProfileId>(&profile, "profile")?;
+            let mut next = (*desired).clone();
+            let entry = next
+                .profiles
+                .get_mut(&id)
+                .ok_or_else(|| CliError::Other(format!("no profile '{profile}'")))?;
+            apply_listeners(entry, socks, http, transparent);
+            set_desired(
+                client,
+                next,
+                quiet,
+                &format!("listeners of '{profile}' updated"),
+            )
+            .await
+        }
+
         ProfileCommand::SelectFromStdin => {
             let token = read_stdin_token()?;
             let id = parse_id::<xraytui_domain::ProfileId>(&token, "profile")?;
@@ -633,19 +811,56 @@ async fn app(
             }
             Ok(())
         }
-        crate::args::AppCommand::Assign { profile, matcher } => Err(CliError::Other(format!(
-            "editing application rules is not wired into this build; \
-             add them to rules.toml instead:\n\n\
-             [[application_rule]]\n\
-             id = \"{}-rule\"\n\
-             priority = 100\n\
-             process = [\"{matcher}\"]\n\
-             action = {{ kind = \"profile\", id = \"{profile}\" }}\n",
-            xraytui_domain::slugify(&matcher)
-        ))),
-        crate::args::AppCommand::Unassign { rule } => Err(CliError::Other(format!(
-            "remove the `[[application_rule]]` entry with id = \"{rule}\" from rules.toml"
-        ))),
+        crate::args::AppCommand::Assign { profile, matcher } => {
+            let profile_id = parse_id::<xraytui_domain::ProfileId>(&profile, "profile")?;
+            if !desired.profiles.contains_key(&profile_id) {
+                return Err(CliError::Other(format!("no profile '{profile}'")));
+            }
+            let matcher = matcher.trim();
+            if matcher.is_empty() {
+                return Err(CliError::Usage(
+                    "a matcher is a process name, an absolute path, or a directory ending in `/`"
+                        .to_owned(),
+                ));
+            }
+            // The identifier encodes both halves, so assigning the same program
+            // to a second profile is visibly a second rule rather than a silent
+            // overwrite of the first.
+            let id = xraytui_domain::AppRuleId::new(format!(
+                "{}-{profile}",
+                xraytui_domain::slugify(matcher)
+            ))
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+
+            let mut next = (*desired).clone();
+            next.app_rules.insert(
+                id.clone(),
+                xraytui_domain::ApplicationRule {
+                    id: id.clone(),
+                    priority: 100,
+                    process: vec![xraytui_domain::AppMatcher(matcher.to_owned())],
+                    action: xraytui_domain::RuleAction::Profile { id: profile_id },
+                    enabled: true,
+                    note: None,
+                },
+            );
+            set_desired(
+                client,
+                next,
+                false,
+                &format!("{matcher} → profile '{profile}' (rule {id})"),
+            )
+            .await
+        }
+        crate::args::AppCommand::Unassign { rule } => {
+            let id = xraytui_domain::AppRuleId::new(&rule)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            let mut next = (*desired).clone();
+            if next.app_rules.remove(&id).is_none() {
+                return Err(CliError::Other(format!("no application rule '{rule}'")));
+            }
+            set_desired(client, next, false, &format!("rule '{rule}' removed")).await
+        }
     }
 }
 
@@ -717,6 +932,43 @@ async fn node(
             // `Debug` on a node prints `Secret(<redacted>)` for credentials.
             println!("{found:#?}");
             Ok(())
+        }
+
+        NodeCommand::Add(fields) => {
+            let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+                return Err(CliError::Other("unexpected response".into()));
+            };
+            let node = fields
+                .draft()
+                .create()
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            let id = node.id.clone();
+            if desired.nodes.contains_key(&id) {
+                return Err(CliError::Other(format!(
+                    "node '{id}' already exists; edit it instead"
+                )));
+            }
+            let mut next = (*desired).clone();
+            next.nodes.insert(id.clone(), node);
+            set_desired(client, next, quiet, &format!("node '{id}' added")).await
+        }
+
+        NodeCommand::Edit { node, fields } => {
+            let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+                return Err(CliError::Other("unexpected response".into()));
+            };
+            let id = parse_id::<xraytui_domain::NodeId>(&node, "node")?;
+            let current = desired
+                .nodes
+                .get(&id)
+                .ok_or_else(|| CliError::Other(format!("no node '{node}'")))?;
+            let updated = fields
+                .draft()
+                .edit(current)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            let mut next = (*desired).clone();
+            next.nodes.insert(id.clone(), updated);
+            set_desired(client, next, quiet, &format!("node '{id}' updated")).await
         }
 
         NodeCommand::Import(args) => {
@@ -855,6 +1107,84 @@ async fn group(client: &mut Client, command: GroupCommand, format: Format) -> Re
             }
             Ok(())
         }
+        GroupCommand::Add {
+            group,
+            name,
+            strategy,
+            nodes,
+        } => {
+            let id = parse_id::<xraytui_domain::GroupId>(&group, "group")?;
+            if desired.groups.contains_key(&id) {
+                return Err(CliError::Other(format!("group '{group}' already exists")));
+            }
+            let strategy: xraytui_domain::GroupStrategy = serde_json::from_value(
+                serde_json::Value::String(strategy.clone()),
+            )
+            .map_err(|_| {
+                CliError::Usage(format!(
+                    "unknown strategy '{strategy}'; expected manual, random, round-robin, \
+                     least-ping or least-load"
+                ))
+            })?;
+            let mut members = Vec::new();
+            for node in &nodes {
+                let node_id = parse_id::<xraytui_domain::NodeId>(node, "node")?;
+                if !desired.nodes.contains_key(&node_id) {
+                    return Err(CliError::Other(format!("no node '{node}'")));
+                }
+                members.push(node_id);
+            }
+            if members.is_empty() {
+                return Err(CliError::Usage(
+                    "a group needs at least one --node".to_owned(),
+                ));
+            }
+            let first = members[0].clone();
+            let mut next = (*desired).clone();
+            next.groups.insert(
+                id.clone(),
+                xraytui_domain::Group {
+                    id: id.clone(),
+                    name: name.unwrap_or_else(|| group.clone()),
+                    strategy,
+                    membership: xraytui_domain::GroupMembership {
+                        nodes: members,
+                        ..Default::default()
+                    },
+                    // A manual group with nothing selected has no target at
+                    // all, so the first member is chosen rather than leaving
+                    // the group unusable until somebody notices.
+                    manual_selection: (strategy == xraytui_domain::GroupStrategy::Manual)
+                        .then_some(Target::Node { id: first }),
+                    fallback: None,
+                },
+            );
+            set_desired(client, next, false, &format!("group '{group}' added")).await
+        }
+
+        GroupCommand::Remove { group } => {
+            let id = parse_id::<xraytui_domain::GroupId>(&group, "group")?;
+            let mut next = (*desired).clone();
+            if next.groups.remove(&id).is_none() {
+                return Err(CliError::Other(format!("no group '{group}'")));
+            }
+            let pointing: Vec<String> = next
+                .profiles
+                .iter()
+                .filter(
+                    |(_, profile)| matches!(&profile.target, Target::Group { id: g } if g == &id),
+                )
+                .map(|(profile_id, _)| profile_id.to_string())
+                .collect();
+            if !pointing.is_empty() {
+                return Err(CliError::Other(format!(
+                    "profile(s) {} still point at group '{group}'; point them elsewhere first",
+                    pointing.join(", ")
+                )));
+            }
+            set_desired(client, next, false, &format!("group '{group}' removed")).await
+        }
+
         GroupCommand::Test { group } => {
             let id = parse_id::<xraytui_domain::GroupId>(&group, "group")?;
             let Response::Probe(result) = ask(client, Request::Test(TestTarget::Group(id))).await?
@@ -906,6 +1236,60 @@ async fn chain(client: &mut Client, command: ChainCommand, format: Format) -> Re
             }
             Ok(())
         }
+        ChainCommand::Add { chain, name, hops } => {
+            let id = parse_id::<xraytui_domain::ChainId>(&chain, "chain")?;
+            if desired.chains.contains_key(&id) {
+                return Err(CliError::Other(format!("chain '{chain}' already exists")));
+            }
+            if hops.len() < 2 {
+                return Err(CliError::Usage(
+                    "a chain needs at least two --hop values: one hop is just a node".to_owned(),
+                ));
+            }
+            let mut resolved = Vec::new();
+            for hop in &hops {
+                let node_id = parse_id::<xraytui_domain::NodeId>(hop, "node")?;
+                if !desired.nodes.contains_key(&node_id) {
+                    return Err(CliError::Other(format!("no node '{hop}'")));
+                }
+                resolved.push(node_id);
+            }
+            let mut next = (*desired).clone();
+            next.chains.insert(
+                id.clone(),
+                xraytui_domain::Chain {
+                    id: id.clone(),
+                    name: name.unwrap_or_else(|| chain.clone()),
+                    hops: resolved,
+                    enabled: true,
+                },
+            );
+            set_desired(client, next, false, &format!("chain '{chain}' added")).await
+        }
+
+        ChainCommand::Remove { chain } => {
+            let id = parse_id::<xraytui_domain::ChainId>(&chain, "chain")?;
+            let mut next = (*desired).clone();
+            if next.chains.remove(&id).is_none() {
+                return Err(CliError::Other(format!("no chain '{chain}'")));
+            }
+            let pointing: Vec<String> = next
+                .profiles
+                .iter()
+                .filter(
+                    |(_, profile)| matches!(&profile.target, Target::Chain { id: c } if c == &id),
+                )
+                .map(|(profile_id, _)| profile_id.to_string())
+                .collect();
+            if !pointing.is_empty() {
+                return Err(CliError::Other(format!(
+                    "profile(s) {} still point at chain '{chain}'; point them elsewhere first",
+                    pointing.join(", ")
+                )));
+            }
+            set_desired(client, next, false, &format!("chain '{chain}' removed")).await
+        }
+
         ChainCommand::Test { chain } => {
             let id = parse_id::<xraytui_domain::ChainId>(&chain, "chain")?;
             let Response::Probe(result) = ask(client, Request::Test(TestTarget::Chain(id))).await?
@@ -947,6 +1331,27 @@ async fn rule(client: &mut Client, command: RuleCommand, format: Format) -> Resu
             }
             Ok(())
         }
+        RuleCommand::Enable { rule } => set_rule_enabled(client, &rule, true).await,
+        RuleCommand::Disable { rule } => set_rule_enabled(client, &rule, false).await,
+        RuleCommand::Remove { rule } => {
+            let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+                return Err(CliError::Other("unexpected response".into()));
+            };
+            let mut next = (*desired).clone();
+            let app_id = xraytui_domain::AppRuleId::new(&rule).ok();
+            let routing_id = xraytui_domain::RoutingRuleId::new(&rule).ok();
+            let removed = app_id
+                .as_ref()
+                .is_some_and(|id| next.app_rules.remove(id).is_some())
+                || routing_id
+                    .as_ref()
+                    .is_some_and(|id| next.routing_rules.remove(id).is_some());
+            if !removed {
+                return Err(CliError::Other(format!("no rule '{rule}'")));
+            }
+            set_desired(client, next, false, &format!("rule '{rule}' removed")).await
+        }
+
         RuleCommand::Explain { query, network } => {
             let (domain, ip, port) = split_query(&query);
             let Response::RouteDecision {

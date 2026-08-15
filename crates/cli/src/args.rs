@@ -102,7 +102,10 @@ pub enum Command {
     },
     /// Manage nodes.
     #[command(subcommand)]
-    Node(NodeCommand),
+    // Boxed: `NodeCommand::Add` carries the whole flattened field set, which
+    // makes it several times larger than any other variant and would otherwise
+    // set the size of every `Command` value.
+    Node(Box<NodeCommand>),
     /// Manage groups.
     #[command(subcommand)]
     Group(GroupCommand),
@@ -199,6 +202,46 @@ pub enum ProfileCommand {
     ///
     /// The counterpart to `profile list --format dmenu`.
     SelectFromStdin,
+    /// Create a profile.
+    Add {
+        /// Identifier: lowercase letters, digits and `-`.
+        profile: String,
+        /// Display name. Defaults to the identifier.
+        #[arg(long)]
+        name: Option<String>,
+        /// Initial target; defaults to `direct`.
+        #[arg(long)]
+        target: Option<String>,
+        /// Bind a SOCKS5 listener on this loopback port.
+        #[arg(long)]
+        socks: Option<u16>,
+        /// Bind an HTTP CONNECT listener on this loopback port.
+        #[arg(long)]
+        http: Option<u16>,
+        /// Bind a transparent listener on this loopback port, for
+        /// `exec --transparent`.
+        #[arg(long)]
+        transparent: Option<u16>,
+    },
+    /// Delete a profile, and the application rules that pointed at it.
+    Remove {
+        /// Profile identifier.
+        profile: String,
+    },
+    /// Add, change or remove a profile's listeners. A port of 0 removes one.
+    Listeners {
+        /// Profile identifier.
+        profile: String,
+        /// SOCKS5 loopback port, or 0 to remove.
+        #[arg(long)]
+        socks: Option<u16>,
+        /// HTTP CONNECT loopback port, or 0 to remove.
+        #[arg(long)]
+        http: Option<u16>,
+        /// Transparent loopback port, or 0 to remove.
+        #[arg(long)]
+        transparent: Option<u16>,
+    },
 }
 
 /// `xraytui target …`
@@ -263,6 +306,16 @@ pub enum NodeCommand {
         /// Node identifier.
         node: String,
     },
+    /// Add a node by typing its fields, rather than importing a link.
+    Add(NodeFields),
+    /// Change fields of an existing node. Omitted fields are left alone.
+    Edit {
+        /// Node identifier.
+        node: String,
+        /// The fields to change. Omitted fields are left alone.
+        #[command(flatten)]
+        fields: NodeFields,
+    },
     /// Import nodes from a share link, a file, standard input or the clipboard.
     Import(ImportArgs),
     /// Remove a node.
@@ -277,6 +330,109 @@ pub enum NodeCommand {
     },
     /// Print a node's share link.
     Share(ShareArgs),
+}
+
+/// The typed fields of a node, shared by `node add` and `node edit`.
+///
+/// Every field is optional so that `edit` can distinguish "leave this alone"
+/// from "set this to empty": `--flow ''` clears a flow, `--flow` absent keeps
+/// it. `add` requires whatever the chosen protocol needs and says which flag is
+/// missing.
+#[derive(Debug, Clone, Default, Args)]
+pub struct NodeFields {
+    /// vless, vmess, trojan, shadowsocks, http or socks.
+    #[arg(long, short = 'P')]
+    pub protocol: Option<String>,
+    /// Display name.
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Host or IP.
+    #[arg(long, short = 'a')]
+    pub address: Option<String>,
+    /// Port.
+    #[arg(long, short = 'p')]
+    pub port: Option<u16>,
+    /// VLESS or VMess UUID.
+    #[arg(long)]
+    pub uuid: Option<String>,
+    /// Trojan, Shadowsocks, HTTP or SOCKS password.
+    #[arg(long)]
+    pub password: Option<String>,
+    /// HTTP or SOCKS username.
+    #[arg(long)]
+    pub username: Option<String>,
+    /// Shadowsocks cipher, e.g. aes-256-gcm.
+    #[arg(long)]
+    pub method: Option<String>,
+    /// XTLS flow, e.g. xtls-rprx-vision.
+    #[arg(long)]
+    pub flow: Option<String>,
+    /// raw, ws, grpc or httpupgrade.
+    #[arg(long)]
+    pub transport: Option<String>,
+    /// none, tls or reality. Inferred from the other fields when omitted.
+    #[arg(long)]
+    pub tls: Option<String>,
+    /// SNI / server name.
+    #[arg(long)]
+    pub sni: Option<String>,
+    /// REALITY public key.
+    #[arg(long)]
+    pub public_key: Option<String>,
+    /// REALITY short id.
+    #[arg(long)]
+    pub short_id: Option<String>,
+    /// uTLS fingerprint.
+    #[arg(long)]
+    pub fingerprint: Option<String>,
+    /// ALPN entry. Repeatable.
+    #[arg(long)]
+    pub alpn: Vec<String>,
+    /// WebSocket or HTTPUpgrade path.
+    #[arg(long)]
+    pub path: Option<String>,
+    /// Host header.
+    #[arg(long)]
+    pub host: Option<String>,
+    /// gRPC service name.
+    #[arg(long)]
+    pub service_name: Option<String>,
+    /// Free-form tag used by group filters. Repeatable.
+    #[arg(long)]
+    pub tag: Vec<String>,
+    /// Region label used by group filters.
+    #[arg(long)]
+    pub region: Option<String>,
+}
+
+impl NodeFields {
+    /// Convert to the domain's shared builder.
+    #[must_use]
+    pub fn draft(&self) -> xraytui_domain::draft::NodeDraft {
+        xraytui_domain::draft::NodeDraft {
+            protocol: self.protocol.clone(),
+            name: self.name.clone(),
+            address: self.address.clone(),
+            port: self.port,
+            uuid: self.uuid.clone(),
+            password: self.password.clone(),
+            username: self.username.clone(),
+            method: self.method.clone(),
+            flow: self.flow.clone(),
+            transport: self.transport.clone(),
+            tls: self.tls.clone(),
+            sni: self.sni.clone(),
+            public_key: self.public_key.clone(),
+            short_id: self.short_id.clone(),
+            fingerprint: self.fingerprint.clone(),
+            alpn: self.alpn.clone(),
+            path: self.path.clone(),
+            host: self.host.clone(),
+            service_name: self.service_name.clone(),
+            tags: self.tag.clone(),
+            region: self.region.clone(),
+        }
+    }
 }
 
 /// `xraytui node import …`
@@ -325,6 +481,25 @@ pub struct ShareArgs {
 pub enum GroupCommand {
     /// List groups and their members.
     List,
+    /// Create a group.
+    Add {
+        /// Identifier: lowercase letters, digits and `-`.
+        group: String,
+        /// Display name. Defaults to the identifier.
+        #[arg(long)]
+        name: Option<String>,
+        /// Selection strategy: manual, random, round-robin, least-ping, least-load.
+        #[arg(long, default_value = "manual")]
+        strategy: String,
+        /// Member node. Repeatable.
+        #[arg(long = "node")]
+        nodes: Vec<String>,
+    },
+    /// Delete a group, and the profile targets that pointed at it.
+    Remove {
+        /// Group identifier.
+        group: String,
+    },
     /// Probe every member of a group.
     Test {
         /// Group identifier.
@@ -344,6 +519,22 @@ pub enum GroupCommand {
 pub enum ChainCommand {
     /// List chains in traffic order.
     List,
+    /// Create a chain of two or more hops, in traffic order.
+    Add {
+        /// Identifier: lowercase letters, digits and `-`.
+        chain: String,
+        /// Display name. Defaults to the identifier.
+        #[arg(long)]
+        name: Option<String>,
+        /// A hop, in traffic order. Give it at least twice.
+        #[arg(long = "hop", required = true)]
+        hops: Vec<String>,
+    },
+    /// Delete a chain.
+    Remove {
+        /// Chain identifier.
+        chain: String,
+    },
     /// Probe a chain end to end.
     Test {
         /// Chain identifier.
@@ -356,6 +547,21 @@ pub enum ChainCommand {
 pub enum RuleCommand {
     /// List rules in evaluation order.
     List,
+    /// Enable a rule.
+    Enable {
+        /// Rule identifier.
+        rule: String,
+    },
+    /// Disable a rule without deleting it.
+    Disable {
+        /// Rule identifier.
+        rule: String,
+    },
+    /// Delete a rule.
+    Remove {
+        /// Rule identifier.
+        rule: String,
+    },
     /// Ask the core which outbound a destination would take.
     Explain {
         /// A domain, an IP, or `host:port`.

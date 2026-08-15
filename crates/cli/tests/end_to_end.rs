@@ -508,3 +508,268 @@ async fn exec_injects_the_profile_proxy_environment() {
 
     assert!(daemon.cli(&["down"]).status.success());
 }
+
+// ------------------------------------------------- the configuration surface
+
+/// Everything an ordinary user does to set the tool up, through the real
+/// binaries, without ever opening a text editor.
+///
+/// The point of this test is the *absence* of a step where somebody hand-edits
+/// generated JSON or normalised TOML. If a v1.0 workflow cannot be expressed
+/// here, it is not finished.
+#[test]
+fn every_ordinary_configuration_action_works_without_editing_a_file() {
+    require_xray!("configuration surface");
+    let Some(daemon) = Daemon::start() else {
+        panic!("the daemon did not come up");
+    };
+
+    // 1. A node typed in by hand, with REALITY.
+    let added = daemon.cli(&[
+        "node",
+        "add",
+        "--protocol",
+        "vless",
+        "--name",
+        "HK Reality",
+        "--address",
+        "hk.example.com",
+        "--port",
+        "443",
+        "--uuid",
+        "8f6e5d4c-3b2a-4190-8f7e-6d5c4b3a2910",
+        "--flow",
+        "xtls-rprx-vision",
+        "--tls",
+        "reality",
+        "--sni",
+        "www.microsoft.com",
+        "--public-key",
+        "HlNjGYCbyoEqPbTdJQaRCr949-d8YsQ8e14TJtLYnks",
+        "--short-id",
+        "abcd1234",
+    ]);
+    assert!(
+        added.status.success(),
+        "node add: {}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    // 2. A second node on a different protocol and transport.
+    let trojan = daemon.cli(&[
+        "node",
+        "add",
+        "--protocol",
+        "trojan",
+        "--name",
+        "JP WS",
+        "--address",
+        "jp.example.com",
+        "--port",
+        "8443",
+        "--password",
+        "correct-horse-battery",
+        "--transport",
+        "ws",
+        "--path",
+        "/ray",
+        "--tls",
+        "tls",
+        "--sni",
+        "jp.example.com",
+    ]);
+    assert!(
+        trojan.status.success(),
+        "trojan add: {}",
+        String::from_utf8_lossy(&trojan.stderr)
+    );
+
+    let listing = String::from_utf8_lossy(&daemon.cli(&["node", "list"]).stdout).into_owned();
+    assert!(listing.contains("HK Reality"), "{listing}");
+    assert!(listing.contains("JP WS"), "{listing}");
+    let hk = listing
+        .lines()
+        .find(|line| line.contains("HK Reality"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("the HK node's identifier")
+        .to_owned();
+    let jp = listing
+        .lines()
+        .find(|line| line.contains("JP WS"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("the JP node's identifier")
+        .to_owned();
+
+    // 3. Editing changes only what was named.
+    assert!(
+        daemon
+            .cli(&["node", "edit", &hk, "--name", "HK Reality (edited)"])
+            .status
+            .success(),
+        "node edit"
+    );
+    let listing = String::from_utf8_lossy(&daemon.cli(&["node", "list"]).stdout).into_owned();
+    assert!(listing.contains("HK Reality (edited)"), "{listing}");
+    assert!(
+        listing.contains("hk.example.com"),
+        "the address must survive a rename: {listing}"
+    );
+
+    // 4. A field from another protocol is refused rather than quietly dropped.
+    let wrong = daemon.cli(&["node", "edit", &hk, "--method", "aes-256-gcm"]);
+    assert!(
+        !wrong.status.success(),
+        "a Shadowsocks cipher on a VLESS node must be refused, not ignored"
+    );
+    assert!(
+        String::from_utf8_lossy(&wrong.stderr).contains("--method"),
+        "{}",
+        String::from_utf8_lossy(&wrong.stderr)
+    );
+
+    // 5. A group, and a chain, both from the command line.
+    assert!(
+        daemon
+            .cli(&[
+                "group", "add", "fast", "--name", "Fast", "--node", &hk, "--node", &jp
+            ])
+            .status
+            .success(),
+        "group add"
+    );
+    assert!(
+        daemon
+            .cli(&[
+                "chain", "add", "relay", "--name", "Relay", "--hop", &hk, "--hop", &jp
+            ])
+            .status
+            .success(),
+        "chain add"
+    );
+    let targets = String::from_utf8_lossy(&daemon.cli(&["target", "list"]).stdout).into_owned();
+    assert!(targets.contains("group:fast"), "{targets}");
+    assert!(targets.contains("chain:relay"), "{targets}");
+
+    // A one-hop chain is a node with extra steps, and is refused as such.
+    let one_hop = daemon.cli(&["chain", "add", "solo", "--hop", &hk]);
+    assert!(!one_hop.status.success(), "a one-hop chain must be refused");
+
+    // 6. A profile with its own listeners, pointed at the group.
+    assert!(
+        daemon
+            .cli(&[
+                "profile", "add", "work", "--name", "Work", "--socks", "11180"
+            ])
+            .status
+            .success(),
+        "profile add"
+    );
+    assert!(
+        daemon
+            .cli(&["profile", "listeners", "work", "--http", "11181"])
+            .status
+            .success(),
+        "profile listeners"
+    );
+    assert!(
+        daemon
+            .cli(&["profile", "set-target", "work", "group:fast"])
+            .status
+            .success(),
+        "set-target"
+    );
+    let shown =
+        String::from_utf8_lossy(&daemon.cli(&["profile", "show", "work"]).stdout).into_owned();
+    assert!(
+        shown.contains("11180") && shown.contains("11181"),
+        "{shown}"
+    );
+
+    // 7. An application rule, disabled and enabled again.
+    assert!(
+        daemon
+            .cli(&["app", "assign", "work", "firefox"])
+            .status
+            .success(),
+        "assign"
+    );
+    let rules = String::from_utf8_lossy(&daemon.cli(&["app", "list"]).stdout).into_owned();
+    assert!(rules.contains("firefox"), "{rules}");
+    let rule_id = rules
+        .split_whitespace()
+        .find(|token| token.contains("firefox") && token.contains('-'))
+        .unwrap_or("firefox-work")
+        .to_owned();
+    assert!(
+        daemon.cli(&["rule", "disable", &rule_id]).status.success(),
+        "rule disable"
+    );
+    assert!(
+        daemon.cli(&["rule", "enable", &rule_id]).status.success(),
+        "rule enable"
+    );
+
+    // 8. Removal in dependency order, and refusal out of it.
+    let still_pointed = daemon.cli(&["group", "remove", "fast"]);
+    assert!(
+        !still_pointed.status.success(),
+        "removing a group a profile points at must be refused, not left dangling"
+    );
+    assert!(
+        daemon
+            .cli(&["profile", "set-target", "work", "direct"])
+            .status
+            .success()
+    );
+    assert!(
+        daemon.cli(&["group", "remove", "fast"]).status.success(),
+        "group remove"
+    );
+    assert!(
+        daemon.cli(&["chain", "remove", "relay"]).status.success(),
+        "chain remove"
+    );
+    assert!(
+        daemon.cli(&["profile", "remove", "work"]).status.success(),
+        "profile remove"
+    );
+    assert!(
+        daemon.cli(&["node", "remove", &jp]).status.success(),
+        "node remove"
+    );
+
+    // 9. And the whole thing is still a valid configuration.
+    let status = daemon.cli(&["status", "--format", "json"]);
+    assert!(status.status.success(), "status");
+    let value: serde_json::Value = serde_json::from_slice(&status.stdout).expect("status JSON");
+    assert!(value.get("desired").is_some());
+}
+
+/// A change that cannot work must fail loudly and leave nothing behind.
+#[test]
+fn a_refused_mutation_changes_nothing() {
+    require_xray!("refused mutation");
+    let Some(daemon) = Daemon::start() else {
+        panic!("the daemon did not come up");
+    };
+
+    let before = String::from_utf8_lossy(&daemon.cli(&["profile", "list"]).stdout).into_owned();
+
+    // The starter profile already binds 11080; a second listener on it cannot
+    // work, and the daemon knows that before anything is written.
+    let clash = daemon.cli(&["profile", "add", "clash", "--socks", "11080"]);
+    assert!(!clash.status.success(), "a port collision must be refused");
+    assert!(
+        String::from_utf8_lossy(&clash.stderr).contains("11080"),
+        "the refusal must name the conflict: {}",
+        String::from_utf8_lossy(&clash.stderr)
+    );
+
+    // Pointing at something that does not exist is refused too — including
+    // through the narrow set-target path, not only the whole-state one.
+    let ghost = daemon.cli(&["profile", "add", "ghost", "--target", "node:nowhere"]);
+    assert!(!ghost.status.success(), "an unknown target must be refused");
+
+    let after = String::from_utf8_lossy(&daemon.cli(&["profile", "list"]).stdout).into_owned();
+    assert_eq!(before, after, "a refused mutation must change nothing");
+}

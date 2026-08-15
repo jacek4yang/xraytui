@@ -245,6 +245,11 @@ pub enum Response {
     Mode(SystemMode),
     /// Result of applying a change.
     Applied {
+        /// Whether the change was discarded and the previous configuration
+        /// restored. A rolled-back change saved nothing, and a caller that
+        /// reports it as success tells a script the opposite of the truth.
+        #[serde(default)]
+        rolled_back: bool,
         /// Whether the core had to restart.
         restarted: bool,
         /// Balancer tags that were repointed, when it did not.

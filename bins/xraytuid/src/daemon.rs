@@ -498,6 +498,7 @@ impl Daemon {
         }
 
         Ok(Response::Applied {
+            rolled_back: false,
             restarted: applied > 0,
             switched: Vec::new(),
             warnings,
@@ -696,17 +697,19 @@ impl Daemon {
 }
 
 fn response_for(outcome: ApplyOutcome, warnings: Vec<String>) -> Response {
+    let rolled_back = matches!(outcome, ApplyOutcome::RolledBack { .. });
     match outcome {
         ApplyOutcome::Unchanged => {
-            Response::Applied { restarted: false, switched: Vec::new(), warnings }
+            Response::Applied { rolled_back, restarted: false, switched: Vec::new(), warnings }
         }
         ApplyOutcome::SwitchedSelectors { balancers } => {
-            Response::Applied { restarted: false, switched: balancers, warnings }
+            Response::Applied { rolled_back, restarted: false, switched: balancers, warnings }
         }
         ApplyOutcome::Restarted { .. } => {
-            Response::Applied { restarted: true, switched: Vec::new(), warnings }
+            Response::Applied { rolled_back, restarted: true, switched: Vec::new(), warnings }
         }
         ApplyOutcome::RolledBack { failed, .. } => Response::Applied {
+            rolled_back,
             restarted: true,
             switched: Vec::new(),
             warnings: warnings
@@ -835,6 +838,7 @@ impl ServerHandler for Daemon {
                         .map_err(|error| IpcError::Internal(error.to_string()))?;
                     tracing::info!(%generation, "core started on request");
                     Ok(Response::Applied {
+                        rolled_back: false,
                         restarted: true,
                         switched: Vec::new(),
                         warnings: engine
@@ -857,6 +861,7 @@ impl ServerHandler for Daemon {
                         .await
                         .map_err(|error| IpcError::Internal(error.to_string()))?;
                     Ok(Response::Applied {
+                        rolled_back: false,
                         restarted: true,
                         switched: Vec::new(),
                         warnings: Vec::new(),
