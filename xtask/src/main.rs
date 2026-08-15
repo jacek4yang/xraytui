@@ -38,6 +38,31 @@ enum Task {
     UpstreamCheck,
     /// Print the file manifest an installation would produce.
     Manifest(InstallArgs),
+    /// Export a self-contained, downloadable recovery checkpoint.
+    Checkpoint(CheckpointArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct CheckpointArgs {
+    /// Short label, e.g. `durable-state`. Lowercase letters, digits and `-`.
+    #[arg(long)]
+    label: String,
+    /// Where to write the checkpoint. Defaults to the recorded delivery
+    /// directory, or `../xraytui-deliverables` if none is recorded.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Milestone this checkpoint completes, for the manifest.
+    #[arg(long, default_value = "")]
+    completed: String,
+    /// The next milestone, for the manifest.
+    #[arg(long, default_value = "")]
+    next: String,
+    /// The exact command a resuming session should run first.
+    #[arg(long, default_value = "cargo xtask checkpoint --label resumed")]
+    resume_command: String,
+    /// Path to a test summary to embed. Optional but strongly preferred.
+    #[arg(long)]
+    tests: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -85,6 +110,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Task::Checkpoint(args) => checkpoint(&args),
     }
 }
 
@@ -417,3 +443,628 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>> {
     out.sort();
     Ok(out)
 }
+
+// ------------------------------------------------------------- checkpointing
+
+
+
+/// Where checkpoints go when `--out` is not given.
+const DELIVERY_RECORD: &str = "DELIVERY-LOCATION.txt";
+
+/// Export a checkpoint: a single compressed file holding complete Git history,
+/// a clean source snapshot, the continuation documents and the test evidence.
+///
+/// # Why this exists
+///
+/// This environment has destroyed committed work three times. A local commit is
+/// not durable here; the only thing that survives is a file the user has
+/// downloaded. So the unit of progress is not the commit — it is the checkpoint
+/// archive, and a slice is not finished until one has been exported and handed
+/// over.
+///
+/// Everything below runs with fixed argument vectors and no shell, so a branch
+/// name or a label cannot become a command.
+fn checkpoint(args: &CheckpointArgs) -> Result<()> {
+    let root = workspace_root()?;
+
+    if args.label.is_empty()
+        || !args
+            .label
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        bail!("--label must be lowercase letters, digits and '-': got {:?}", args.label);
+    }
+
+    // A checkpoint of an unclean tree records a state that cannot be restored,
+    // because the source archive comes from HEAD and the difference would be
+    // lost silently. Refuse rather than mislead.
+    let dirty = capture(&root, "git", &["status", "--porcelain"])?;
+    if !dirty.trim().is_empty() {
+        bail!(
+            "the worktree is not clean; commit first.\n{}\nA checkpoint archives HEAD, so \
+             uncommitted work would be silently dropped.",
+            dirty.trim()
+        );
+    }
+
+    let head = capture(&root, "git", &["rev-parse", "HEAD"])?.trim().to_owned();
+    let short = head.get(..7).unwrap_or(&head).to_owned();
+    let branch = capture(&root, "git", &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_owned();
+    let tags = capture(&root, "git", &["tag", "--list"])?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    let out = match &args.out {
+        Some(path) => path.clone(),
+        None => default_delivery_directory(&root)?,
+    };
+    std::fs::create_dir_all(&out)
+        .with_context(|| format!("cannot create {}", out.display()))?;
+
+    let sequence = next_sequence(&out)?;
+    let name = format!("xraytui-checkpoint-{sequence:03}-{}-{short}", args.label);
+    let staging = out.join(&name);
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    std::fs::create_dir_all(staging.join("test-results"))?;
+
+    // 1. Complete history: every branch, every tag.
+    let bundle = staging.join("xraytui-history.bundle");
+    run(&root, "git", &["bundle", "create", path_arg(&bundle)?, "--all"])?;
+
+    // 2. The committed tree, not the working directory. `gzip -n` omits the
+    //    timestamp, so the same commit produces the same bytes.
+    let source = staging.join("xraytui-source.tar.gz");
+    archive_head(&root, &source)?;
+
+    // 3. Verify the bundle by actually cloning it, because a bundle that cannot
+    //    be cloned is not a backup, and this is the one check that proves it.
+    let probe = out.join(format!(".verify-{sequence:03}"));
+    if probe.exists() {
+        std::fs::remove_dir_all(&probe)?;
+    }
+    run(
+        &root,
+        "git",
+        &["clone", "--quiet", path_arg(&bundle)?, path_arg(&probe)?],
+    )?;
+    let restored = capture(&probe, "git", &["rev-parse", "HEAD"])?.trim().to_owned();
+    std::fs::remove_dir_all(&probe)?;
+    if restored != head {
+        bail!("the bundle restored {restored}, not {head}");
+    }
+
+    // 4. The documents a resuming session reads first.
+    for document in [
+        "CONTINUE.md",
+        "RELEASE-1.0.md",
+        "STATUS.md",
+        "RECOVERY.md",
+        "CLAUDE.md",
+    ] {
+        let from = root.join(document);
+        if from.is_file() {
+            std::fs::copy(&from, staging.join(document))?;
+        }
+    }
+    if let Some(tests) = &args.tests
+        && tests.is_file()
+    {
+        std::fs::copy(tests, staging.join("test-results/summary.txt"))?;
+    }
+    let summary = staging.join("test-results/summary.txt");
+    if !summary.exists() {
+        std::fs::write(
+            &summary,
+            "No test summary was supplied for this checkpoint.\n\
+             Treat every test as UNEXECUTED at this commit.\n",
+        )?;
+    }
+    std::fs::write(
+        staging.join("test-results/commands.txt"),
+        TEST_COMMANDS.trim_start(),
+    )?;
+
+    let bundle_sum = sha256_of(&bundle)?;
+    let source_sum = sha256_of(&source)?;
+
+    let manifest = checkpoint_manifest(
+        sequence, &head, &branch, &tags, args, &bundle_sum, &source_sum,
+    )?;
+    std::fs::write(staging.join("CHECKPOINT-MANIFEST.json"), manifest)?;
+    std::fs::write(
+        staging.join("README-FIRST.md"),
+        readme_first(sequence, &args.label, &head, &branch, &args.resume_command),
+    )?;
+    if !staging.join("RECOVERY.md").exists() {
+        std::fs::write(staging.join("RECOVERY.md"), RECOVERY_DOC.trim_start())?;
+    }
+
+    // 5. Checksums over everything in the checkpoint, computed last.
+    let mut sums = String::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(&staging, &mut files)?;
+    files.sort();
+    for file in &files {
+        let relative = file.strip_prefix(&staging).unwrap_or(file);
+        sums.push_str(&format!("{}  {}\n", sha256_of(file)?, relative.display()));
+    }
+    std::fs::write(staging.join("SHA256SUMS"), &sums)?;
+
+    // 6. One outer file.
+    let outer = out.join(format!("{name}.tar.gz"));
+    tar_directory(&out, &name, &outer)?;
+    std::fs::remove_dir_all(&staging)?;
+    let outer_sum = sha256_of(&outer)?;
+    std::fs::write(
+        out.join(format!("{name}.tar.gz.sha256")),
+        format!("{outer_sum}  {name}.tar.gz\n"),
+    )?;
+
+    println!("checkpoint {sequence:03} — {}", args.label);
+    println!("  commit   {head}");
+    println!("  branch   {branch}");
+    println!("  archive  {}", outer.display());
+    println!("  sha256   {outer_sum}");
+    println!("  bundle   {bundle_sum}");
+    println!("  source   {source_sum}");
+    println!("\nSend {name}.tar.gz to the user. A checkpoint nobody has downloaded");
+    println!("is not a backup.");
+    Ok(())
+}
+
+/// The delivery directory, recorded so every later checkpoint lands beside the
+/// earlier ones even across a restart.
+fn default_delivery_directory(root: &Path) -> Result<PathBuf> {
+    let record = root.join(DELIVERY_RECORD);
+    if let Ok(text) = std::fs::read_to_string(&record) {
+        let line = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'));
+        if let Some(path) = line {
+            return Ok(PathBuf::from(path));
+        }
+    }
+    // Preference order, most durable first. `/mnt/user-data/working` is the
+    // directory Cowork surfaces to the user; a temporary directory is not a
+    // delivery location, because it is exactly what the resets destroy.
+    for candidate in ["/mnt/user-data/outputs", "/mnt/user-data/working"] {
+        if Path::new(candidate).is_dir() {
+            return Ok(PathBuf::from(candidate).join("xraytui-deliverables"));
+        }
+    }
+    Ok(root
+        .parent()
+        .unwrap_or(root)
+        .join("xraytui-deliverables"))
+}
+
+/// One past the highest checkpoint already present, so numbering survives a
+/// restart without being remembered.
+fn next_sequence(out: &Path) -> Result<u32> {
+    let mut highest: Option<u32> = None;
+    if let Ok(entries) = std::fs::read_dir(out) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(rest) = name.strip_prefix("xraytui-checkpoint-") else {
+                continue;
+            };
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(value) = digits.parse::<u32>() {
+                highest = Some(highest.map_or(value, |current: u32| current.max(value)));
+            }
+        }
+    }
+    Ok(highest.map_or(0, |value| value + 1))
+}
+
+/// `git archive HEAD | gzip -n`, without a shell.
+fn archive_head(root: &Path, destination: &Path) -> Result<()> {
+    let tar = Command::new("git")
+        .current_dir(root)
+        .args(["archive", "--format=tar", "--prefix=xraytui/", "HEAD"])
+        .output()
+        .context("git archive")?;
+    if !tar.status.success() {
+        bail!("git archive failed: {}", String::from_utf8_lossy(&tar.stderr));
+    }
+    let file = std::fs::File::create(destination)?;
+    let mut gzip = Command::new("gzip")
+        .arg("-n")
+        .arg("-9")
+        .stdin(std::process::Stdio::piped())
+        .stdout(file)
+        .spawn()
+        .context("gzip")?;
+    {
+        use std::io::Write;
+        let stdin = gzip.stdin.as_mut().context("gzip stdin")?;
+        stdin.write_all(&tar.stdout)?;
+    }
+    let status = gzip.wait()?;
+    if !status.success() {
+        bail!("gzip failed with {status}");
+    }
+    Ok(())
+}
+
+/// Deterministic tar of one directory: sorted, owned by root, fixed mtime.
+fn tar_directory(parent: &Path, name: &str, destination: &Path) -> Result<()> {
+    let tar = Command::new("tar")
+        .current_dir(parent)
+        .args([
+            "--sort=name",
+            "--owner=root:0",
+            "--group=root:0",
+            "--mtime=UTC 2020-01-01",
+            "--numeric-owner",
+            "-cf",
+            "-",
+            name,
+        ])
+        .output()
+        .context("tar")?;
+    if !tar.status.success() {
+        bail!("tar failed: {}", String::from_utf8_lossy(&tar.stderr));
+    }
+    let file = std::fs::File::create(destination)?;
+    let mut gzip = Command::new("gzip")
+        .arg("-n")
+        .arg("-9")
+        .stdin(std::process::Stdio::piped())
+        .stdout(file)
+        .spawn()
+        .context("gzip")?;
+    {
+        use std::io::Write;
+        gzip.stdin
+            .as_mut()
+            .context("gzip stdin")?
+            .write_all(&tar.stdout)?;
+    }
+    if !gzip.wait()?.success() {
+        bail!("gzip failed");
+    }
+    Ok(())
+}
+
+fn collect_files(directory: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn sha256_of(path: &Path) -> Result<String> {
+    let output = Command::new("sha256sum")
+        .arg(path)
+        .output()
+        .context("sha256sum")?;
+    if !output.status.success() {
+        bail!("sha256sum failed for {}", path.display());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned())
+}
+
+fn path_arg(path: &Path) -> Result<&str> {
+    path.to_str()
+        .with_context(|| format!("{} is not valid UTF-8", path.display()))
+}
+
+fn run(directory: &Path, program: &str, arguments: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .current_dir(directory)
+        .args(arguments)
+        .status()
+        .with_context(|| format!("cannot run {program}"))?;
+    if !status.success() {
+        bail!("{program} {arguments:?} failed with {status}");
+    }
+    Ok(())
+}
+
+fn capture(directory: &Path, program: &str, arguments: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .current_dir(directory)
+        .args(arguments)
+        .output()
+        .with_context(|| format!("cannot run {program}"))?;
+    if !output.status.success() {
+        bail!(
+            "{program} {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn json_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checkpoint_manifest(
+    sequence: u32,
+    head: &str,
+    branch: &str,
+    tags: &[String],
+    args: &CheckpointArgs,
+    bundle_sum: &str,
+    source_sum: &str,
+) -> Result<String> {
+    let now = capture(Path::new("."), "date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"])?
+        .trim()
+        .to_owned();
+    let rust = capture(Path::new("."), "rustc", &["--version"])
+        .unwrap_or_else(|_| "unknown".into())
+        .trim()
+        .to_owned();
+    let kernel = capture(Path::new("."), "uname", &["-sr"])
+        .unwrap_or_else(|_| "unknown".into())
+        .trim()
+        .to_owned();
+    let xray = Command::new("xray")
+        .arg("version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        })
+        .unwrap_or_else(|| "not present".into());
+    let tag_list = tags
+        .iter()
+        .map(|tag| format!("\"{}\"", json_escape(tag)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let summary = args
+        .tests
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let counts = parse_test_counts(&summary);
+
+    Ok(format!(
+        r#"{{
+  "manifest_schema_version": 1,
+  "checkpoint_sequence": {sequence},
+  "created_utc": "{now}",
+  "project_version": "{version}",
+  "branch": "{branch}",
+  "head_commit": "{head}",
+  "local_tags": [{tag_list}],
+  "worktree_clean": true,
+  "completed_milestone": "{completed}",
+  "next_milestone": "{next}",
+  "first_resume_command": "{resume}",
+  "tests_run": {run},
+  "tests_passed": {passed},
+  "tests_failed": {failed},
+  "tests_unexecuted": "{unexecuted}",
+  "environment_limitations": "{limitations}",
+  "git_bundle": {{ "file": "xraytui-history.bundle", "sha256": "{bundle_sum}" }},
+  "source_archive": {{ "file": "xraytui-source.tar.gz", "sha256": "{source_sum}" }},
+  "xray_version": "{xray}",
+  "rust_version": "{rust}",
+  "kernel": "{kernel}",
+  "disposable_network_resources_may_remain": false
+}}
+"#,
+        version = env!("CARGO_PKG_VERSION"),
+        completed = json_escape(&args.completed),
+        next = json_escape(&args.next),
+        resume = json_escape(&args.resume_command),
+        run = counts.0,
+        passed = counts.1,
+        failed = counts.2,
+        unexecuted = json_escape(&counts.3),
+        limitations = json_escape(&environment_limitations()),
+        xray = json_escape(&xray),
+        rust = json_escape(&rust),
+        kernel = json_escape(&kernel),
+    ))
+}
+
+/// Read `RUN=`, `PASSED=`, `FAILED=` and `UNEXECUTED=` out of a summary file.
+///
+/// A summary that does not say is recorded as zero tests run, never as zero
+/// tests failed: "nothing ran" and "nothing broke" are different facts.
+fn parse_test_counts(summary: &str) -> (u64, u64, u64, String) {
+    let mut run = 0;
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut unexecuted = String::from("unknown");
+    for line in summary.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("RUN=") {
+            run = value.trim().parse().unwrap_or(0);
+        } else if let Some(value) = line.strip_prefix("PASSED=") {
+            passed = value.trim().parse().unwrap_or(0);
+        } else if let Some(value) = line.strip_prefix("FAILED=") {
+            failed = value.trim().parse().unwrap_or(0);
+        } else if let Some(value) = line.strip_prefix("UNEXECUTED=") {
+            unexecuted = value.trim().to_owned();
+        }
+    }
+    (run, passed, failed, unexecuted)
+}
+
+/// What this machine demonstrably cannot do, probed rather than assumed.
+fn environment_limitations() -> String {
+    let mut problems = Vec::new();
+    if !Path::new("/run/dbus/system_bus_socket").exists() {
+        problems.push("no D-Bus system bus: systemd-resolved cannot be tested");
+    }
+    if !Path::new("/proc/net/if_inet6").exists() {
+        problems.push("no IPv6 in this kernel");
+    }
+    if which("podman").is_none() && which("docker").is_none() {
+        problems.push("no container runtime: no clean Arch package build");
+    }
+    if problems.is_empty() {
+        "none detected".to_owned()
+    } else {
+        problems.join("; ")
+    }
+}
+
+fn which(program: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|directory| directory.join(program))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn readme_first(
+    sequence: u32,
+    label: &str,
+    head: &str,
+    branch: &str,
+    resume: &str,
+) -> String {
+    format!(
+        r#"# Checkpoint {sequence:03} — {label}
+
+This is a complete, self-contained copy of the xraytui project. Everything
+needed to inspect, build, continue or hand it to somebody else is inside.
+
+## Restore it
+
+```sh
+tar xzf xraytui-checkpoint-{sequence:03}-{label}-*.tar.gz
+cd xraytui-checkpoint-{sequence:03}-{label}-*/
+sha256sum -c SHA256SUMS
+
+git clone xraytui-history.bundle xraytui
+cd xraytui
+git switch {branch}
+git rev-parse HEAD    # must print {head}
+```
+
+`xraytui-source.tar.gz` is the same tree without history, as an independent
+check: extract it and diff it against the clone if you want to be sure.
+
+## Continue it
+
+Open a new session, attach this archive, and say `continue`. The instructions
+for resuming are in `CLAUDE.md` and the current state is in `CONTINUE.md`.
+The first command to run is:
+
+```sh
+{resume}
+```
+
+## What the numbers mean
+
+`CHECKPOINT-MANIFEST.json` records what was actually executed at this commit.
+A test that did not run is recorded as unexecuted, never as passing. If
+`tests_run` is 0 the checkpoint is a preservation snapshot, not a claim that
+anything works.
+"#
+    )
+}
+
+const TEST_COMMANDS: &str = r#"
+Commands that produce the evidence in summary.txt.
+
+  cargo fmt --all --check
+  cargo check --workspace --all-targets
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
+  cargo test --workspace
+  sudo ./scripts/netns-test.sh          # privileged; disposable namespace only
+  ./scripts/release-smoke.sh            # whole user workflow, real binaries
+  cargo audit
+  cargo deny check
+
+summary.txt uses these keys, read by `cargo xtask checkpoint`:
+
+  RUN=<total tests executed>
+  PASSED=<total passed>
+  FAILED=<total failed>
+  UNEXECUTED=<comma-separated names of gates that did not run>
+"#;
+
+const RECOVERY_DOC: &str = r#"
+# Recovering this project
+
+## From a checkpoint archive
+
+```sh
+tar xzf xraytui-checkpoint-NNN-LABEL-SHORT.tar.gz
+cd xraytui-checkpoint-NNN-LABEL-SHORT
+sha256sum -c SHA256SUMS
+git clone xraytui-history.bundle xraytui
+cd xraytui && git switch release/v1
+```
+
+The bundle carries every local branch and tag. Nothing was ever pushed to a
+remote, by explicit instruction, so the bundle is the only copy of the history.
+
+## If the bundle will not clone
+
+Use `xraytui-source.tar.gz`. It is the committed tree at the recorded HEAD,
+without history:
+
+```sh
+tar xzf xraytui-source.tar.gz
+cd xraytui && git init && git add -A && git commit -m "restored from source snapshot"
+```
+
+You lose history, not code.
+
+## After restoring
+
+```sh
+cargo check --workspace --all-targets
+cargo test --workspace
+```
+
+Then read `CONTINUE.md` for the exact next action.
+
+## Cleaning up a machine that ran the privileged tests
+
+Every privileged test runs inside a disposable network namespace that the
+kernel destroys with the namespace, so an interrupted run leaves nothing
+behind. If a daemon or fixture was left running:
+
+```sh
+pkill -f 'xraytuid --root /tmp'
+pkill -f smoke-fixtures.py
+```
+"#;
