@@ -606,6 +606,21 @@ impl Engine {
         self.refresh_profile_runtime();
     }
 
+    /// Install health that was observed before this process started.
+    ///
+    /// `or_insert` rather than overwrite: a probe that has already run in this
+    /// process is newer than anything the database can offer, and restoring
+    /// history must never move a node's health backwards.
+    pub fn seed_node_health(
+        &mut self,
+        history: impl IntoIterator<Item = (xraytui_domain::NodeId, xraytui_domain::HealthRecord)>,
+    ) {
+        for (node, record) in history {
+            self.runtime.node_health.entry(node).or_insert(record);
+        }
+        self.refresh_profile_runtime();
+    }
+
     /// Rebuild the per-profile view of runtime state from desired + health.
     fn refresh_profile_runtime(&mut self) {
         let listeners = self

@@ -28,7 +28,18 @@ pub struct Daemon {
     netd: Arc<crate::netd::Netd>,
     /// The periodic worker: health probes and subscription updates.
     sweeper: Arc<crate::sweeper::Sweeper>,
+    /// Durable runtime state. `None` only when the database could not be
+    /// opened, which is a warning rather than a failure: xraytui works without
+    /// history, it just forgets more than it should.
+    store: Option<Arc<xraytui_state_store::StateStore>>,
 }
+
+/// Probe history older than this is dropped when the daemon starts.
+///
+/// Thirty days: long enough to see that a provider has been unreliable for a
+/// month, short enough that the database does not grow without bound on a
+/// machine that is never reinstalled.
+const HISTORY_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 
 impl Daemon {
     /// Build a daemon: discover the core, construct the engine, seed the state.
@@ -55,8 +66,60 @@ impl Daemon {
             .seed(state)
             .context("cannot seed the desired state")?;
 
+        // Opening the store is not allowed to stop the daemon: a corrupt or
+        // unreadable history is a reason to lose history, not the proxy.
+        let store = match xraytui_state_store::StateStore::open(paths.state_db()) {
+            Ok(store) => {
+                let cutoff = xraytui_linux_net::lease::now().saturating_sub(HISTORY_MAX_AGE_SECS);
+                if let Err(error) = store.prune(cutoff) {
+                    tracing::warn!(%error, "cannot prune the state database");
+                }
+                Some(Arc::new(store))
+            }
+            Err(error) => {
+                tracing::warn!(%error, "continuing without durable runtime state");
+                None
+            }
+        };
+
+        // What the daemon knew before it restarted. Mode, targets and rules
+        // came back with the policy files, which is where they belong; health
+        // is the part that is observed rather than configured, so it comes from
+        // here — otherwise every restart would report a failing node as untested
+        // and route traffic back into it.
+        if let Some(store) = &store {
+            match store.node_health() {
+                Ok(history) if !history.is_empty() => {
+                    let count = history.len();
+                    engine.seed_node_health(history);
+                    tracing::info!(nodes = count, "restored health history");
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "cannot read health history"),
+            }
+            match store.recover() {
+                Ok(recovered) => {
+                    if let Some(interrupted) = &recovered.interrupted {
+                        tracing::warn!(
+                            operation = %interrupted.operation,
+                            detail = %interrupted.detail,
+                            "a previous operation did not finish"
+                        );
+                    }
+                    tracing::debug!(
+                        mode = ?recovered.mode,
+                        last_known_good = ?recovered.last_known_good,
+                        profiles = recovered.profile_targets.len(),
+                        "recovered durable state"
+                    );
+                }
+                Err(error) => tracing::warn!(%error, "cannot read durable state"),
+            }
+        }
+
         let (events, _) = xraytui_ipc::server::event_channel();
         Ok(Self {
+            store,
             netd: Arc::new(crate::netd::Netd::new(std::path::PathBuf::from(
                 xraytui_netd_protocol::DEFAULT_SOCKET,
             ))),
@@ -182,6 +245,36 @@ impl Daemon {
             .map_err(|error| IpcError::Internal(error.to_string()))
     }
 
+    /// Write the observed half of the state to the durable store.
+    ///
+    /// Policy has already gone to TOML by this point; what is recorded here is
+    /// what the daemon would otherwise have to guess after a restart. Failures
+    /// are logged and swallowed: a database that cannot be written is a reason
+    /// to forget, not a reason to refuse a change the user asked for.
+    async fn remember(&self, desired: &DesiredState) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let now = xraytui_linux_net::lease::now();
+        if let Err(error) = store.record_mode(desired.mode, self.netd.is_active().await) {
+            tracing::warn!(%error, "cannot record the mode");
+        }
+        for (id, profile) in &desired.profiles {
+            if let Err(error) =
+                store.record_profile_target(id.as_str(), &profile.target.to_token(), now)
+            {
+                tracing::warn!(%error, profile = %id, "cannot record the profile target");
+            }
+        }
+        let engine = self.engine.lock().await;
+        if let Some(generation) = engine.runtime().last_known_good {
+            drop(engine);
+            if let Err(error) = store.record_last_known_good(generation, now) {
+                tracing::warn!(%error, "cannot record the last known good generation");
+            }
+        }
+    }
+
     async fn apply(&self, state: DesiredState) -> Result<Response, IpcError> {
         // A mode that needs a system tunnel is refused up front when no helper
         // can grant one. Starting a core whose TUN inbound nothing routes to
@@ -207,6 +300,7 @@ impl Daemon {
         let desired = engine.desired().clone();
         drop(engine);
         self.persist().await?;
+        self.remember(&desired).await;
         self.sweeper
             .reconcile(&self.config, &desired, xraytui_linux_net::lease::now())
             .await;
@@ -1062,6 +1156,16 @@ impl Daemon {
                 .lock()
                 .await
                 .record_node_health(id.clone(), result.clone());
+            // Also to disk, so a node that has been failing all morning is
+            // still known to be failing after a restart.
+            if let Some(store) = &self.store {
+                let subject = xraytui_state_store::node_subject(id);
+                if let Err(error) =
+                    store.record_probe(&subject, xraytui_linux_net::lease::now(), &result)
+                {
+                    tracing::warn!(%error, "cannot record the probe");
+                }
+            }
         }
         Ok(Response::Probe(Box::new(result)))
     }

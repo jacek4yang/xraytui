@@ -91,6 +91,15 @@ pub enum Command {
     App(AppCommand),
     /// Run a command with its traffic sent through a profile.
     Exec(ExecArgs),
+    /// Create the directories, configuration and state database, then stop.
+    ///
+    /// Touches nothing outside your own XDG directories: no routes, no DNS, no
+    /// services, no packages.
+    Init {
+        /// Overwrite an existing config.toml with the defaults.
+        #[arg(long)]
+        force: bool,
+    },
     /// Manage nodes.
     #[command(subcommand)]
     Node(NodeCommand),

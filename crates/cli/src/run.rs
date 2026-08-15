@@ -18,6 +18,7 @@ use crate::{CliError, exec};
 /// in the crate documentation.
 #[must_use]
 pub fn main() -> i32 {
+    quiet_broken_pipe();
     let cli = <Cli as clap::Parser>::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -38,6 +39,32 @@ pub fn main() -> i32 {
     }
 }
 
+/// Exit quietly when the reader goes away.
+///
+/// `xraytui target list | dmenu` and `… | head` are documented workflows, and
+/// both close the pipe early. Rust ignores `SIGPIPE`, so the write fails and
+/// `println!` panics with a backtrace — which looks like a crash in a tool that
+/// did exactly what it was asked. Restoring the signal disposition would need
+/// `unsafe`, which this workspace forbids; catching the panic is safe, costs
+/// nothing, and produces the behaviour every other command-line tool has.
+fn quiet_broken_pipe() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if message.contains("Broken pipe") {
+            // The reader closed first. That is not a failure of this program,
+            // and printing a backtrace into a closed pipe helps nobody.
+            std::process::exit(0);
+        }
+        previous(info);
+    }));
+}
+
 async fn dispatch(cli: Cli) -> Result<(), CliError> {
     let paths = match &cli.root {
         Some(root) => xraytui_config::Paths::rooted_at(root),
@@ -50,6 +77,7 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
     // and `manpages` work during packaging with nothing running.
     match &cli.command {
         Some(Command::Completion { shell }) => return print_completion(*shell),
+        Some(Command::Init { force }) => return init(&paths, *force),
         Some(Command::Manpages { directory }) => return write_manpages(directory),
         // Transparent mode is handled here, before the daemon connection,
         // because it does not need one: what it needs is the configuration on
@@ -107,8 +135,87 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
         Some(Command::Exec(args)) => run_exec(&mut client, args).await,
 
         // Handled before the daemon connection.
-        Some(Command::Completion { .. } | Command::Manpages { .. }) => Ok(()),
+        Some(Command::Completion { .. } | Command::Manpages { .. } | Command::Init { .. }) => {
+            Ok(())
+        }
     }
+}
+
+/// `xraytui init` — make a usable configuration and stop.
+///
+/// Everything it writes is inside the caller's own XDG directories, and all of
+/// it is inert: mode `off`, one direct profile with loopback listeners, no
+/// tunnel, no DNS change, no service enabled, nothing installed. A first run
+/// should leave the machine exactly as it found it apart from a few files the
+/// user can read.
+///
+/// Idempotent. Run it twice and the second run reports what already existed
+/// rather than replacing it, because the second run is usually somebody
+/// checking whether the first one worked.
+fn init(paths: &xraytui_config::Paths, force: bool) -> Result<(), CliError> {
+    paths
+        .ensure()
+        .map_err(|error| CliError::Other(error.to_string()))?;
+    println!("directories       {}", paths.config.display());
+
+    let config_file = paths.config_file();
+    if force || !config_file.exists() {
+        xraytui_config::store_toml(&config_file, &xraytui_config::ConfigFile::default())
+            .map_err(|error| CliError::Other(error.to_string()))?;
+        println!("config.toml       written");
+    } else {
+        println!("config.toml       kept (pass --force to replace it)");
+    }
+
+    let state = match xraytui_config::store::load(paths) {
+        Ok(state) if !state.profiles.is_empty() => {
+            println!(
+                "policy            kept ({} profile(s), {} node(s))",
+                state.profiles.len(),
+                state.nodes.len()
+            );
+            state
+        }
+        Ok(_) => {
+            let state = xraytui_config::store::starter_state();
+            xraytui_config::store::save(paths, &state)
+                .map_err(|error| CliError::Other(error.to_string()))?;
+            println!("policy            starter configuration written");
+            state
+        }
+        // A policy file that exists but does not parse is not a fresh
+        // installation. Writing the starter configuration here would delete
+        // every node the user owns because one file has a typo in it — so
+        // refuse, and say which file and why.
+        Err(error) => {
+            return Err(CliError::Other(format!(
+                "{error}\n\nRefusing to write a starter configuration over policy files that \
+                 already exist: fix the file above, or move it aside, and run `xraytui init` \
+                 again."
+            )));
+        }
+    };
+
+    match xraytui_state_store::StateStore::open(paths.state_db()) {
+        Ok(store) => println!("state database    {}", store.path().display()),
+        Err(error) => eprintln!("xraytui: warning: {error}"),
+    }
+
+    for diagnostic in state
+        .validate()
+        .iter()
+        .filter(|d| d.severity == xraytui_domain::Severity::Error)
+    {
+        eprintln!("xraytui: [{}] {}", diagnostic.code, diagnostic.message);
+    }
+
+    println!();
+    println!("Next:");
+    println!("  xraytui doctor                    # what this machine can and cannot do");
+    println!("  systemctl --user enable --now xraytuid.service");
+    println!("  xraytui node import --stdin       # paste share links, then Ctrl-D");
+    println!("  xraytui                           # the interface");
+    Ok(())
 }
 
 async fn ask(client: &mut Client, request: Request) -> Result<Response, CliError> {

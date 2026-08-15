@@ -3328,6 +3328,7 @@ dependencies = [
  "xraytui-linux-net",
  "xraytui-netd-protocol",
  "xraytui-secrets",
+ "xraytui-state-store",
  "xraytui-test-support",
  "xraytui-tui",
 ]
@@ -3642,6 +3643,7 @@ dependencies = [
  "xraytui-linux-net",
  "xraytui-netd-protocol",
  "xraytui-secrets",
+ "xraytui-state-store",
  "xraytui-subscription",
  "xraytui-xray-api",
  "xraytui-xray-compiler",

@@ -17,6 +17,7 @@ unsafe_code = "forbid"
 [dependencies]
 xraytui-controller = { workspace = true }
 xraytui-linux-net = { workspace = true }
+xraytui-state-store = { workspace = true }
 xraytui-netd-protocol = { workspace = true }
 xraytui-config = { workspace = true }
 xraytui-ipc = { workspace = true }
