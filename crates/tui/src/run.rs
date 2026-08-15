@@ -141,6 +141,183 @@ pub async fn run(socket: std::path::PathBuf) -> Result<(), RunError> {
                 perform(&mut client, &mut app, request, "probe finished").await;
             }
             Action::Notice(message) => app.status = message,
+
+            // --- editing: every one goes through the same typed mutation the
+            // command line uses, by sending the whole desired state back. ---
+            Action::AddNode(draft) => match draft.create() {
+                Ok(node) => {
+                    let mut next = app.desired.clone();
+                    let id = node.id.clone();
+                    next.nodes.insert(id.clone(), node);
+                    mutate(&mut client, &mut app, next, &format!("added {id}")).await;
+                }
+                Err(error) => app.status = format!("refused: {error}"),
+            },
+            Action::EditNode { id, draft } => {
+                let node_id = xraytui_domain::NodeId::from_text(&id);
+                match app.desired.nodes.get(&node_id) {
+                    Some(current) => match draft.edit(current) {
+                        Ok(updated) => {
+                            let mut next = app.desired.clone();
+                            next.nodes.insert(node_id, updated);
+                            mutate(&mut client, &mut app, next, &format!("updated {id}")).await;
+                        }
+                        Err(error) => app.status = format!("refused: {error}"),
+                    },
+                    None => app.status = format!("no node '{id}'; press r to refresh"),
+                }
+            }
+            Action::RemoveNode { id } => {
+                let node_id = xraytui_domain::NodeId::from_text(&id);
+                let mut next = app.desired.clone();
+                if next.nodes.remove(&node_id).is_some() {
+                    mutate(&mut client, &mut app, next, &format!("removed {id}")).await;
+                } else {
+                    app.status = format!("no node '{id}'");
+                }
+            }
+            Action::ImportLinks(text) => {
+                let request = Request::Import {
+                    text,
+                    origin: xraytui_ipc::ImportOrigin::Manual,
+                };
+                perform(&mut client, &mut app, request, "imported").await;
+            }
+            Action::AddSubscription { url, name } => {
+                match xraytui_domain::SubscriptionId::new(xraytui_domain::slugify(&name)) {
+                    Ok(id) => {
+                        let subscription = xraytui_domain::Subscription {
+                            id: id.clone(),
+                            name,
+                            url: xraytui_secrets::Secret::new(url),
+                            enabled: true,
+                            update_interval_secs: Some(6 * 60 * 60),
+                            fetch_via_profile: None,
+                            include_regex: Vec::new(),
+                            exclude_regex: Vec::new(),
+                            max_response_bytes: None,
+                            max_nodes: None,
+                            meta: xraytui_domain::SubscriptionMeta::default(),
+                        };
+                        let mut next = app.desired.clone();
+                        next.subscriptions.insert(id, subscription);
+                        mutate(&mut client, &mut app, next, "subscription added").await;
+                    }
+                    Err(error) => app.status = format!("refused: {error}"),
+                }
+            }
+            Action::UpdateSubscription { id } => {
+                let request =
+                    Request::SubscriptionUpdate(xraytui_domain::SubscriptionId::from_text(&id));
+                perform(&mut client, &mut app, request, "subscription updated").await;
+            }
+            Action::AddProfile {
+                id,
+                name,
+                socks,
+                http,
+            } => match xraytui_domain::ProfileId::new(&id) {
+                Ok(profile_id) => {
+                    let mut profile = xraytui_domain::EgressProfile::new(
+                        profile_id.clone(),
+                        name,
+                        xraytui_domain::Target::Direct,
+                    );
+                    profile.socks = socks.map(xraytui_domain::ListenerSpec::loopback);
+                    profile.http = http.map(xraytui_domain::ListenerSpec::loopback);
+                    let mut next = app.desired.clone();
+                    next.profiles.insert(profile_id, profile);
+                    mutate(&mut client, &mut app, next, &format!("added profile {id}")).await;
+                }
+                Err(error) => app.status = format!("refused: {error}"),
+            },
+            Action::SetListeners {
+                profile,
+                socks,
+                http,
+            } => {
+                let profile_id = xraytui_domain::ProfileId::from_text(&profile);
+                let mut next = app.desired.clone();
+                match next.profiles.get_mut(&profile_id) {
+                    Some(entry) => {
+                        if let Some(port) = socks {
+                            entry.socks =
+                                (port != 0).then(|| xraytui_domain::ListenerSpec::loopback(port));
+                        }
+                        if let Some(port) = http {
+                            entry.http =
+                                (port != 0).then(|| xraytui_domain::ListenerSpec::loopback(port));
+                        }
+                        mutate(&mut client, &mut app, next, "listeners updated").await;
+                    }
+                    None => app.status = format!("no profile '{profile}'"),
+                }
+            }
+            Action::AssignApp { profile, matcher } => {
+                let profile_id = xraytui_domain::ProfileId::from_text(&profile);
+                match xraytui_domain::AppRuleId::new(format!(
+                    "{}-{profile}",
+                    xraytui_domain::slugify(&matcher)
+                )) {
+                    Ok(rule_id) => {
+                        let mut next = app.desired.clone();
+                        next.app_rules.insert(
+                            rule_id.clone(),
+                            xraytui_domain::ApplicationRule {
+                                id: rule_id,
+                                priority: 100,
+                                process: vec![xraytui_domain::AppMatcher(matcher.clone())],
+                                action: xraytui_domain::RuleAction::Profile { id: profile_id },
+                                enabled: true,
+                                note: None,
+                            },
+                        );
+                        mutate(
+                            &mut client,
+                            &mut app,
+                            next,
+                            &format!("{matcher} → {profile}"),
+                        )
+                        .await;
+                    }
+                    Err(error) => app.status = format!("refused: {error}"),
+                }
+            }
+            Action::SetRuleEnabled { id, enabled } => {
+                let mut next = app.desired.clone();
+                let app_id = xraytui_domain::AppRuleId::from_text(&id);
+                let routing_id = xraytui_domain::RoutingRuleId::from_text(&id);
+                let mut found = false;
+                if let Some(rule) = next.app_rules.get_mut(&app_id) {
+                    rule.enabled = enabled;
+                    found = true;
+                }
+                if let Some(rule) = next.routing_rules.get_mut(&routing_id) {
+                    rule.enabled = enabled;
+                    found = true;
+                }
+                if found {
+                    let verb = if enabled { "enabled" } else { "disabled" };
+                    mutate(&mut client, &mut app, next, &format!("rule {verb}")).await;
+                } else {
+                    app.status = format!("no rule '{id}'");
+                }
+            }
+            Action::ShowQr { id } => {
+                let node_id = xraytui_domain::NodeId::from_text(&id);
+                match app.desired.nodes.get(&node_id) {
+                    Some(node) => match xraytui_import::to_share_link(node)
+                        .map_err(|error| error.to_string())
+                        .and_then(|link| {
+                            xraytui_import::qr::render_terminal(link.expose())
+                                .map_err(|error| error.to_string())
+                        }) {
+                        Ok(art) => app.overlay = crate::app::Overlay::Qr { art, node: id },
+                        Err(error) => app.status = format!("cannot share: {error}"),
+                    },
+                    None => app.status = format!("no node '{id}'"),
+                }
+            }
         }
     };
 
@@ -228,6 +405,32 @@ async fn refresh(client: &mut Client, app: &mut App) {
             app.connected = false;
             app.status = format!("daemon unreachable: {error}");
         }
+    }
+}
+
+/// Send a whole desired state and report what happened.
+///
+/// The interface never applies a change locally and hopes: the daemon
+/// validates, compiles a candidate configuration, reconciles and rolls back,
+/// and only then does the pane show the new state.
+async fn mutate(
+    client: &mut Client,
+    app: &mut App,
+    next: xraytui_domain::DesiredState,
+    success: &str,
+) {
+    match client.request(Request::SetDesired(Box::new(next))).await {
+        Ok(xraytui_ipc::Response::Applied { rolled_back, .. }) if rolled_back => {
+            app.status =
+                "rolled back: the change did not pass its health checks, nothing was saved"
+                    .to_owned();
+            refresh(client, app).await;
+        }
+        Ok(_) => {
+            app.status = success.to_owned();
+            refresh(client, app).await;
+        }
+        Err(error) => app.status = format!("refused: {error}"),
     }
 }
 

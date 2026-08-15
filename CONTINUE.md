@@ -3,11 +3,25 @@
 ## Repository
 - Current branch: `release/v1`
 - Current HEAD: see the manifest; 001 was exported from the verified baseline
-- Last exported checkpoint: 003
+- Last exported checkpoint: 004
 - Latest local tag: `recovery-baseline`
 - Expected worktree state: clean
 
-## Completed in the Latest Slice (slice 2)
+## Completed in the Latest Slice (slice 3)
+- `crates/tui/src/edit.rs`: pure form state machine. Forms build the same
+  `NodeDraft` the CLI builds, so the interface cannot be more permissive than
+  the command line. Credentials are never pre-filled on an edit (blank means
+  keep) and never rendered in the clear. 12 tests.
+- Keys: `a` add, `e` edit, `i` import links, `s` subscription, `U` update,
+  `l` listeners, `A` route a program, space toggle rule, `Q` QR, `D` delete
+  with confirmation. All 25 keys fit at 80x24 because the help overlay is now
+  two-column — it was silently dropping the half it could not fit.
+- An invalid form stays open with its text and the reason; losing a half-filled
+  form to an error is the fastest way to make somebody stop using an interface.
+- Every mutation goes through `SetDesired`, and a rolled-back change is
+  reported as rolled back rather than as success.
+
+## Previously (slice 2)
 - `crates/domain/src/draft.rs`: one shared `NodeDraft` that both the CLI and the
   interface build nodes through. Every field is an `Option`, so an edit can tell
   "leave this alone" from "set this to empty" — `--flow ''` clears a flow. A
@@ -54,18 +68,19 @@
 - Test evidence: none yet. Everything is UNEXECUTED at this commit.
 
 ## Current Incomplete Slice
-- Slice 3: the daily-use TUI. Nothing started.
-- Missing behaviour: the interface can list and select but cannot create or
-  edit. It needs node add/edit forms built on `NodeDraft`, a subscription
-  workflow, profile listener editing, application assignment, rule
-  enable/disable, and a QR view.
-- Current failing test: none. 738 workspace tests pass.
+- Slice 4: DNS, recovery and reliability. Nothing started.
+- Missing behaviour: nothing supervises the Xray process after it starts —
+  `Engine::note_core_exit` and `RunningCore::has_exited` exist, are unit-tested,
+  and have **no callers**, so a killed core is reported as `running` with a dead
+  pid indefinitely. Also missing: a guarded live systemd-resolved harness.
+- Current failing test: none. 757 workspace tests pass.
 
 ## Exact Next Action
-- Add the pure editing state machine the interface will drive.
-- First command: `cargo test -p xraytui-tui`
-- First file: `crates/tui/src/app.rs` — read how `Action` and the existing
-  overlays work before adding a form; the reducer is pure and must stay so.
+- Make the daemon supervise the core.
+- First command: `grep -rn "has_exited\|note_core_exit" --include=*.rs crates bins`
+- First file: `bins/xraytuid/src/daemon.rs` — add a polling task beside the
+  existing heartbeat and sweeper tasks. Do not await the child while holding
+  the engine lock: that lock serves every request.
 
 ## Remaining v1.0 Gates
 - [x] Slice 0a — recovery, branch, checkpoint tooling, checkpoint 000
@@ -73,7 +88,7 @@
       scenario M re-run and passing, STATUS.md re-measured
 - [x] Slice 1 — durable SQLite state, migrations, `xraytui init`, SIGPIPE fix
 - [x] Slice 2 — typed configuration surface, one mutation path, `app assign` fixed
-- [ ] Slice 3 — daily-use TUI
+- [x] Slice 3 — daily-use TUI: forms, QR, confirmation, two-column help
 - [ ] Slice 4 — DNS, recovery and reliability
 - [ ] Slice 5 — release smoke test, dist, packaging, RC tag
 - [ ] Slice 6 — final hardening, audit, deny, upgrade tests, v1.0.0

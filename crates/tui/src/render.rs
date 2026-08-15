@@ -88,6 +88,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             selected,
         } => draw_picker(frame, area, profile, candidates, *selected),
         Overlay::Confirm { prompt, .. } => draw_confirm(frame, area, prompt),
+        Overlay::Form(form) => draw_form(frame, area, form),
+        Overlay::Qr { art, node } => draw_qr(frame, area, art, node),
     }
 }
 
@@ -228,27 +230,36 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
-    let lines: Vec<Line<'static>> = KEYS
-        .iter()
-        .map(|(key, description)| {
-            Line::from(vec![
-                Span::styled(format!("{key:>16}  "), Style::default().fg(theme::ACCENT)),
-                Span::raw((*description).to_owned()),
-            ])
-        })
-        .collect();
-    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
-    let popup = centred(area, 56, height);
+    // Two columns. The key list outgrew a single column the moment editing
+    // arrived, and a help overlay that silently drops the half of the keys it
+    // cannot fit is worse than no help overlay: the user concludes the feature
+    // does not exist.
+    let rows = KEYS.len().div_ceil(2);
+    let popup = centred(area, 76, (rows as u16 + 2).min(area.height));
     frame.render_widget(Clear, popup);
+
+    let inner_width = popup.width.saturating_sub(2) as usize;
+    let column = inner_width / 2;
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    for index in 0..rows {
+        let mut text = String::new();
+        for offset in [0, rows] {
+            if let Some((key, description)) = KEYS.get(index + offset) {
+                let cell = format!("{key:<16} {description}");
+                let cell: String = cell.chars().take(column.saturating_sub(1)).collect();
+                text.push_str(&format!("{cell:<width$}", width = column));
+            }
+        }
+        lines.push(Line::from(text.trim_end().to_owned()));
+    }
+
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" keys — any key closes ")
-                    .border_style(Style::default().fg(theme::ACCENT)),
-            )
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" keys — any key closes ")
+                .border_style(Style::default().fg(theme::ACCENT)),
+        ),
         popup,
     );
 }
@@ -322,6 +333,96 @@ fn draw_confirm(frame: &mut Frame<'_>, area: Rect, prompt: &str) {
                 .border_style(Style::default().fg(theme::WARN)),
         )
         .wrap(Wrap { trim: true }),
+        popup,
+    );
+}
+
+/// An editing form.
+///
+/// Sized to fit whatever terminal it is given: at 80x24 a fifteen-field node
+/// form does not fit at once, so the list scrolls around the focused line
+/// rather than being clipped at the bottom, which would hide the field the
+/// person is typing into.
+fn draw_form(frame: &mut Frame<'_>, area: Rect, form: &crate::edit::Form) {
+    let popup = centred(area, 66, area.height.saturating_sub(2).min(20));
+    frame.render_widget(Clear, popup);
+
+    let body_height = popup.height.saturating_sub(4) as usize;
+    let first = form.cursor.saturating_sub(body_height.saturating_sub(1));
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    for (index, field) in form.fields.iter().enumerate().skip(first).take(body_height) {
+        let focused = index == form.cursor;
+        let shown = if field.secret && !field.value.is_empty() {
+            // Never render a credential, even to the person who typed it: a
+            // terminal is often on a screen somebody else can see.
+            "•".repeat(field.value.chars().count().min(24))
+        } else {
+            field.value.clone()
+        };
+        let marker = if focused { "▸" } else { " " };
+        let style = if focused {
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} {:<14}", field.label), style),
+            Span::raw(truncate(&shown, popup.width.saturating_sub(20))),
+        ]));
+    }
+
+    let hint = form
+        .fields
+        .get(form.cursor)
+        .map(|field| field.help.clone())
+        .unwrap_or_default();
+    lines.push(Line::from(Span::styled(
+        format!("  {hint}"),
+        Style::default().fg(theme::MUTED),
+    )));
+    if let Some(error) = &form.error {
+        lines.push(Line::from(Span::styled(
+            format!("  {error}"),
+            Style::default().fg(theme::BAD),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} — enter next, esc cancel ", form.title))
+                    .border_style(Style::default().fg(theme::ACCENT)),
+            )
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+/// A QR code, with the warning that it is a credential.
+fn draw_qr(frame: &mut Frame<'_>, area: Rect, art: &str, node: &str) {
+    let width = art.lines().map(str::len).max().unwrap_or(0) as u16 + 4;
+    let height = art.lines().count() as u16 + 4;
+    let popup = centred(area, width.min(area.width), height.min(area.height));
+    frame.render_widget(Clear, popup);
+    let mut lines: Vec<Line<'_>> = art
+        .lines()
+        .map(|line| Line::from(line.to_owned()))
+        .collect();
+    lines.push(Line::from(Span::styled(
+        "this code is the credential — anyone who scans it can use the server",
+        Style::default().fg(theme::WARN),
+    )));
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {node} — any key closes "))
+                .border_style(Style::default().fg(theme::WARN)),
+        ),
         popup,
     );
 }

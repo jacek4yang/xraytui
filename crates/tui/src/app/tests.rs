@@ -566,3 +566,164 @@ fn an_undocumented_key_is_ignored_rather_than_guessed_at() {
         before
     );
 }
+
+// --- editing ---------------------------------------------------------------
+
+/// The keys that open each form, from the pane they belong to.
+#[test]
+fn the_editing_keys_open_the_right_form() {
+    use crate::edit::FormKind;
+
+    let mut app = app();
+
+    app.view = View::Nodes;
+    assert_eq!(app.on_key(Key::Char('a')), Action::None);
+    match &app.overlay {
+        Overlay::Form(form) => assert_eq!(form.kind, FormKind::NodeAdd),
+        other => panic!("expected a node form, got {other:?}"),
+    }
+
+    app.overlay = Overlay::None;
+    assert_eq!(app.on_key(Key::Char('i')), Action::None);
+    match &app.overlay {
+        Overlay::Form(form) => assert_eq!(form.kind, FormKind::ImportLinks),
+        other => panic!("expected an import form, got {other:?}"),
+    }
+
+    app.overlay = Overlay::None;
+    app.view = View::Profiles;
+    assert_eq!(app.on_key(Key::Char('a')), Action::None);
+    match &app.overlay {
+        Overlay::Form(form) => assert_eq!(form.kind, FormKind::Profile),
+        other => panic!("expected a profile form, got {other:?}"),
+    }
+}
+
+/// A key that does not apply to the current pane says so instead of doing
+/// nothing: silence looks like a broken keyboard.
+#[test]
+fn an_editing_key_in_the_wrong_pane_explains_itself() {
+    let mut app = app();
+    app.view = View::Logs;
+    match app.on_key(Key::Char('e')) {
+        Action::Notice(message) => assert!(message.contains("Nodes"), "{message}"),
+        other => panic!("expected a notice, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_completed_node_form_produces_an_add_action() {
+    let mut app = app();
+    app.view = View::Nodes;
+    app.on_key(Key::Char('a'));
+
+    for (field, text) in [
+        ("name", "HK 02"),
+        ("address", "hk2.example.com"),
+        ("port", "443"),
+        ("uuid", "11111111-2222-3333-4444-555555555555"),
+    ] {
+        let Overlay::Form(form) = &mut app.overlay else {
+            panic!("the form closed early");
+        };
+        form.cursor = form
+            .fields
+            .iter()
+            .position(|candidate| candidate.key == field)
+            .expect("field");
+        for character in text.chars() {
+            app.on_key(Key::Char(character));
+        }
+    }
+
+    // Move to the last field and submit.
+    let Overlay::Form(form) = &mut app.overlay else {
+        panic!("the form closed early");
+    };
+    form.cursor = form.fields.len() - 1;
+    match app.on_key(Key::Enter) {
+        Action::AddNode(draft) => {
+            let node = draft.create().expect("the draft must build");
+            assert_eq!(node.name, "HK 02");
+            assert_eq!(node.endpoint.port, 443);
+        }
+        other => panic!("expected AddNode, got {other:?}"),
+    }
+}
+
+/// A form that cannot be applied keeps the user's text and says what is wrong.
+#[test]
+fn an_invalid_form_is_returned_with_its_error_and_its_text() {
+    let mut app = app();
+    app.view = View::Nodes;
+    app.on_key(Key::Char('a'));
+
+    // Name only: no address, no port, no credential.
+    let Overlay::Form(form) = &mut app.overlay else {
+        panic!("no form");
+    };
+    form.cursor = form
+        .fields
+        .iter()
+        .position(|field| field.key == "name")
+        .expect("name");
+    for character in "incomplete".chars() {
+        app.on_key(Key::Char(character));
+    }
+    let Overlay::Form(form) = &mut app.overlay else {
+        panic!("no form");
+    };
+    form.cursor = form.fields.len() - 1;
+
+    assert_eq!(app.on_key(Key::Enter), Action::None);
+    match &app.overlay {
+        Overlay::Form(form) => {
+            assert!(form.error.is_some(), "the reason must be shown");
+            assert_eq!(
+                form.value("name"),
+                "incomplete",
+                "losing a half-filled form to an error is the fastest way to make \
+                 somebody stop using an interface"
+            );
+        }
+        other => panic!("the form must stay open, got {other:?}"),
+    }
+}
+
+#[test]
+fn escape_closes_a_form_without_changing_anything() {
+    let mut app = app();
+    app.view = View::Nodes;
+    app.on_key(Key::Char('a'));
+    assert_eq!(app.on_key(Key::Escape), Action::None);
+    assert_eq!(app.overlay, Overlay::None);
+    assert_eq!(app.status, "cancelled");
+}
+
+#[test]
+fn removing_a_node_asks_first() {
+    let mut app = app();
+    app.view = View::Nodes;
+    app.cursor = 0;
+    assert_eq!(app.on_key(Key::Char('D')), Action::None);
+    match &app.overlay {
+        Overlay::Confirm { prompt, .. } => assert!(prompt.contains("remove"), "{prompt}"),
+        other => panic!("a deletion must be confirmed, got {other:?}"),
+    }
+    // n keeps it.
+    assert_eq!(app.on_key(Key::Char('n')), Action::None);
+    assert_eq!(app.overlay, Overlay::None);
+}
+
+#[test]
+fn a_qr_overlay_closes_on_any_of_the_obvious_keys() {
+    let mut app = app();
+    for key in [Key::Escape, Key::Enter, Key::Char('q')] {
+        app.overlay = Overlay::Qr {
+            art: "▀▀".to_owned(),
+            node: "hk-01".to_owned(),
+        };
+        app.on_key(key);
+        assert_eq!(app.overlay, Overlay::None, "{key:?} must close the QR view");
+    }
+}

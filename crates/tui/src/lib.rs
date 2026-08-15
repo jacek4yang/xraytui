@@ -34,6 +34,7 @@
 #![warn(missing_docs)]
 
 pub mod app;
+pub mod edit;
 pub mod render;
 pub mod run;
 pub mod terminal;

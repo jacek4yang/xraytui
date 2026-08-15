@@ -115,6 +115,73 @@ pub enum Action {
     },
     /// Something the user should read, shown in the status line.
     Notice(String),
+    /// Create a node from a completed form.
+    AddNode(Box<xraytui_domain::draft::NodeDraft>),
+    /// Apply a completed edit form to an existing node.
+    EditNode {
+        /// Which node.
+        id: String,
+        /// What to change.
+        draft: Box<xraytui_domain::draft::NodeDraft>,
+    },
+    /// Remove the selected entity, after confirmation.
+    RemoveNode {
+        /// Which node.
+        id: String,
+    },
+    /// Import share links pasted into a form.
+    ImportLinks(String),
+    /// Add a subscription.
+    AddSubscription {
+        /// The URL. A credential.
+        url: String,
+        /// Display name.
+        name: String,
+    },
+    /// Fetch a subscription now.
+    UpdateSubscription {
+        /// Which subscription.
+        id: String,
+    },
+    /// Create a profile.
+    AddProfile {
+        /// Identifier.
+        id: String,
+        /// Display name.
+        name: String,
+        /// SOCKS port, if any.
+        socks: Option<u16>,
+        /// HTTP port, if any.
+        http: Option<u16>,
+    },
+    /// Change a profile's listeners.
+    SetListeners {
+        /// Which profile.
+        profile: String,
+        /// SOCKS port; `Some(0)` removes it.
+        socks: Option<u16>,
+        /// HTTP port; `Some(0)` removes it.
+        http: Option<u16>,
+    },
+    /// Route a program through a profile.
+    AssignApp {
+        /// Profile the rule points at.
+        profile: String,
+        /// Process name, path or directory.
+        matcher: String,
+    },
+    /// Turn a rule on or off.
+    SetRuleEnabled {
+        /// Which rule.
+        id: String,
+        /// The new state.
+        enabled: bool,
+    },
+    /// Show a node's share link as a QR code.
+    ShowQr {
+        /// Which node.
+        id: String,
+    },
 }
 
 /// Which overlay, if any, is on top.
@@ -138,6 +205,15 @@ pub enum Overlay {
         candidates: Vec<Target>,
         /// Highlighted candidate.
         selected: usize,
+    },
+    /// An editing form.
+    Form(Box<crate::edit::Form>),
+    /// A QR code and its warning.
+    Qr {
+        /// Pre-rendered block art.
+        art: String,
+        /// Which node it encodes.
+        node: String,
     },
     /// A question that needs y or n.
     Confirm {
@@ -392,6 +468,15 @@ impl App {
                 Action::None
             }
             Overlay::Filter { query } => self.on_key_in_filter(key, query),
+            Overlay::Form(form) => self.on_key_in_form(key, *form),
+            Overlay::Qr { art, node } => {
+                if matches!(key, Key::Escape | Key::Char('q') | Key::Enter) {
+                    self.status = String::new();
+                } else {
+                    self.overlay = Overlay::Qr { art, node };
+                }
+                Action::None
+            }
             Overlay::TargetPicker {
                 profile,
                 candidates,
@@ -494,7 +579,269 @@ impl App {
                 _ => Action::Notice("t probes a node; switch to the Nodes pane".to_owned()),
             },
             Key::Enter => self.open_picker(),
+
+            // --- editing ---
+            Key::Char('a') => self.open_add_form(),
+            Key::Char('e') => self.open_edit_form(),
+            Key::Char('i') => {
+                self.overlay = Overlay::Form(Box::new(crate::edit::Form::import_links()));
+                Action::None
+            }
+            Key::Char('s') => match self.view {
+                View::Nodes | View::Subscriptions => {
+                    self.overlay = Overlay::Form(Box::new(crate::edit::Form::subscription()));
+                    Action::None
+                }
+                _ => Action::Notice(
+                    "s adds a subscription; switch to Nodes or Subscriptions".to_owned(),
+                ),
+            },
+            Key::Char('U') => match (self.view, self.selected()) {
+                (View::Subscriptions, Some(row)) => Action::UpdateSubscription { id: row.id },
+                (View::Subscriptions, None) => {
+                    Action::Notice("no subscription selected".to_owned())
+                }
+                _ => Action::Notice("U updates a subscription; switch to that pane".to_owned()),
+            },
+            Key::Char('l') => match (self.view, self.selected()) {
+                (View::Profiles, Some(row)) => {
+                    let profile = self
+                        .desired
+                        .profiles
+                        .values()
+                        .find(|profile| profile.id.to_string() == row.id);
+                    let (socks, http) = profile.map_or((None, None), |profile| {
+                        (
+                            profile
+                                .socks
+                                .as_ref()
+                                .map(|listener| listener.listen.port()),
+                            profile.http.as_ref().map(|listener| listener.listen.port()),
+                        )
+                    });
+                    self.overlay =
+                        Overlay::Form(Box::new(crate::edit::Form::listeners(&row.id, socks, http)));
+                    Action::None
+                }
+                (View::Profiles, None) => Action::Notice("no profile selected".to_owned()),
+                _ => Action::Notice("l edits listeners; switch to the Profiles pane".to_owned()),
+            },
+            Key::Char('A') => match (self.view, self.selected()) {
+                (View::Profiles, Some(row)) => {
+                    self.overlay = Overlay::Form(Box::new(crate::edit::Form::app_assign(&row.id)));
+                    Action::None
+                }
+                _ => Action::Notice("A routes a program; select a profile first".to_owned()),
+            },
+            Key::Char(' ') => self.toggle_selected_rule(),
+            Key::Char('Q') => match (self.view, self.selected()) {
+                (View::Nodes, Some(row)) => Action::ShowQr { id: row.id },
+                (View::Nodes, None) => Action::Notice("no node selected".to_owned()),
+                _ => Action::Notice("Q shows a QR code; switch to the Nodes pane".to_owned()),
+            },
+            Key::Char('D') => match (self.view, self.selected()) {
+                (View::Nodes, Some(row)) => {
+                    let prompt = format!("remove node '{}'? (y/n)", row.primary);
+                    self.overlay = Overlay::Confirm {
+                        prompt,
+                        action: Box::new(Action::RemoveNode { id: row.id }),
+                    };
+                    Action::None
+                }
+                (View::Nodes, None) => Action::Notice("no node selected".to_owned()),
+                _ => Action::Notice("D removes a node; switch to the Nodes pane".to_owned()),
+            },
             _ => Action::None,
+        }
+    }
+
+    /// `a` — open the right form for the current pane.
+    fn open_add_form(&mut self) -> Action {
+        let form = match self.view {
+            View::Nodes => crate::edit::Form::node_add(),
+            View::Profiles => crate::edit::Form::profile(),
+            View::Subscriptions => crate::edit::Form::subscription(),
+            _ => {
+                return Action::Notice(
+                    "a adds a node, a profile or a subscription; switch to one of those panes"
+                        .to_owned(),
+                );
+            }
+        };
+        self.overlay = Overlay::Form(Box::new(form));
+        Action::None
+    }
+
+    /// `e` — edit the selected node.
+    fn open_edit_form(&mut self) -> Action {
+        // The pane is checked before the selection: in a pane with no rows at
+        // all, "nothing selected" is a confusing answer to a key that does not
+        // apply there in the first place.
+        if self.view != View::Nodes {
+            return Action::Notice("e edits a node; switch to the Nodes pane".to_owned());
+        }
+        let Some(row) = self.selected() else {
+            return Action::Notice("no node selected".to_owned());
+        };
+        let Some(node) = self
+            .desired
+            .nodes
+            .values()
+            .find(|node| node.id.to_string() == row.id)
+        else {
+            return Action::Notice("that node is gone; press r to refresh".to_owned());
+        };
+        self.overlay = Overlay::Form(Box::new(crate::edit::Form::node_edit(node)));
+        Action::None
+    }
+
+    /// Space — flip the selected rule on or off.
+    fn toggle_selected_rule(&mut self) -> Action {
+        if self.view != View::Rules {
+            return Action::Notice("space toggles a rule; switch to the Rules pane".to_owned());
+        }
+        let Some(row) = self.selected() else {
+            return Action::Notice("no rule selected".to_owned());
+        };
+        let enabled = self
+            .desired
+            .app_rules
+            .values()
+            .find(|rule| rule.id.to_string() == row.id)
+            .map(|rule| rule.enabled)
+            .or_else(|| {
+                self.desired
+                    .routing_rules
+                    .values()
+                    .find(|rule| rule.id.to_string() == row.id)
+                    .map(|rule| rule.enabled)
+            })
+            .unwrap_or(true);
+        Action::SetRuleEnabled {
+            id: row.id,
+            enabled: !enabled,
+        }
+    }
+
+    /// Keys while a form is up.
+    fn on_key_in_form(&mut self, key: Key, mut form: crate::edit::Form) -> Action {
+        match form.on_key(key) {
+            crate::edit::Outcome::Editing => {
+                self.overlay = Overlay::Form(Box::new(form));
+                Action::None
+            }
+            crate::edit::Outcome::Cancelled => {
+                self.status = "cancelled".to_owned();
+                Action::None
+            }
+            crate::edit::Outcome::Submit => self.submit_form(form),
+        }
+    }
+
+    /// Turn a completed form into an action, or put it back with an error.
+    ///
+    /// Validation that can be done without the daemon happens here so the
+    /// user's text is still on the screen when they are told what is wrong —
+    /// losing a half-filled form to an error message is the fastest way to make
+    /// somebody stop using an interface.
+    fn submit_form(&mut self, form: crate::edit::Form) -> Action {
+        use crate::edit::FormKind;
+        let reject = |mut form: crate::edit::Form, message: String| {
+            form.error = Some(message);
+            form
+        };
+        match form.kind.clone() {
+            FormKind::NodeAdd => match form.draft().create() {
+                Ok(_) => Action::AddNode(Box::new(form.draft())),
+                Err(error) => {
+                    self.overlay = Overlay::Form(Box::new(reject(form, error.to_string())));
+                    Action::None
+                }
+            },
+            FormKind::NodeEdit { id } => Action::EditNode {
+                id,
+                draft: Box::new(form.draft()),
+            },
+            FormKind::ImportLinks => {
+                let text = form.value("links").to_owned();
+                if text.is_empty() {
+                    self.overlay =
+                        Overlay::Form(Box::new(reject(form, "paste at least one link".to_owned())));
+                    return Action::None;
+                }
+                Action::ImportLinks(text)
+            }
+            FormKind::Subscription => {
+                let url = form.value("url").to_owned();
+                if url.is_empty() {
+                    self.overlay =
+                        Overlay::Form(Box::new(reject(form, "a URL is required".to_owned())));
+                    return Action::None;
+                }
+                let name = form
+                    .filled("name")
+                    .unwrap_or_else(|| "subscription".to_owned());
+                Action::AddSubscription { url, name }
+            }
+            FormKind::Profile => {
+                let id = form.value("id").to_owned();
+                if id.is_empty() {
+                    self.overlay = Overlay::Form(Box::new(reject(
+                        form,
+                        "an identifier is required".to_owned(),
+                    )));
+                    return Action::None;
+                }
+                let name = form.filled("name").unwrap_or_else(|| id.clone());
+                match (
+                    parse_port(form.value("socks")),
+                    parse_port(form.value("http")),
+                ) {
+                    (Ok(socks), Ok(http)) => Action::AddProfile {
+                        id,
+                        name,
+                        socks,
+                        http,
+                    },
+                    _ => {
+                        self.overlay = Overlay::Form(Box::new(reject(
+                            form,
+                            "ports must be numbers between 1 and 65535".to_owned(),
+                        )));
+                        Action::None
+                    }
+                }
+            }
+            FormKind::Listeners { profile } => {
+                match (
+                    parse_port(form.value("socks")),
+                    parse_port(form.value("http")),
+                ) {
+                    (Ok(socks), Ok(http)) => Action::SetListeners {
+                        profile,
+                        socks: socks.or(Some(0)),
+                        http: http.or(Some(0)),
+                    },
+                    _ => {
+                        self.overlay = Overlay::Form(Box::new(reject(
+                            form,
+                            "ports must be numbers between 0 and 65535".to_owned(),
+                        )));
+                        Action::None
+                    }
+                }
+            }
+            FormKind::AppAssign { profile } => {
+                let matcher = form.value("matcher").to_owned();
+                if matcher.is_empty() {
+                    self.overlay = Overlay::Form(Box::new(reject(
+                        form,
+                        "name a program, a path, or a directory ending in /".to_owned(),
+                    )));
+                    return Action::None;
+                }
+                Action::AssignApp { profile, matcher }
+            }
         }
     }
 
@@ -733,7 +1080,26 @@ pub const KEYS: &[(&str, &str)] = &[
     ("u / d", "start / stop the core"),
     ("t", "probe the selected node"),
     ("r", "refresh from the daemon"),
+    ("a", "add: node, profile or subscription, by pane"),
+    ("e", "edit the selected node"),
+    ("i", "import share links"),
+    ("s", "add a subscription"),
+    ("U", "update the selected subscription"),
+    ("l", "edit the selected profile's listeners"),
+    ("A", "route a program through the selected profile"),
+    ("Space", "enable or disable the selected rule"),
+    ("Q", "show the selected node as a QR code"),
+    ("D", "remove the selected node, after confirming"),
 ];
 
 #[cfg(test)]
 mod tests;
+
+/// Parse an optional port. Blank is `None`; anything unparseable is an error.
+fn parse_port(text: &str) -> Result<Option<u16>, ()> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    text.parse::<u16>().map(Some).map_err(|_| ())
+}
