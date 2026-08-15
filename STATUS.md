@@ -26,6 +26,11 @@ The central claim of the project is implemented and proven by test:
   a connection at the transit proxy (scenario E).
 * **A runtime-only failure rolls back** to the previous generation, and the
   working profile keeps serving.
+* **IPv4 is the tested path.** Every namespace test above ran IPv4 only. This
+  kernel has no IPv6 at all (`/proc/net/if_inet6` is absent), so the helper
+  logs `this kernel has no IPv6; leaving the IPv6 half of the plan out` and
+  drops it. IPv6 is therefore **implemented but runtime-unverified**, and the
+  release treats it as experimental and off by default.
 * **The core dying is noticed**, the listeners go with it, and a backoff restart
   is scheduled and succeeds (scenario I).
 * **A system TUN comes up with its addresses, routes and policy rule**, and the
@@ -65,25 +70,34 @@ The central claim of the project is implemented and proven by test:
 
 ## Quality gates
 
-Run on 2026-08-12 with Rust 1.95.0 and Xray-core v26.3.27.
+Re-measured on 2026-08-15 in a rebuilt environment, at commit `bde078f`.
+Every number below was produced by running the command shown, in this
+environment, today. Counts from earlier sessions were discarded rather than
+carried forward: this project has lost its environment three times, and a
+number nobody can reproduce is not evidence.
 
 | Command | Result |
 |---|---|
 | `cargo fmt --all --check` | **pass** (no output) |
 | `cargo check --workspace --all-targets` | **pass** |
-| `cargo clippy --workspace --all-targets -- -D warnings` | **pass**, no warnings |
-| `cargo test --workspace` | **pass**, 665 tests, 0 failures |
-| `sudo ./scripts/netns-test.sh` | **pass**, 9 privileged tests, 0 failures |
-| `cargo doc --workspace --no-deps` | **pass**, 0 warnings |
-| `cargo build --release --workspace` | **pass** |
-| `cargo xtask install --prefix /usr --destdir …` | **pass**, 53 files, no setuid |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **pass**, no warnings |
+| `cargo test --workspace` | **pass**, 703 tests, 0 failures |
+| `sudo ./scripts/netns-test.sh` | **pass**, 12 + 1 privileged tests, 0 failures |
+| `cargo doc --workspace --no-deps` | not re-run at this commit |
+| `cargo build --release --workspace` | not re-run at this commit |
+| `cargo xtask install --prefix /usr --destdir …` | not re-run at this commit |
+| `cargo audit` | **not run** — not installed here |
+| `cargo deny check` | **not run** — not installed here |
+| live systemd-resolved | **not run** — no D-Bus system bus |
+| clean Arch package build | **not run** — no container runtime |
+| IPv6 runtime | **not run** — this kernel has no IPv6 |
 
-`cargo nextest` was not available in this environment; the ordinary `cargo test`
-path is the one that was exercised.
+Toolchain actually used: `rustc 1.95.0 (59807616e 2026-04-14)`,
+Xray-core `26.3.27` (`d2758a0`, go1.26.1), kernel `6.18.5-fc-v20`.
 
-`cargo audit` and `cargo deny` were **not run** — neither tool is installed here
-and installing them was out of scope for the session. No advisory has therefore
-been reviewed or accepted; treat the dependency set as unaudited.
+No advisory has been reviewed or accepted yet; treat the dependency set as
+unaudited until `cargo audit` and `cargo deny` have been run and their results
+recorded here.
 
 ### Test breakdown
 

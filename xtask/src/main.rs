@@ -446,8 +446,6 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>> {
 
 // ------------------------------------------------------------- checkpointing
 
-
-
 /// Where checkpoints go when `--out` is not given.
 const DELIVERY_RECORD: &str = "DELIVERY-LOCATION.txt";
 
@@ -473,7 +471,10 @@ fn checkpoint(args: &CheckpointArgs) -> Result<()> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
-        bail!("--label must be lowercase letters, digits and '-': got {:?}", args.label);
+        bail!(
+            "--label must be lowercase letters, digits and '-': got {:?}",
+            args.label
+        );
     }
 
     // A checkpoint of an unclean tree records a state that cannot be restored,
@@ -488,7 +489,9 @@ fn checkpoint(args: &CheckpointArgs) -> Result<()> {
         );
     }
 
-    let head = capture(&root, "git", &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = capture(&root, "git", &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     let short = head.get(..7).unwrap_or(&head).to_owned();
     let branch = capture(&root, "git", &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()
@@ -504,8 +507,7 @@ fn checkpoint(args: &CheckpointArgs) -> Result<()> {
         Some(path) => path.clone(),
         None => default_delivery_directory(&root)?,
     };
-    std::fs::create_dir_all(&out)
-        .with_context(|| format!("cannot create {}", out.display()))?;
+    std::fs::create_dir_all(&out).with_context(|| format!("cannot create {}", out.display()))?;
 
     let sequence = next_sequence(&out)?;
     let name = format!("xraytui-checkpoint-{sequence:03}-{}-{short}", args.label);
@@ -517,7 +519,11 @@ fn checkpoint(args: &CheckpointArgs) -> Result<()> {
 
     // 1. Complete history: every branch, every tag.
     let bundle = staging.join("xraytui-history.bundle");
-    run(&root, "git", &["bundle", "create", path_arg(&bundle)?, "--all"])?;
+    run(
+        &root,
+        "git",
+        &["bundle", "create", path_arg(&bundle)?, "--all"],
+    )?;
 
     // 2. The committed tree, not the working directory. `gzip -n` omits the
     //    timestamp, so the same commit produces the same bytes.
@@ -535,7 +541,9 @@ fn checkpoint(args: &CheckpointArgs) -> Result<()> {
         "git",
         &["clone", "--quiet", path_arg(&bundle)?, path_arg(&probe)?],
     )?;
-    let restored = capture(&probe, "git", &["rev-parse", "HEAD"])?.trim().to_owned();
+    let restored = capture(&probe, "git", &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     std::fs::remove_dir_all(&probe)?;
     if restored != head {
         bail!("the bundle restored {restored}, not {head}");
@@ -576,7 +584,13 @@ fn checkpoint(args: &CheckpointArgs) -> Result<()> {
     let source_sum = sha256_of(&source)?;
 
     let manifest = checkpoint_manifest(
-        sequence, &head, &branch, &tags, args, &bundle_sum, &source_sum,
+        sequence,
+        &head,
+        &branch,
+        &tags,
+        args,
+        &bundle_sum,
+        &source_sum,
     )?;
     std::fs::write(staging.join("CHECKPOINT-MANIFEST.json"), manifest)?;
     std::fs::write(
@@ -641,10 +655,7 @@ fn default_delivery_directory(root: &Path) -> Result<PathBuf> {
             return Ok(PathBuf::from(candidate).join("xraytui-deliverables"));
         }
     }
-    Ok(root
-        .parent()
-        .unwrap_or(root)
-        .join("xraytui-deliverables"))
+    Ok(root.parent().unwrap_or(root).join("xraytui-deliverables"))
 }
 
 /// One past the highest checkpoint already present, so numbering survives a
@@ -674,7 +685,10 @@ fn archive_head(root: &Path, destination: &Path) -> Result<()> {
         .output()
         .context("git archive")?;
     if !tar.status.success() {
-        bail!("git archive failed: {}", String::from_utf8_lossy(&tar.stderr));
+        bail!(
+            "git archive failed: {}",
+            String::from_utf8_lossy(&tar.stderr)
+        );
     }
     let file = std::fs::File::create(destination)?;
     let mut gzip = Command::new("gzip")
@@ -951,13 +965,7 @@ fn which(program: &str) -> Option<PathBuf> {
     })
 }
 
-fn readme_first(
-    sequence: u32,
-    label: &str,
-    head: &str,
-    branch: &str,
-    resume: &str,
-) -> String {
+fn readme_first(sequence: u32, label: &str, head: &str, branch: &str, resume: &str) -> String {
     format!(
         r#"# Checkpoint {sequence:03} — {label}
 

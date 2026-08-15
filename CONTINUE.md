@@ -2,8 +2,8 @@
 
 ## Repository
 - Current branch: `release/v1`
-- Current HEAD: `369be5b`
-- Last exported checkpoint: 000 (this one)
+- Current HEAD: see the manifest; 001 was exported from the verified baseline
+- Last exported checkpoint: 001
 - Latest local tag: `recovery-baseline`
 - Expected worktree state: clean
 
@@ -21,20 +21,20 @@
 - Test evidence: none yet. Everything is UNEXECUTED at this commit.
 
 ## Current Incomplete Slice
-- Slice 0 is finished except for baseline verification.
-- Missing behaviour: nothing implemented yet beyond the checkpoint tool.
-- Current failing test: unknown — no test has been run in this environment.
+- Slice 1: durable state. Nothing started.
+- Missing behaviour: `crates/state-store/src/lib.rs` is a one-line stub, so the
+  daemon forgets mode, profile targets and health across a restart.
+- Current failing test: none. 703 workspace + 13 privileged tests pass.
 
 ## Exact Next Action
-- Verify the baseline, then correct `STATUS.md` from the real results.
-- First command:
-  `cargo fmt --all --check && cargo check --workspace --all-targets`
-- First file: `STATUS.md` — every count in it comes from a destroyed
-  environment and must be treated as unverified until re-measured.
+- Implement the SQLite state store.
+- First command: `cargo test -p xraytui-state-store`
+- First file: `crates/state-store/src/lib.rs` (currently one line).
 
 ## Remaining v1.0 Gates
 - [x] Slice 0a — recovery, branch, checkpoint tooling, checkpoint 000
-- [ ] Slice 0b — baseline verification, scenario M re-run, STATUS.md corrected
+- [x] Slice 0b — baseline verified here: 703 workspace tests, 12 + 1 privileged,
+      scenario M re-run and passing, STATUS.md re-measured
 - [ ] Slice 1 — durable SQLite state, migrations, `xraytui init`, doctor
 - [ ] Slice 2 — typed configuration surface shared by CLI and TUI
 - [ ] Slice 3 — daily-use TUI
@@ -52,9 +52,9 @@ Demonstrated in this session, not assumed:
 
 ## Last Commands and Results
 ```
-git rev-parse HEAD          # 369be5b…, 11 commits
-git switch -c release/v1    # created
-cargo build -p xtask        # clean
+cargo test --workspace                              # 703 passed, 0 failed
+cargo clippy --workspace --all-targets --all-features  # 0 warnings
+sudo -E env "PATH=$PATH" ./scripts/netns-test.sh    # 12 + 1 passed, scenario M ok
 ```
 
 ## Safety State
