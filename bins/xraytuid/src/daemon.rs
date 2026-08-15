@@ -41,6 +41,13 @@ pub struct Daemon {
 /// machine that is never reinstalled.
 const HISTORY_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// How often the daemon checks whether the core is still alive.
+///
+/// Half a second: fast enough that a user pressing a key sees the truth, and
+/// the cost is one non-blocking `waitpid` per tick, which does not wake a
+/// sleeping laptop in any way tokio's timer was not already going to.
+const CORE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 impl Daemon {
     /// Build a daemon: discover the core, construct the engine, seed the state.
     ///
@@ -204,7 +211,13 @@ impl Daemon {
             }
         });
 
+        let supervisor = tokio::spawn({
+            let handler = Arc::clone(&handler);
+            async move { handler.supervise_core().await }
+        });
+
         server.serve(Arc::clone(&handler), signal).await;
+        supervisor.abort();
         ticker.abort();
         heartbeat.abort();
         sweeper_task.abort();
@@ -243,6 +256,71 @@ impl Daemon {
         let engine = self.engine.lock().await;
         xraytui_config::store::save(&self.paths, engine.desired())
             .map_err(|error| IpcError::Internal(error.to_string()))
+    }
+
+    /// Notice a core that has died, and bring it back.
+    ///
+    /// Without this the daemon reports a healthy core forever after the OOM
+    /// killer takes Xray: `running` still holds a `Child` whose process is
+    /// gone, every listener is dead, and nothing says so. The engine already
+    /// knew how to count failures and back off; nothing was calling it.
+    ///
+    /// Polling rather than awaiting the child: the engine owns the `Child`
+    /// behind the same mutex that serves every request, and a task holding that
+    /// lock across an await which only completes when the core dies would
+    /// deadlock the daemon.
+    async fn supervise_core(&self) {
+        let mut interval = tokio::time::interval(CORE_POLL_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+
+            let Some(reason) = self.engine.lock().await.poll_core_exit() else {
+                continue;
+            };
+            tracing::warn!(%reason, "the core exited on its own");
+
+            let Some(delay) = self.engine.lock().await.note_core_exit(reason) else {
+                tracing::error!(
+                    "not restarting the core again; run `xraytui logs`, then \
+                     `xraytui restart` once the cause is fixed"
+                );
+                self.announce().await;
+                continue;
+            };
+            self.announce().await;
+
+            // The lock is deliberately not held across the backoff: somebody
+            // asking for status during a restart storm should get an answer.
+            tokio::time::sleep(delay).await;
+
+            let mut engine = self.engine.lock().await;
+            match engine.restart_after_exit().await {
+                Ok(generation) => {
+                    tracing::info!(%generation, "the core was restarted after it exited");
+                    if let Some(store) = &self.store {
+                        let _ = store
+                            .record_last_known_good(generation, xraytui_linux_net::lease::now());
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "the core did not come back"),
+            }
+            drop(engine);
+            self.announce().await;
+        }
+    }
+
+    /// Push the current runtime to subscribers immediately.
+    ///
+    /// The periodic broadcast is on a one-second timer and skips when nobody is
+    /// listening; a core dying is worth telling an attached interface about at
+    /// the moment it happens.
+    async fn announce(&self) {
+        if self.events.receiver_count() == 0 {
+            return;
+        }
+        let snapshot = self.engine.lock().await.runtime().clone();
+        let _ = self.events.send(Event::State(Box::new(snapshot)));
     }
 
     /// Write the observed half of the state to the durable store.

@@ -773,3 +773,210 @@ fn a_refused_mutation_changes_nothing() {
     let after = String::from_utf8_lossy(&daemon.cli(&["profile", "list"]).stdout).into_owned();
     assert_eq!(before, after, "a refused mutation must change nothing");
 }
+
+// --------------------------------------------------------------- recovering
+
+/// Start a daemon that really launches the core, not `--no-start`.
+fn spawn_with_core(root: &Path) -> Option<Child> {
+    Command::new(binary("xraytuid"))
+        .arg("--root")
+        .arg(root)
+        .env("XRAYTUI_LOG", "info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()
+}
+
+/// The pid of a core that is up, if it is up.
+///
+/// `CoreStatus` is serialised with an internal `state` tag, so `pid` is a
+/// sibling of it rather than nested.
+fn running_core_pid(daemon: &Daemon) -> Option<u64> {
+    let output = daemon.cli(&["status", "--format", "json"]);
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let core = value.get("runtime")?.get("core")?;
+    if core.get("state")?.as_str()? != "running" {
+        return None;
+    }
+    core.get("pid")?.as_u64()
+}
+
+/// The core dying must be noticed and undone, not reported as healthy forever.
+///
+/// This is what happens when the OOM killer picks Xray on a laptop with a
+/// browser open: the daemon keeps a `Child` for a process that no longer
+/// exists, and every listener it was serving is dead.
+#[test]
+fn a_core_that_is_killed_is_noticed_and_brought_back() {
+    require_xray!("core supervision");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let Some(child) = spawn_with_core(root.path()) else {
+        panic!("the daemon did not spawn");
+    };
+    let daemon = Daemon { child, root };
+
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let mut first = None;
+    while Instant::now() < deadline && first.is_none() {
+        first = running_core_pid(&daemon);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let first = first.expect("the core never reported a pid");
+
+    // SIGKILL, because a crash does not get to run a shutdown path.
+    assert!(
+        Command::new("kill")
+            .args(["-9", &first.to_string()])
+            .status()
+            .expect("kill")
+            .success(),
+        "could not kill the core"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut second = None;
+    while Instant::now() < deadline {
+        if let Some(pid) = running_core_pid(&daemon)
+            && pid != first
+        {
+            second = Some(pid);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let second = second.expect("the core was killed and never came back");
+    assert_ne!(
+        second, first,
+        "the daemon reported the dead process as alive"
+    );
+    assert!(
+        Path::new(&format!("/proc/{second}")).is_dir(),
+        "pid {second} is not a live process"
+    );
+}
+
+/// A daemon killed with SIGKILL leaves its socket behind. The next one must
+/// bind anyway, or every hard crash needs manual cleanup before the tool works.
+#[test]
+fn a_socket_left_by_a_killed_daemon_does_not_block_the_next_one() {
+    require_xray!("stale socket");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(binary("xraytuid"))
+        .arg("--root")
+        .arg(root.path())
+        .arg("--no-start")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let socket = root.path().join("run/control.sock");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline && !socket.exists() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(socket.exists(), "the first daemon never bound its socket");
+
+    let _ = Command::new("kill")
+        .args(["-9", &child.id().to_string()])
+        .status();
+    let _ = child.wait();
+    assert!(
+        socket.exists(),
+        "this test is meaningless if the socket is already gone"
+    );
+
+    let replacement = spawn_with_core(root.path()).expect("spawn");
+    let daemon = Daemon {
+        child: replacement,
+        root,
+    };
+    // Not "does the file exist": the stale file is exactly what is on disk at
+    // the start. What matters is that something answers on it.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut answered = false;
+    while Instant::now() < deadline && !answered {
+        answered = daemon.cli(&["status"]).status.success();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        answered,
+        "a stale socket stopped the replacement daemon from answering"
+    );
+}
+
+/// State the daemon observed must survive a restart.
+#[test]
+fn mode_targets_and_health_survive_a_daemon_restart() {
+    require_xray!("restart recovery");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let Some(child) = spawn_with_core(root.path()) else {
+        panic!("the daemon did not spawn");
+    };
+    let mut daemon = Daemon { child, root };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline && !daemon.cli(&["status"]).status.success() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    assert!(
+        daemon
+            .cli(&[
+                "node",
+                "add",
+                "--protocol",
+                "socks",
+                "--name",
+                "Keep Me",
+                "--address",
+                "127.0.0.1",
+                "--port",
+                "1",
+                "--username",
+                "u",
+            ])
+            .status
+            .success(),
+        "node add"
+    );
+    assert!(
+        daemon
+            .cli(&["profile", "add", "work", "--socks", "11190"])
+            .status
+            .success(),
+        "profile add"
+    );
+    let before = String::from_utf8_lossy(&daemon.cli(&["profile", "list"]).stdout).into_owned();
+
+    // Restart the way a package upgrade does.
+    let _ = daemon.child.kill();
+    let _ = daemon.child.wait();
+    let _ = std::fs::remove_file(daemon.root.path().join("run/control.sock"));
+    daemon.child = spawn_with_core(daemon.root.path()).expect("restart");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline && !daemon.cli(&["status"]).status.success() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let after = String::from_utf8_lossy(&daemon.cli(&["profile", "list"]).stdout).into_owned();
+    assert_eq!(before, after, "profiles and targets must survive a restart");
+    let nodes = String::from_utf8_lossy(&daemon.cli(&["node", "list"]).stdout).into_owned();
+    assert!(nodes.contains("Keep Me"), "the node was lost:\n{nodes}");
+
+    // And the state database really is the thing carrying it.
+    let database = daemon.root.path().join("state/state.sqlite3");
+    assert!(database.is_file(), "no state database was written");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&database)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "the state database must not be world-readable");
+}

@@ -515,6 +515,38 @@ impl Engine {
         }
     }
 
+    /// Whether the supervised core has exited without being asked to.
+    ///
+    /// Returns a description of how it exited, or `None` while it is still
+    /// running — and also `None` when there is nothing to supervise, because a
+    /// core that was deliberately stopped is not a core that died.
+    ///
+    /// Non-blocking: this is called from a timer, and a `wait` that blocked
+    /// would hold the engine lock against every request until the core died.
+    pub fn poll_core_exit(&mut self) -> Option<String> {
+        let running = self.running.as_mut()?;
+        match running.has_exited() {
+            Ok(None) => None,
+            Ok(Some(status)) => Some(describe_exit(status)),
+            // `try_wait` failing means the child cannot be reaped. Treating it
+            // as still healthy would be the one answer that is certainly wrong.
+            Err(error) => Some(format!("cannot determine the core's status: {error}")),
+        }
+    }
+
+    /// Restart the core after it died, keeping the desired state as it is.
+    ///
+    /// Separate from [`Engine::apply`] because nothing about the user's intent
+    /// changed: the process disappeared, and the same generation is wanted back.
+    ///
+    /// # Errors
+    /// Propagates the start failure; the caller decides whether to try again.
+    pub async fn restart_after_exit(&mut self) -> Result<GenerationId, ControllerError> {
+        let generation = self.rebuild_and_start().await?;
+        self.consecutive_failures = 0;
+        Ok(generation)
+    }
+
     /// Notice that the core exited and decide whether to restart it.
     ///
     /// Returns the delay before the next attempt, or `None` when the budget is
@@ -668,6 +700,22 @@ impl Engine {
     #[must_use]
     pub fn client(&mut self) -> Option<&mut ApiClient> {
         self.client.as_mut()
+    }
+}
+
+/// How a core exit is described in the status line and the log.
+///
+/// The signal number matters: `killed by signal 9` is usually the OOM killer,
+/// and that is a different conversation from `exited with status 23`, which is
+/// Xray refusing its own configuration.
+fn describe_exit(status: std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(signal) = status.signal() {
+        return format!("the core was killed by signal {signal}");
+    }
+    match status.code() {
+        Some(code) => format!("the core exited with status {code}"),
+        None => "the core exited".to_owned(),
     }
 }
 

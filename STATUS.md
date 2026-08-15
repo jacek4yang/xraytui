@@ -26,6 +26,14 @@ The central claim of the project is implemented and proven by test:
   a connection at the transit proxy (scenario E).
 * **A runtime-only failure rolls back** to the previous generation, and the
   working profile keeps serving.
+* **The core dying is noticed by the daemon that ships**, not merely by the
+  engine API: a core killed with `SIGKILL` is detected within half a second,
+  the failure is counted, the backoff is waited out, and the same generation is
+  rebuilt as a different live process. Until 2026-08-15 this was true of the
+  engine and false of the program — `note_core_exit` and `has_exited` existed,
+  were unit-tested, and had no callers, so a killed core was reported as
+  `running` with a dead pid indefinitely. The end-to-end test was confirmed to
+  fail without the supervising task.
 * **IPv4 is the tested path.** Every namespace test above ran IPv4 only. This
   kernel has no IPv6 at all (`/proc/net/if_inet6` is absent), so the helper
   logs `this kernel has no IPv6; leaving the IPv6 half of the plan out` and
@@ -81,7 +89,7 @@ number nobody can reproduce is not evidence.
 | `cargo fmt --all --check` | **pass** (no output) |
 | `cargo check --workspace --all-targets` | **pass** |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **pass**, no warnings |
-| `cargo test --workspace` | **pass**, 703 tests, 0 failures |
+| `cargo test --workspace` | **pass**, 761 tests, 0 failures |
 | `sudo ./scripts/netns-test.sh` | **pass**, 12 + 1 privileged tests, 0 failures |
 | `cargo doc --workspace --no-deps` | not re-run at this commit |
 | `cargo build --release --workspace` | not re-run at this commit |
