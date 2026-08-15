@@ -275,36 +275,7 @@ pub fn plan_request(
         exclude.push(parse_prefix("tun.exclude_cidrs", text)?);
     }
 
-    // A cgroup and a mark for each profile an enabled application rule names.
-    //
-    // The mark is the same for all of them, because one user has one routing
-    // table and one tunnel: what the marking decides is *whether* an
-    // application's traffic enters the tunnel at all. Which egress it then
-    // takes is decided inside Xray, by the same application rules, on the TUN
-    // inbound. Per-profile transparent egress — a separate listener per
-    // profile, selected by mark — would need a tproxy inbound per profile and
-    // is not implemented; see STATUS.md.
-    //
-    // The mark is derived from the credential, never configured, so two users
-    // cannot collide however they write their files.
-    let fwmark = xraytui_netd_protocol::fwmark_for_uid(uid);
-    let cgroup_marks: Vec<CgroupMark> = state
-        .app_rules
-        .values()
-        .filter(|rule| rule.enabled)
-        .filter_map(|rule| match &rule.action {
-            xraytui_domain::RuleAction::Profile { id } => Some(id),
-            _ => None,
-        })
-        .filter(|id| state.profiles.contains_key(*id))
-        .map(|id| id.as_str().to_owned())
-        .collect::<std::collections::BTreeSet<String>>()
-        .into_iter()
-        .map(|profile| CgroupMark {
-            profile,
-            mark: fwmark,
-        })
-        .collect();
+    let cgroup_marks = cgroup_marks(state);
 
     Ok(PlanRequest {
         tun: TunRequest {
@@ -345,6 +316,58 @@ pub fn plan_request(
             },
         },
     })
+}
+
+/// Which profiles need a cgroup of their own, and what to do with their traffic.
+///
+/// Two kinds of profile come out of this, and the difference is one field:
+///
+/// * a profile with a **transparent listener** gets `tproxy_port`. The helper
+///   gives it a mark of its own and hands its traffic to that listener, so two
+///   applications can be on two different egresses at the same time without
+///   either one knowing it is proxied. It needs a cgroup whether or not any
+///   application rule mentions it, because `xraytui exec --transparent` can put
+///   a process there by name.
+/// * a profile named only by an **application rule** is carried by the shared
+///   tunnel, and the marking decides only *whether* its traffic enters the
+///   tunnel. Which egress it then takes is decided inside Xray, by the same
+///   application rules, on the TUN inbound.
+///
+/// The marks themselves are derived by the helper from the connecting
+/// credential, never configured here, so two users cannot collide however they
+/// write their files. The order is the map's, which is sorted, so the same
+/// desired state always produces the same request — that is what makes
+/// re-applying it a no-op rather than a rebuild.
+fn cgroup_marks(state: &DesiredState) -> Vec<CgroupMark> {
+    let mut named: std::collections::BTreeSet<&xraytui_domain::ProfileId> = state
+        .app_rules
+        .values()
+        .filter(|rule| rule.enabled)
+        .filter_map(|rule| match &rule.action {
+            xraytui_domain::RuleAction::Profile { id } => Some(id),
+            _ => None,
+        })
+        .collect();
+    named.extend(
+        state
+            .profiles
+            .iter()
+            .filter(|(_, profile)| profile.enabled && profile.transparent.is_some())
+            .map(|(id, _)| id),
+    );
+
+    named
+        .into_iter()
+        .filter_map(|id| state.profiles.get(id).map(|profile| (id, profile)))
+        .filter(|(_, profile)| profile.enabled)
+        .map(|(id, profile)| CgroupMark {
+            profile: id.as_str().to_owned(),
+            tproxy_port: profile
+                .transparent
+                .as_ref()
+                .map(|listener| listener.listen.port()),
+        })
+        .collect()
 }
 
 /// The resolver the system should be pointed at while the tunnel is up.
@@ -399,6 +422,114 @@ mod tests {
 
     fn config() -> ConfigFile {
         ConfigFile::default()
+    }
+
+    fn state_with(transparent: &[&str], app_rules: &[&str]) -> DesiredState {
+        use xraytui_domain::{
+            AppMatcher, AppRuleId, ApplicationRule, EgressProfile, ListenerSpec, ProfileId,
+            RuleAction, Target,
+        };
+        let mut state = DesiredState::default();
+        for (index, id) in transparent.iter().chain(app_rules.iter()).enumerate() {
+            let profile_id = ProfileId::new(*id).expect("valid");
+            if state.profiles.contains_key(&profile_id) {
+                continue;
+            }
+            let mut profile = EgressProfile::new(profile_id.clone(), *id, Target::Direct);
+            if transparent.contains(id) {
+                profile.transparent = Some(ListenerSpec::loopback(19_000 + index as u16));
+            }
+            state.profiles.insert(profile_id, profile);
+        }
+        for id in app_rules {
+            let rule_id = AppRuleId::new(format!("rule-{id}")).expect("valid");
+            state.app_rules.insert(
+                rule_id.clone(),
+                ApplicationRule {
+                    id: rule_id,
+                    priority: 100,
+                    process: vec![AppMatcher(format!("{id}-program"))],
+                    action: RuleAction::Profile {
+                        id: ProfileId::new(*id).expect("valid"),
+                    },
+                    enabled: true,
+                    note: None,
+                },
+            );
+        }
+        state
+    }
+
+    #[test]
+    fn a_transparent_profile_gets_a_cgroup_even_with_no_application_rule() {
+        // `xraytui exec --transparent` can name a profile no rule mentions, so
+        // the cgroup and its redirect have to exist for it to be put into.
+        let state = state_with(&["work"], &[]);
+        let marks = cgroup_marks(&state);
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].profile, "work");
+        assert!(marks[0].tproxy_port.is_some());
+    }
+
+    #[test]
+    fn a_profile_named_only_by_a_rule_is_carried_by_the_tunnel() {
+        let state = state_with(&[], &["tunnelled"]);
+        let marks = cgroup_marks(&state);
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].tproxy_port, None, "no listener, so no redirect");
+    }
+
+    #[test]
+    fn a_disabled_profile_asks_for_nothing() {
+        let mut state = state_with(&["work"], &["work"]);
+        state
+            .profiles
+            .values_mut()
+            .for_each(|profile| profile.enabled = false);
+        assert!(cgroup_marks(&state).is_empty());
+    }
+
+    #[test]
+    fn the_same_state_always_produces_the_same_request() {
+        // Reconciliation is idempotent only if the request is: the helper
+        // rebuilds its ruleset from what it is sent, so an unstable order would
+        // mean a rebuild — and new marks — on every reconcile.
+        let state = state_with(&["work", "media"], &["work", "other"]);
+        let first = cgroup_marks(&state);
+        let second = cgroup_marks(&state);
+        assert_eq!(first, second);
+        let names: Vec<&str> = first.iter().map(|mark| mark.profile.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["media", "other", "work"],
+            "sorted, and deduplicated"
+        );
+    }
+
+    #[test]
+    fn removing_a_transparent_listener_removes_its_redirect() {
+        use xraytui_domain::ProfileId;
+        let mut state = state_with(&["work"], &[]);
+        assert!(cgroup_marks(&state)[0].tproxy_port.is_some());
+        state
+            .profiles
+            .get_mut(&ProfileId::new("work").expect("valid"))
+            .expect("the profile")
+            .transparent = None;
+        assert!(
+            cgroup_marks(&state).is_empty(),
+            "nothing names it any more, so it should not be asked for at all"
+        );
+    }
+
+    #[test]
+    fn a_request_the_daemon_builds_is_one_the_helper_will_accept() {
+        let state = state_with(&["work", "media"], &["work"]);
+        let request = plan_request(&config(), &state, Vec::new()).expect("request");
+        let uid = rustix::process::getuid().as_raw();
+        Operation::ApplyFirewall(request.firewall)
+            .validate(uid)
+            .expect("the daemon must not build a request the helper refuses");
     }
 
     #[test]

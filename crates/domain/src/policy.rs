@@ -377,9 +377,21 @@ pub struct EgressProfile {
     /// Whether the profile is compiled at all.
     #[serde(default = "crate::node::default_true")]
     pub enabled: bool,
-    /// Whether a transparent inbound is pre-created for `exec --transparent`.
-    #[serde(default)]
-    pub transparent_inbound: bool,
+    /// Dedicated transparent (TPROXY) listener, for `exec --transparent`.
+    ///
+    /// This is what makes an application's *unmodified* traffic — no proxy
+    /// environment variables, no SOCKS support required — take this profile's
+    /// egress: the privileged helper marks the traffic by cgroup and redirects
+    /// it here, and this listener recovers the original destination.
+    ///
+    /// The address must be IPv4 loopback. The helper's redirect names
+    /// `127.0.0.1` literally, so nothing outside this machine can reach the
+    /// listener and no packet this user's own rules did not mark can arrive at
+    /// it. The credential fields of [`ListenerSpec`] mean nothing here — a
+    /// transparent listener has no authentication step — and are refused by
+    /// validation rather than silently ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparent: Option<ListenerSpec>,
 }
 
 impl EgressProfile {
@@ -395,14 +407,18 @@ impl EgressProfile {
             dns_policy: None,
             kill_switch: KillSwitch::default(),
             enabled: true,
-            transparent_inbound: false,
+            transparent: None,
         }
     }
 
     /// Every listener the profile owns.
     #[must_use]
     pub fn listeners(&self) -> Vec<&ListenerSpec> {
-        self.socks.iter().chain(self.http.iter()).collect()
+        self.socks
+            .iter()
+            .chain(self.http.iter())
+            .chain(self.transparent.iter())
+            .collect()
     }
 }
 

@@ -46,7 +46,12 @@ if [ "${XRAYTUI_NETNS_INNER:-}" = "1" ]; then
     XRAYTUI_NETNS_TESTS=1
     export XRAYTUI_NETNS_TESTS
     # One namespace, one set of routing tables: the tests must not interleave.
-    exec "$XRAYTUI_TEST_BINARY" --test-threads=1 --nocapture "$@"
+    status=0
+    for binary in $XRAYTUI_TEST_BINARIES; do
+        echo "netns-test: running $binary"
+        "$binary" --test-threads=1 --nocapture "$@" || status=$?
+    done
+    exit "$status"
 fi
 
 # --- outside the namespace -------------------------------------------------
@@ -57,19 +62,33 @@ fi
 
 cd "$(dirname "$0")/.."
 
-echo "netns-test: building the privileged test binary"
+# Two suites, deliberately. `netns` proves the kernel-side arrangement;
+# `netns_transparent` proves acceptance scenario M through the real helper, the
+# real command-line client and the real core on top of it. The client and the
+# helper are ordinary binaries, so they are built here too — the namespace has no
+# network to fetch or compile with.
+echo "netns-test: building the privileged test binaries"
 cargo test -p xraytui-linux-net --test netns --no-run
+cargo test -p xraytui-controller --test netns_transparent --no-run
+cargo build --bin xraytui --bin xraytui-netd
 
-BINARY=$(find target/debug/deps -maxdepth 1 -name 'netns-*' ! -name '*.d' -type f \
-    -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)
-if [ -z "$BINARY" ]; then
-    echo "netns-test: could not find the compiled test binary" >&2
-    exit 1
-fi
-echo "netns-test: running $BINARY in a fresh namespace"
+newest() {
+    find target/debug/deps -maxdepth 1 -name "$1" ! -name '*.d' -type f \
+        -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-
+}
 
-XRAYTUI_TEST_BINARY="$(pwd)/$BINARY"
-export XRAYTUI_TEST_BINARY
+XRAYTUI_TEST_BINARIES=""
+for pattern in 'netns-*' 'netns_transparent-*'; do
+    found=$(newest "$pattern")
+    if [ -z "$found" ]; then
+        echo "netns-test: could not find a compiled test binary for $pattern" >&2
+        exit 1
+    fi
+    XRAYTUI_TEST_BINARIES="$XRAYTUI_TEST_BINARIES $(pwd)/$found"
+done
+export XRAYTUI_TEST_BINARIES
+XRAYTUI_TEST_BIN_DIR="$(pwd)/target/debug"
+export XRAYTUI_TEST_BIN_DIR
 XRAYTUI_NETNS_INNER=1
 export XRAYTUI_NETNS_INNER
 

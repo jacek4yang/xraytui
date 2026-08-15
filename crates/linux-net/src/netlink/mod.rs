@@ -31,10 +31,10 @@ use message::{
     AF_INET, AF_INET6, AF_UNSPEC, Builder, FRA_FWMARK, FRA_FWMASK, FRA_PROTOCOL,
     FRA_SUPPRESS_PREFIXLEN, IFA_ADDRESS, IFA_LOCAL, IFF_UP, IFLA_IFNAME, IFLA_MTU, NLM_F_ACK,
     NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REPLACE, NLMSG_DONE, NLMSG_ERROR, NLMSG_NOOP,
-    RT_SCOPE_LINK, RT_SCOPE_NOWHERE, RT_SCOPE_UNIVERSE, RT_TABLE_UNSPEC, RTA_DST, RTA_OIF,
-    RTA_PRIORITY, RTA_TABLE, RTM_DELLINK, RTM_DELROUTE, RTM_DELRULE, RTM_GETLINK, RTM_GETROUTE,
-    RTM_GETRULE, RTM_NEWADDR, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, RTN_BLACKHOLE, RTN_UNICAST,
-    RTPROT_XRAYTUI, as_str, as_u32, attributes, ifaddrmsg, ifinfomsg, messages, rtmsg,
+    RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_NOWHERE, RT_SCOPE_UNIVERSE, RT_TABLE_UNSPEC, RTA_DST,
+    RTA_OIF, RTA_PRIORITY, RTA_TABLE, RTM_DELLINK, RTM_DELROUTE, RTM_DELRULE, RTM_GETLINK,
+    RTM_GETROUTE, RTM_GETRULE, RTM_NEWADDR, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, RTN_BLACKHOLE,
+    RTN_UNICAST, RTPROT_XRAYTUI, as_str, as_u32, attributes, ifaddrmsg, ifinfomsg, messages, rtmsg,
 };
 
 /// Largest netlink datagram the helper will accept.
@@ -425,6 +425,49 @@ impl Netlink {
         self.transact(
             builder,
             format!("add route {destination} dev {oif} table {table}"),
+        )?;
+        Ok(())
+    }
+
+    /// Add a `local` route, which delivers matching traffic to this machine.
+    ///
+    /// This is what makes transparent proxying work for traffic the machine
+    /// generates itself: a marked packet is routed here, comes back in through
+    /// loopback, traverses prerouting, and is handed to a listener by a
+    /// `tproxy` rule. Without it the packet would simply leave.
+    ///
+    /// # Errors
+    /// Propagates netlink failures.
+    pub fn route_add_local(
+        &self,
+        table: u32,
+        destination: IpNet,
+        oif: u32,
+        replace: bool,
+    ) -> Result<(), NetlinkError> {
+        let family = family_of(destination.addr());
+        let flags = if replace {
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_REPLACE
+        } else {
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL
+        };
+        let mut builder = Builder::new(RTM_NEWROUTE, flags);
+        builder.header(&rtmsg(
+            family,
+            destination.prefix_len(),
+            RT_TABLE_UNSPEC,
+            RTPROT_XRAYTUI,
+            RT_SCOPE_HOST,
+            message::RTN_LOCAL,
+        ));
+        builder.attr_u32(RTA_TABLE, table);
+        if destination.prefix_len() > 0 {
+            builder.attr_ip(RTA_DST, destination.addr());
+        }
+        builder.attr_u32(RTA_OIF, oif);
+        self.transact(
+            builder,
+            format!("add local route {destination} in table {table}"),
         )?;
         Ok(())
     }

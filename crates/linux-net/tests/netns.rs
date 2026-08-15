@@ -408,7 +408,7 @@ fn repeated_enable_and_disable_leaves_no_residue() {
                 .apply(Operation::ApplyFirewall(FirewallRequest {
                     cgroup_marks: vec![CgroupMark {
                         profile: "work".into(),
-                        mark: xraytui_netd_protocol::fwmark_for_uid(UID),
+                        tproxy_port: Some(19001),
                     }],
                     kill_switch: true,
                     bypass_uid: true,
@@ -615,12 +615,11 @@ fn the_firewall_marks_only_the_named_cgroup() {
         .apply(Operation::CreateTun(tun_request()))
         .expect("create tun");
 
-    let mark = xraytui_netd_protocol::fwmark_for_uid(UID);
     fixture
         .apply(Operation::ApplyFirewall(FirewallRequest {
             cgroup_marks: vec![CgroupMark {
                 profile: "work".into(),
-                mark,
+                tproxy_port: Some(19007),
             }],
             kill_switch: true,
             bypass_uid: true,
@@ -630,6 +629,14 @@ fn the_firewall_marks_only_the_named_cgroup() {
     let listed = nft_list();
     assert!(listed.contains("u0-mark"), "{listed}");
     assert!(listed.contains("u0-guard"), "{listed}");
+    assert!(listed.contains("u0-redirect"), "{listed}");
+    // The kill switch is written against the tunnel's own mark, not a
+    // profile's: a redirected profile never leaves by the tunnel at all.
+    let tunnel_mark = xraytui_netd_protocol::fwmark_for_uid(UID);
+    assert!(
+        listed.contains(&format!("meta mark {tunnel_mark:#x}")),
+        "the guard rule must match the tunnel mark: {listed}"
+    );
     assert!(
         listed.contains("xraytui.slice/u0/work"),
         "the marking rule must name the profile cgroup: {listed}"
@@ -644,7 +651,7 @@ fn the_firewall_marks_only_the_named_cgroup() {
         .apply(Operation::ApplyFirewall(FirewallRequest {
             cgroup_marks: vec![CgroupMark {
                 profile: "work".into(),
-                mark,
+                tproxy_port: Some(19007),
             }],
             kill_switch: true,
             bypass_uid: true,
@@ -661,6 +668,176 @@ fn the_firewall_marks_only_the_named_cgroup() {
     assert!(
         nft.chains().expect("chains").is_empty(),
         "release must remove the chains"
+    );
+}
+
+/// Acceptance scenario M, proven rather than asserted.
+///
+/// Two processes running the *same program*, in two different profile cgroups,
+/// must reach two different transparent listeners — and each listener must
+/// recover the original destination, because that is what Xray's
+/// `dokodemo-door` inbound needs in order to know where the traffic was going.
+///
+/// The listeners here stand in for Xray. What is under test is the kernel-side
+/// arrangement: cgroup classification, per-profile marks, the local-delivery
+/// table, and the `tproxy` rules.
+#[test]
+fn two_instances_of_one_program_reach_two_different_listeners() {
+    if !enabled() {
+        return;
+    }
+    let nft = Nft::new("nft");
+    if !nft.available() {
+        eprintln!("skipping: nft is not installed");
+        return;
+    }
+    if std::env::var_os("XRAYTUI_TEST_CGROUP_ROOT").is_none() {
+        eprintln!("skipping: no private cgroup v2 hierarchy was provided");
+        return;
+    }
+    let fixture = Fixture::new();
+
+    // The tunnel provides the route that lets the packet be created at all.
+    fixture
+        .apply(Operation::CreateTun(tun_request()))
+        .expect("create tun");
+    fixture
+        .apply(Operation::ApplyRouting(RoutingRequest {
+            include: Vec::new(),
+            exclude: Vec::new(),
+            bypass_endpoints: Vec::new(),
+            bypass_private: false,
+            blackhole_ipv6: true,
+        }))
+        .expect("apply routing");
+    given_the_machine_has_a_default_route(&fixture.interface());
+
+    let work_port = 19_001u16;
+    let media_port = 19_002u16;
+    fixture
+        .apply(Operation::ApplyFirewall(FirewallRequest {
+            cgroup_marks: vec![
+                CgroupMark {
+                    profile: "work".into(),
+                    tproxy_port: Some(work_port),
+                },
+                CgroupMark {
+                    profile: "media".into(),
+                    tproxy_port: Some(media_port),
+                },
+            ],
+            kill_switch: false,
+            bypass_uid: true,
+        }))
+        .expect("apply firewall");
+
+    let work = TransparentListener::start(work_port);
+    let media = TransparentListener::start(media_port);
+
+    // Same program, same arguments, different cgroup and different destination.
+    connect_from_cgroup("work", "203.0.113.9", 8080);
+    connect_from_cgroup("media", "198.51.100.7", 443);
+
+    let work_got = work.wait();
+    let media_got = media.wait();
+
+    assert_eq!(
+        work_got.as_deref(),
+        Some("203.0.113.9:8080"),
+        "the work profile's listener must receive the work process's connection, \
+         with its original destination intact"
+    );
+    assert_eq!(
+        media_got.as_deref(),
+        Some("198.51.100.7:443"),
+        "and the media profile's listener the other one"
+    );
+}
+
+/// A classified application must still be able to talk to its own machine.
+///
+/// This is not a nicety. Without the loopback exemption a connection to
+/// `127.0.0.1:anything` is marked, re-routed and handed to the profile's own
+/// transparent listener, which reads its own address as the original destination
+/// and dials itself through the proxy — a loop. The test asserts the ordinary
+/// thing (localhost still works) in order to prove the dangerous thing cannot
+/// happen.
+#[test]
+fn a_classified_application_still_reaches_its_own_machine() {
+    if !enabled() {
+        return;
+    }
+    let nft = Nft::new("nft");
+    if !nft.available() || std::env::var_os("XRAYTUI_TEST_CGROUP_ROOT").is_none() {
+        eprintln!("skipping: needs nft and a private cgroup v2 hierarchy");
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture
+        .apply(Operation::CreateTun(tun_request()))
+        .expect("create tun");
+    fixture
+        .apply(Operation::ApplyFirewall(FirewallRequest {
+            cgroup_marks: vec![CgroupMark {
+                profile: "work".into(),
+                tproxy_port: Some(19_020),
+            }],
+            kill_switch: false,
+            bypass_uid: true,
+        }))
+        .expect("apply firewall");
+    given_the_machine_has_a_default_route(&fixture.interface());
+
+    // The profile's transparent listener would say "REDIRECTED"; a perfectly
+    // ordinary local service says "LOCAL". The classified process asks the local
+    // service, and must hear from the local service.
+    let redirected = TransparentListener::with_banner(19_020, "REDIRECTED");
+    let local = LocalService::start("LOCAL");
+    let answer = connect_from_cgroup_reading("work", "127.0.0.1", local.port());
+
+    assert_eq!(
+        answer, "LOCAL",
+        "a connection to localhost must reach localhost, not the profile's \
+         transparent listener"
+    );
+    drop(redirected);
+}
+
+#[test]
+fn the_cgroup_match_really_matches_and_is_not_merely_installed() {
+    // An earlier version of this suite asserted that the ruleset *listed* the
+    // cgroup paths, which is a much weaker claim than that traffic from those
+    // cgroups is marked. This asserts the counter moves.
+    if !enabled() {
+        return;
+    }
+    let nft = Nft::new("nft");
+    if !nft.available() || std::env::var_os("XRAYTUI_TEST_CGROUP_ROOT").is_none() {
+        eprintln!("skipping: needs nft and a private cgroup v2 hierarchy");
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture
+        .apply(Operation::CreateTun(tun_request()))
+        .expect("create tun");
+    fixture
+        .apply(Operation::ApplyFirewall(FirewallRequest {
+            cgroup_marks: vec![CgroupMark {
+                profile: "work".into(),
+                tproxy_port: Some(19_010),
+            }],
+            kill_switch: false,
+            bypass_uid: true,
+        }))
+        .expect("apply firewall");
+    given_the_machine_has_a_default_route(&fixture.interface());
+
+    let listener = TransparentListener::start(19_010);
+    connect_from_cgroup("work", "192.0.2.55", 8443);
+    assert_eq!(
+        listener.wait().as_deref(),
+        Some("192.0.2.55:8443"),
+        "traffic from the profile's cgroup must actually be marked and redirected"
     );
 }
 
@@ -686,6 +863,205 @@ fn dns_is_left_alone_when_the_backend_is_none() {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+/// A stand-in for Xray's transparent inbound.
+///
+/// It binds `127.0.0.1` with `IP_TRANSPARENT` — exactly what Xray's
+/// `dokodemo-door` does when `sockopt.tproxy` is set — and reports the original
+/// destination of the first connection, which is the whole point of `tproxy`.
+///
+/// Both halves of that were established by experiment, not assumed:
+///
+/// * without `IP_TRANSPARENT` the handshake never completes, because the
+///   accepted socket's local address is the *original destination* and the
+///   kernel will not send from an address this machine does not own unless the
+///   listener is transparent;
+/// * binding loopback rather than every address works only because the redirect
+///   rule names `127.0.0.1` explicitly, and it is what keeps a transparent
+///   listener unreachable from the network.
+///
+/// It is a child `python3` process rather than a thread because `IP_TRANSPARENT`
+/// has no safe binding among this project's dependencies, and reaching for
+/// `unsafe` in a test to save a subprocess would be a poor trade.
+struct TransparentListener {
+    child: std::process::Child,
+    /// Held across calls: a buffered reader rebuilt per read could swallow the
+    /// next line, and a flaky test is worse than none.
+    output: std::io::BufReader<std::process::ChildStdout>,
+    port: u16,
+}
+
+impl TransparentListener {
+    fn start(port: u16) -> Self {
+        Self::with_banner(port, "")
+    }
+
+    /// Start a listener that also writes `banner` back to whoever connects.
+    fn with_banner(port: u16, banner: &str) -> Self {
+        let program = format!(
+            "import socket\n\
+             s=socket.socket()\n\
+             s.setsockopt(socket.SOL_IP,19,1)  # IP_TRANSPARENT\n\
+             s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+             s.bind(('127.0.0.1',{port}))\n\
+             s.listen(4)\n\
+             print('ready',flush=True)\n\
+             s.settimeout(15)\n\
+             try:\n\
+             \x20   c,_=s.accept()\n\
+             \x20   print('%s:%d'%c.getsockname(),flush=True)\n\
+             \x20   banner={banner:?}\n\
+             \x20   if banner: c.sendall(banner.encode())\n\
+             except Exception as e:\n\
+             \x20   print('failed: %r'%(e,),flush=True)\n"
+        );
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(&program)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("start the transparent listener");
+        let mut output = std::io::BufReader::new(child.stdout.take().expect("stdout"));
+        // Block until it says it is listening, so no test races the bind.
+        let ready = read_line(&mut output);
+        assert_eq!(
+            ready.as_deref(),
+            Some("ready"),
+            "the listener on 127.0.0.1:{port} did not start"
+        );
+        Self {
+            child,
+            output,
+            port,
+        }
+    }
+
+    /// The original destination of the first connection, as `address:port`.
+    fn wait(mut self) -> Option<String> {
+        match read_line(&mut self.output) {
+            Some(text) if text.contains(':') && !text.starts_with("failed") => Some(text),
+            other => {
+                eprintln!("listener on {} reported {other:?}", self.port);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for TransparentListener {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// An ordinary local service: no transparent socket, no ceremony.
+struct LocalService {
+    listener: std::net::TcpListener,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LocalService {
+    fn start(banner: &'static str) -> Self {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a local service");
+        let accepting = listener.try_clone().expect("clone the listener");
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = accepting.accept() {
+                use std::io::Write as _;
+                let _ = stream.write_all(banner.as_bytes());
+            }
+        });
+        Self {
+            listener,
+            handle: Some(handle),
+        }
+    }
+
+    fn port(&self) -> u16 {
+        self.listener.local_addr().expect("local address").port()
+    }
+}
+
+impl Drop for LocalService {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Read one line from a child's stdout, without waiting for it to exit.
+fn read_line(output: &mut std::io::BufReader<std::process::ChildStdout>) -> Option<String> {
+    use std::io::BufRead as _;
+    let mut line = String::new();
+    match output.read_line(&mut line) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(line.trim_end().to_owned()),
+    }
+}
+
+/// Connect from a process placed in a profile's cgroup.
+///
+/// A child process is used so the cgroup move affects the socket: the
+/// association is recorded when the socket is created, so the *creating* task
+/// has to be in the cgroup already.
+fn connect_from_cgroup(profile: &str, host: &str, port: u16) {
+    let _ = connect_from_cgroup_reading(profile, host, port);
+}
+
+/// The same, reporting whatever the far end sent back.
+///
+/// That reply is how a test tells *which* egress served the connection, which is
+/// the claim scenario M actually makes.
+fn connect_from_cgroup_reading(profile: &str, host: &str, port: u16) -> String {
+    let path = format!(
+        "{}/cgroup.procs",
+        xraytui_linux_net::cgroup::CgroupTree::new(
+            std::env::var("XRAYTUI_TEST_CGROUP_ROOT").expect("cgroup root")
+        )
+        .path_for(UID, profile)
+        .display()
+    );
+    // The process writes its *own* pid into the cgroup before it creates the
+    // socket. That order is the whole trick: the kernel records the cgroup at
+    // socket-creation time, so moving a parent — or writing `$$` from a shell
+    // subshell — classifies the wrong task and matches nothing.
+    let program = format!(
+        "import os,socket,sys\n\
+         open({path:?},'w').write(str(os.getpid()))\n\
+         s=socket.socket(); s.settimeout(8)\n\
+         try:\n\
+         \x20   s.connect(({host:?},{port}))\n\
+         \x20   s.sendall(b'hello\\n')\n\
+         \x20   sys.stdout.write(s.recv(64).decode('utf-8','replace'))\n\
+         except Exception as e:\n\
+         \x20   sys.stdout.write('failed: %r'%(e,))\n"
+    );
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(&program)
+        .output()
+        .expect("run the connecting process");
+    assert!(
+        output.status.success(),
+        "the connecting process failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Give the namespace the default route a real machine already has.
+///
+/// This is the *environment*, not the product. An application's `connect()`
+/// picks a route before any packet exists, using the socket's mark — which is
+/// zero, because the mark is set later, at `output`. So without a default route
+/// in the main table `connect()` fails with `ENETUNREACH` and nothing this
+/// project installed is ever consulted. A machine in transparent mode has one
+/// via its physical interface; a fresh namespace does not, so the test supplies
+/// it.
+fn given_the_machine_has_a_default_route(interface: &str) {
+    ip(&["route", "add", "default", "dev", interface]);
+}
 
 /// Run `ip(8)` and return its output.
 ///

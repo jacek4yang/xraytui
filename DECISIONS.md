@@ -261,3 +261,88 @@ Every status indicator would say the mode is on; no traffic would flow through
 it. A refusal that says what to do is strictly better than a success that
 lies. `crates/cli/tests/end_to_end.rs` asserts the refusal, its wording, and
 that the mode is left unchanged.
+
+---
+
+## D-018 — One local-delivery table, one mark per profile, one listener per profile
+
+**Decision.** Per-profile transparent egress is built from four project-owned
+pieces, and no others:
+
+1. **One cgroup per profile**, `xraytui.slice/u<uid>/<profile>`, which is what a
+   process is placed into.
+2. **One mark per profile**, derived — never configured — as
+   `FWMARK_BASE | (uid % 64) << 6 | slot`, where `slot` is the profile's position
+   in the sorted request and slot 0 is the user's tunnel. A user therefore has 63
+   distinguishable marks that provably cannot reach another user's band.
+3. **One shared local-delivery table per user**
+   (`transparent_table_for_uid`), holding `local default dev lo`, with **one
+   policy rule per profile mark** pointing at it.
+4. **One `tproxy` rule per profile**, matching that mark and naming that
+   profile's listener: `meta nfproto ipv4 meta l4proto { tcp, udp } meta mark
+   <m> tproxy ip to 127.0.0.1:<port> accept`.
+
+**Why a shared table rather than a table per profile.** The table's only content
+is `local default dev lo`, which is identical for every profile — a table each
+would be sixty-three copies of one route. What distinguishes profiles is the
+*mark*, and the mark survives into prerouting where the `tproxy` rule reads it.
+`STATUS.md` previously anticipated a table per mark; a shared table was adopted
+only after checking each property it could have weakened:
+
+* **Isolation.** Two profiles never share a mark (2), and the redirect matches
+  on the mark, so the table being shared changes nothing about which listener a
+  packet reaches. The namespace suite proves this by running two processes of one
+  program and observing two different listeners.
+* **Cleanup.** One table id and one rule priority per user, both derived, both
+  flushed on release. Fewer objects to leak, and `flush_owned_routes` already
+  only removes routes carrying `RTPROT_XRAYTUI`.
+* **Conflict detection.** Two profiles asking for one listener port is refused by
+  the helper (`validate_firewall`) as well as by domain validation, because the
+  helper does not trust the caller.
+* **Original destination.** Preserved by `tproxy`, not by the table: the packet
+  is never rewritten. Asserted directly — the listener reports `getsockname()`
+  and it is the address the application dialled.
+
+**Why the redirect names `127.0.0.1` and not just a port.** Leaving the address
+out makes the socket lookup use the packet's original destination, which forces
+the listener to bind `0.0.0.0` — a port the whole network can reach. Naming the
+address lets it bind loopback. In an `inet` table that requires stating the
+family, so the rule is `tproxy ip` and IPv4-only; see `STATUS.md` for what that
+means for IPv6.
+
+**Loop prevention.** Traffic to `127.0.0.0/8` and `::1` is exempted from marking
+before any profile rule is evaluated. Without it, a classified process
+connecting to `127.0.0.1:5432` would be redirected into its own profile's
+transparent listener, which would read its own address as the original
+destination and dial itself through the proxy. The core's own cgroup is exempted
+by the same mechanism, one rule earlier. A namespace test asserts that a
+classified application still reaches an ordinary local service.
+
+---
+
+## D-019 — `exec --transparent` classifies itself and then execs
+
+**Decision.** `xraytui exec --transparent --profile P -- CMD` does not spawn CMD
+and then classify it. It classifies **its own process** into P's cgroup, confirms
+the classification against `/proc/self/cgroup`, and only then calls `execve`.
+
+**Why.** The spawn-then-classify design has a window in which the child is
+running unclassified, and closing it needs a barrier: a pipe, a blocked child, a
+release, and an argument about whether the window is really shut. This design has
+no window to argue about. cgroup membership is a property of the thread group and
+survives `execve`, so the program that replaces this image is already classified
+before its first instruction; and a socket's cgroup is fixed when the socket is
+*created*, so the client's existing connections keep the cgroup they were made in
+and are not redirected into the profile.
+
+**Failure policy.** Fatal, always. If the helper refuses, or if it acknowledges
+and `/proc/self/cgroup` does not agree, the command is **not** started and the
+error names the profile. Running it anyway would send traffic out by a path the
+user did not choose while the tool reported success. `crates/cli/src/exec.rs`
+tests all three: a refusal, an unearned acknowledgement, and — by side effect, so
+it cannot be faked — that the command really does not run.
+
+**What it does not do.** It does not set, clear or read any proxy environment
+variable. The distinction between two instances must come from the cgroup alone,
+which is also what the acceptance test asserts by clearing the environment
+entirely.

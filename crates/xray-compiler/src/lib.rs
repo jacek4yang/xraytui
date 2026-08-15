@@ -641,6 +641,37 @@ impl<'a> Builder<'a> {
                 bound.http = Some(spec.listen);
             }
 
+            // The transparent listener is what lets an unmodified application
+            // take this profile's egress. It is a `dokodemo-door` with
+            // `followRedirect`, which reads the original destination back off
+            // the socket the kernel handed it; `sockopt.tproxy` is what makes
+            // that socket transparent, without which the handshake never
+            // completes. Both were verified end to end against Xray v26.3.27 in
+            // a namespace — see docs/NETWORKING.md.
+            if let Some(spec) = &profile.transparent {
+                let tag = tags::profile_transparent_inbound(id);
+                self.inbounds.push(Inbound {
+                    tag: tag.clone(),
+                    listen: Some(spec.listen.ip().to_string()),
+                    port: Some(spec.listen.port()),
+                    protocol: "dokodemo-door".into(),
+                    settings: Some(json!({
+                        "network": "tcp,udp",
+                        "followRedirect": true,
+                    })),
+                    stream_settings: Some(xraytui_xray_model::StreamSettings {
+                        sockopt: Some(xraytui_xray_model::SockOpt {
+                            tproxy: Some("tproxy".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    sniffing: sniffing.clone(),
+                });
+                self.owned_tags.insert(tag);
+                bound.transparent = Some(spec.listen);
+            }
+
             self.listeners.insert(id.clone(), bound);
         }
 
@@ -713,6 +744,18 @@ impl<'a> Builder<'a> {
             if self.options.dns.listen.is_some() {
                 inbound_tags.push(tags::INBOUND_DNS.to_owned());
             }
+            // A transparent listener receives its application's port 53 traffic
+            // too, because the redirect is by mark and not by port. Handing that
+            // to the DNS module rather than forwarding it blindly is what makes
+            // a profile's DNS policy apply to `exec --transparent` exactly as it
+            // applies to the tunnel — and it is also what stops a query from
+            // being answered by whatever the application thought its resolver
+            // was.
+            for (id, profile) in &self.state.profiles {
+                if profile.enabled && profile.transparent.is_some() {
+                    inbound_tags.push(tags::profile_transparent_inbound(id));
+                }
+            }
             if !inbound_tags.is_empty() {
                 self.rules.push(
                     RoutingRule {
@@ -734,6 +777,35 @@ impl<'a> Builder<'a> {
             );
         }
 
+        // 2b. Transparent traffic to private space goes direct, when the user
+        //     asked for that.
+        //
+        //     This has to precede the profile rule below, which matches by
+        //     inbound tag alone and would otherwise claim it first. It is
+        //     deliberately *not* applied to the SOCKS and HTTP listeners: an
+        //     application pointed at one of those was told to use it, whereas an
+        //     application in a transparent profile never opted in and should
+        //     still be able to reach its own network.
+        if self.options.bypass_private_networks {
+            let transparent: Vec<String> = self
+                .state
+                .profiles
+                .iter()
+                .filter(|(_, profile)| profile.enabled && profile.transparent.is_some())
+                .map(|(id, _)| tags::profile_transparent_inbound(id))
+                .collect();
+            if !transparent.is_empty() {
+                self.rules.push(
+                    RoutingRule {
+                        inbound_tag: transparent,
+                        ip: vec!["geoip:private".into()],
+                        ..RoutingRule::field(tags::system_rule("transparent-private-direct"))
+                    }
+                    .to_outbound(tags::CONTROL_DIRECT),
+                );
+            }
+        }
+
         // 3. Traffic arriving on a profile's own listeners belongs to that
         //    profile, whatever the application rules say.
         for (id, profile) in &self.state.profiles {
@@ -747,7 +819,7 @@ impl<'a> Builder<'a> {
             if profile.http.is_some() {
                 inbound_tags.push(tags::profile_http_inbound(id));
             }
-            if profile.transparent_inbound {
+            if profile.transparent.is_some() {
                 inbound_tags.push(tags::profile_transparent_inbound(id));
             }
             if inbound_tags.is_empty() {

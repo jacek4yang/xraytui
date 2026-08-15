@@ -277,37 +277,84 @@ while any non-loopback listener is bound the TUI shows a banner and
 listener is dispatched to that profile by rule 3 of the generated table,
 **whatever the application rules say**.
 
-### 3. cgroup v2 exact-instance routing — **partly implemented**
+### 3. cgroup v2 exact-instance routing
 
-`xraytui exec --transparent` is intended to classify a single process tree into a
-project cgroup, which nftables matches with `socket cgroupv2`, marks with the
-profile's fwmark, and policy-routes into that profile's transparent inbound.
+`xraytui exec --transparent --profile P -- CMD` runs CMD with its traffic taking
+P's egress, whatever CMD is and whether or not it understands proxies. Two
+instances of the same program, launched under two profiles, take two different
+exits at the same time. This is acceptance scenario M, and it is proven end to
+end by `crates/controller/tests/netns_transparent.rs`.
 
-What is implemented and proven in a namespace:
+The path a packet takes, in order:
 
-- the cgroup is created under `/sys/fs/cgroup/xraytui.slice/u<uid>/<profile>`;
-- a process is placed in it by `pidfd`, never by pid. The launcher opens a
-  `pidfd` and passes it over `SCM_RIGHTS`; the helper resolves identity from the
-  descriptor alone, checks the owner against the peer credential, and writes the
-  pid into `cgroup.procs`. Holding the descriptor pins the identity, so a
-  recycled pid cannot be reached through a stale one;
-- nftables marks exactly that cgroup's traffic, and accepts the core's own
-  cgroup unmarked first so the core's uplink never enters its own tunnel.
+```
+the process, launched by `xraytui exec --transparent --profile work`
+   └─ classified into  /sys/fs/cgroup/xraytui.slice/u<uid>/work
+        └─ nft `output` chain:  socket cgroupv2 level 3 "…/work"
+                                     meta mark set 0x7261XXXX
+             └─ ip rule fwmark 0x7261XXXX lookup <transparent table>
+                  └─ that table holds:  local default dev lo
+                       └─ the packet re-enters through `prerouting`, where
+                          nft:  meta nfproto ipv4 meta l4proto { tcp, udp }
+                                meta mark 0x7261XXXX
+                                tproxy ip to 127.0.0.1:<work's port> accept
+                            └─ Xray inbound  inbound/profile/work/transparent
+                               (dokodemo-door, followRedirect, sockopt.tproxy)
+                                 └─ routing rule  rule/profile/work/inbound
+                                      └─ balancer  profile/work/selector
+                                           └─ node, group, chain, direct or block
+```
 
-What is **not** implemented: the last link. One user has one routing table and
-one tunnel, so today the mark decides *whether* an application's traffic enters
-the tunnel, not *which exit* it takes. Selecting an exit per profile needs a
-`tproxy` inbound per profile and a policy rule per mark; the tag namespace
-reserves `inbound/profile/{id}/transparent` for it. Until then
-`exec --transparent` refuses with a typed reason rather than silently behaving
-like `exec --profile`. See `STATUS.md`.
+Every step is owned by this project and derived from the connecting credential:
+the cgroup path, the mark, the table id, the rule priority and the interface
+name. Nothing in the request names any of them; a client cannot ask for another
+user's.
+
+Details that are not obvious, each established against a running kernel rather
+than from documentation:
+
+- **The decision is taken at `output` and carried as a number.** A socket lookup
+  at prerouting finds nothing for an outbound SYN — there is no listener for the
+  destination — so the cgroup cannot be matched a second time. The mark is the
+  only thing that survives, which also makes it a capability: an arriving packet
+  cannot forge one, because `skb->mark` starts at zero for anything this machine
+  did not emit.
+- **The redirect names `127.0.0.1`, so the listener binds loopback.** Leaving the
+  address out of a `tproxy` statement makes the socket lookup use the packet's
+  original destination, which forces the listener onto `0.0.0.0`. In an `inet`
+  table, naming an address requires stating the family, so the rule is
+  `tproxy ip` — and the path is IPv4-only. IPv6 from a transparent profile is
+  fail-closed: its mark still selects the local-delivery table, where no redirect
+  matches, so it is refused rather than leaked.
+- **The listener must be transparent.** Without `IP_TRANSPARENT` the handshake
+  never completes, because the accepted socket's local address is the original
+  destination and the kernel will not send from an address this machine does not
+  own. That is what `sockopt.tproxy` in the generated inbound is for.
+- **`tproxy` refuses a rule with no transport match**, so `meta l4proto { tcp,
+  udp }` is load-bearing rather than decoration.
+- **Traffic to this machine is never marked.** `ip daddr 127.0.0.0/8` and
+  `ip6 daddr ::1` are accepted before any profile rule, so a classified process
+  still reaches the database, the display server and the package cache on
+  localhost — and, more importantly, cannot be redirected into its own profile's
+  listener, which would read its own address as the original destination and dial
+  itself through the proxy.
+- **The core's own cgroup is exempted first**, so its uplink never enters the
+  tunnel it is providing.
+- **A profile with no transparent listener wears the tunnel's mark instead**, so
+  per-application routing through the shared TUN keeps working exactly as before.
+
+A process is placed in its cgroup by `pidfd`, never by pid: the client opens a
+`pidfd` for itself and passes it over `SCM_RIGHTS`, and the helper resolves
+identity from the descriptor alone and checks the owner against the peer
+credential. The client classifies **itself** and then calls `execve`, so there is
+no window in which the application runs unclassified; see `DECISIONS.md` D-019.
 
 ### Choosing between them
 
 | Requirement | Mechanism |
 |---|---|
 | One specific command, right now, no privileges | 2 (`exec --profile`) |
-| Two instances of the same program on different profiles | 3 (`exec --transparent`) — **not yet available**; see above |
+| Two instances of the same program on different profiles | 3 (`exec --transparent`) |
 | Everything a named program does, system-wide, including children you did not launch | 1 (process matcher, with the caveats above) |
 | A program that ignores proxy environment variables | 1 or 3 |
 

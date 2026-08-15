@@ -388,6 +388,9 @@ fn sockopt_json(sockopt: &SocketSettings, dialer_proxy: Option<&str>) -> Option<
         interface: sockopt.interface.clone(),
         domain_strategy: sockopt.domain_strategy.clone(),
         dialer_proxy: dialer_proxy.map(str::to_owned),
+        // A dialing socket is never transparent; only the transparent inbound
+        // sets this, and inbounds do not come through here.
+        tproxy: None,
     };
     let empty = built.mark.is_none()
         && built.tcp_fast_open.is_none()

@@ -66,12 +66,23 @@ pub fn render(uid: u32, request: &PlanRequest) -> Vec<String> {
             cgroup::relative_path(uid, cgroup::CORE_PROFILE)
         ));
     }
-    for entry in &request.firewall.cgroup_marks {
+    for (index, entry) in request.firewall.cgroup_marks.iter().enumerate() {
+        let profile_mark = xraytui_netd_protocol::transparent_mark(uid, index + 1);
         steps.push(format!(
-            "nftables: mark traffic from cgroup {} with {:#x}",
+            "nftables: mark traffic from cgroup {} with {profile_mark:#x}",
             cgroup::relative_path(uid, &entry.profile),
-            entry.mark
         ));
+        if let Some(port) = entry.tproxy_port {
+            steps.push(format!(
+                "nftables: hand traffic marked {profile_mark:#x} to the transparent \
+                 listener on port {port}"
+            ));
+            steps.push(format!(
+                "add ip rule: fwmark {profile_mark:#x} lookup {} priority {}",
+                xraytui_netd_protocol::transparent_table_for_uid(uid),
+                routing::transparent_rule_priority(uid)
+            ));
+        }
     }
     if request.firewall.kill_switch {
         steps.push(format!(
@@ -169,7 +180,7 @@ mod tests {
             firewall: FirewallRequest {
                 cgroup_marks: vec![CgroupMark {
                     profile: "work".into(),
-                    mark: xraytui_netd_protocol::FWMARK_BASE + 1,
+                    tproxy_port: Some(19001),
                 }],
                 kill_switch: true,
                 bypass_uid: true,

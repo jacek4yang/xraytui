@@ -698,6 +698,17 @@ pub struct SockOpt {
         rename = "dialerProxy"
     )]
     pub dialer_proxy: Option<String>,
+    /// Transparent-proxy mode for a *listening* socket.
+    ///
+    /// `"tproxy"` sets `IP_TRANSPARENT`, which is what lets a `dokodemo-door`
+    /// inbound accept a connection addressed somewhere else and read the
+    /// original destination back off it. Without it the kernel will not complete
+    /// the handshake at all, because the accepted socket's local address is an
+    /// address this machine does not own — established by experiment, not
+    /// assumed; see `docs/UPSTREAM-COMPATIBILITY.md`. `"redirect"` is the
+    /// `nat`-based variant and `"off"` disables both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tproxy: Option<String>,
 }
 
 /// Serialise a configuration deterministically.

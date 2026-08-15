@@ -191,10 +191,22 @@ pub fn compute(request: &RoutingRequest, has_v4: bool, has_v6: bool) -> RoutingP
     }
 }
 
-/// The policy-rule priority reserved for a uid.
+/// The policy-rule priority reserved for a uid's tunnel.
 #[must_use]
 pub fn rule_priority(uid: u32) -> u32 {
     xraytui_netd_protocol::RULE_PRIORITY_BASE + (uid % xraytui_netd_protocol::TABLE_ID_SPAN)
+}
+
+/// The policy-rule priority reserved for a uid's transparent profiles.
+///
+/// Deliberately *higher* — evaluated later — than the tunnel's, so that a
+/// profile with its own listener takes precedence over the tunnel only when its
+/// own mark is set, and the tunnel keeps everything else.
+#[must_use]
+pub fn transparent_rule_priority(uid: u32) -> u32 {
+    xraytui_netd_protocol::RULE_PRIORITY_BASE
+        + xraytui_netd_protocol::TABLE_ID_SPAN
+        + (uid % xraytui_netd_protocol::TABLE_ID_SPAN)
 }
 
 /// `0.0.0.0/0`
@@ -347,6 +359,17 @@ mod tests {
             .rposition(|route| matches!(route, RouteAction::Tunnel(_)))
             .expect("a tunnel route");
         assert!(last_tunnel < first_throw);
+    }
+
+    #[test]
+    fn the_transparent_priority_never_collides_with_the_tunnel_priority() {
+        for uid in [0u32, 1, 63, 64, 1000, u32::MAX] {
+            assert_ne!(rule_priority(uid), transparent_rule_priority(uid));
+            assert!(transparent_rule_priority(uid) > rule_priority(uid));
+        }
+        // And no two users share either.
+        let tunnels: std::collections::BTreeSet<u32> = (0..64).map(rule_priority).collect();
+        assert_eq!(tunnels.len(), 64);
     }
 
     #[test]

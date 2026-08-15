@@ -125,11 +125,15 @@ pub const RTN_UNICAST: u8 = 1;
 pub const RTN_BLACKHOLE: u8 = 6;
 /// `RTN_UNREACHABLE`
 pub const RTN_UNREACHABLE: u8 = 7;
+/// `RTN_LOCAL` — deliver to this machine.
+pub const RTN_LOCAL: u8 = 2;
 /// `RTN_THROW` — abandon this table and continue with the next rule.
 pub const RTN_THROW: u8 = 9;
 
 /// `RT_SCOPE_UNIVERSE`
 pub const RT_SCOPE_UNIVERSE: u8 = 0;
+/// `RT_SCOPE_HOST`
+pub const RT_SCOPE_HOST: u8 = 254;
 /// `RT_SCOPE_LINK`
 pub const RT_SCOPE_LINK: u8 = 253;
 /// `RT_SCOPE_NOWHERE`

@@ -10,6 +10,32 @@ per-scenario state.
 
 ### Added
 
+* **Per-profile transparent egress — acceptance scenario M.** Two instances of
+  the same executable, launched under two profiles, take two different exits at
+  the same time, through one supervised core, with no proxy environment and no
+  dependence on the program's name. Each profile gets a `dokodemo-door` inbound
+  with `followRedirect` and `sockopt.tproxy`, tagged
+  `inbound/profile/<id>/transparent`, routed into that profile's existing
+  selector; the privileged helper marks each profile's cgroup with a mark derived
+  from the credential and redirects it to that profile's listener with
+  `tproxy ip to 127.0.0.1:<port>`. Proven end to end in a disposable namespace by
+  `crates/controller/tests/netns_transparent.rs`, which also switches one
+  profile's target through the gRPC API and asserts the other profile, the core's
+  PID and the generation are all unchanged, then asserts that teardown leaves no
+  chain, rule, route, cgroup, lease or interface behind and does not touch state
+  the test itself created.
+
+* `xraytui exec --transparent --profile P -- CMD`, which classifies **its own
+  process** into P's cgroup, confirms the classification against
+  `/proc/self/cgroup`, and only then `execve`s CMD — so there is no window in
+  which the application runs unclassified. A refusal, or an acknowledgement the
+  kernel does not agree with, means the command is not started at all.
+
+* `EgressProfile.transparent`, a loopback listener spec. Validation refuses a
+  non-loopback address, an IPv6 address, or credentials, rather than starting a
+  listener nothing can reach or silently ignoring a field.
+
+
 * A scheduler, shared by health probes and subscription updates: intervals with
   a floor, doubling backoff to a cap, jitter derived from a hash of the entry's
   key rather than a random number so deadlines are reproducible and stable

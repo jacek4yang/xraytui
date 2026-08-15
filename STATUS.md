@@ -1,14 +1,14 @@
 # Status
 
-**Not production ready**, but every mandatory component now exists. Ten of the
-fourteen acceptance scenarios are implemented and passing against a real
-Xray-core, a real kernel, a real HTTP server or a real terminal buffer; three
-more pass in part; one is not implemented and is marked as such below rather
-than claimed.
+**Not production ready**, but every mandatory component now exists. Eleven of
+the fourteen acceptance scenarios pass end to end against a real Xray-core, a
+real kernel, a real HTTP server or a real terminal buffer; one (H) passes at
+unit level only; two (D, N) pass in part. What is unfinished is listed under
+"What is not implemented" rather than described as nearly done.
 
 Read this file before trusting anything the README says.
 
-Last updated: 2026-08-12. Everything below was produced by running the commands
+Last updated: 2026-08-13. Everything below was produced by running the commands
 shown, in this repository, in the environment described at the bottom.
 
 ---
@@ -36,9 +36,13 @@ The central claim of the project is implemented and proven by test:
   so traffic stops rather than silently leaving unprotected (scenario J).
 * **Repeated enable and disable leaves nothing behind** — no interface, no
   route, no rule, no nftables chain, no lease — over three cycles (scenario K).
-* **A process is placed in its profile's cgroup by `pidfd`**, and the nftables
-  ruleset marks exactly that cgroup while exempting the core's own (scenario M,
-  in part; see below).
+* **Two instances of the same executable take two different exits at the same
+  time.** `xraytui exec --transparent --profile a` and `… --profile b` run the
+  same program, with the same arguments, to the same destination and port, with
+  no proxy environment at all; each leaves by its own profile's exit, through one
+  core. Then one profile is hot-switched through the gRPC API and its *new*
+  connections move to a third exit while the other profile does not notice, with
+  the core's PID and generation unchanged (scenario M).
 * **State this project did not create is left alone.** A route and a rule put in
   the same table by something else survive a full teardown.
 * **The interface runs at 80x24 and gives the terminal back.** Every documented
@@ -111,12 +115,12 @@ been reviewed or accepted; treat the dependency set as unaudited.
 | **E** | two-hop chain reaches the terminal through hop 1 | **passing** — proven by a connection count at the transit hop |
 | **F** | import valid/malformed/unsupported node representations | **passing** — 67 unit tests including proptests, and exercised end to end through the subscription pipeline |
 | **G** | subscription add/change/remove with diff and rollback | **passing** — `subscription/tests/transaction.rs`, against `HttpFixtureServer` |
-| H | terminal and PNG QR round-trip decode | **passing at unit level** — `render_png` → `decode_png` reproduces the exact string |
+| H | terminal and PNG QR round-trip decode | **passing at unit level only** — `render_png` → `decode_png` reproduces the exact string. Nothing scans a QR *rendered in a terminal* with a real decoder, and no user-facing export path is asserted end to end, so this is not counted among the scenarios that pass |
 | **I** | kill Xray in restore mode | **passing** — listener death observed, backoff restart scheduled and verified |
 | **J** | kill the daemon while TUN is active; lease expiry cleanup | **passing** — both mechanisms: the connection closing releases immediately, and an expired lease is reclaimed by the reaper |
 | **K** | repeated TUN enable/disable leaves no residue | **passing** — three cycles, four independent checks after each |
 | **L** | TUI usable at 80x24, restores the terminal | **passing** — `crates/tui`; drawn into a `TestBackend`, restore sequence asserted |
-| M | cgroup v2 exact-instance isolation | **partial** — classification by `pidfd` and per-cgroup marking are implemented and proven in a namespace; per-profile *transparent egress* is not (see below) |
+| **M** | cgroup v2 exact-instance isolation | **passing** — `controller/tests/netns_transparent.rs`: two instances of one executable, launched through the real CLI against the real helper and a real core, reach two different mock exits; then a gRPC switch moves one and not the other. IPv4 only — this kernel has no IPv6 (see below) |
 | N | clean build and install; nothing runs as root | **partial** — build, install manifest and units are done and verified; a from-scratch install on a clean Arch host was not performed |
 
 ## What is not implemented
@@ -124,20 +128,18 @@ been reviewed or accepted; treat the dependency set as unaudited.
 Stated plainly, because a half-built privileged component is worse than an
 absent one:
 
-1. **Per-profile transparent egress.** Scenario M asks that two instances of the
-   same program, launched under different profiles, take different exits. What
-   exists: each profile gets its own cgroup, a process is placed in one by
-   `pidfd` with an ownership check, and nftables marks that cgroup's traffic —
-   all proven in a namespace. What is missing is the last link: one user has one
-   routing table and one tunnel, so the mark decides *whether* traffic enters
-   the tunnel, not *which* exit it takes. Selecting an exit per profile needs a
-   `tproxy` inbound per profile and a policy rule per mark. The tag namespace
-   already reserves `inbound/profile/{id}/transparent` for it.
-
-   Within the tunnel, per-application routing does work: application rules are
-   compiled into Xray's `process` matchers and applied on the TUN inbound. The
-   gap is specifically *two instances of the same executable* taking different
-   exits.
+1. **The transparent path is IPv4 only, and its IPv6 half is unexecuted.** The
+   redirect rule is `tproxy ip to 127.0.0.1:<port>`, and the transparent listener
+   must bind IPv4 loopback — validation refuses anything else rather than
+   starting a listener nothing can reach. IPv6 from a transparent profile is
+   fail-closed, not leaked: the profile's mark still selects the local-delivery
+   table, where there is no redirect, so the connection is refused rather than
+   sent out unproxied. An IPv6 transparent path would need a second inbound on
+   `[::1]` and a `tproxy ip6` rule. **The kernel in this environment has no IPv6
+   at all** (`this kernel has no IPv6` appears in the helper's log during the
+   namespace run), so no IPv6 runtime path in this project has been executed —
+   including the tunnel's, which is exercised only by unit tests and by graceful
+   degradation.
 
 2. **The state store is a stub.** Runtime history and health history live in
    memory and are lost when the daemon restarts. Policy is durable — it is TOML
@@ -149,9 +151,6 @@ absent one:
 
 4. **No `cargo audit`/`cargo deny` run.** See above.
 
-5. **Health probing is not scheduled.** `xraytui node test` probes on demand and
-   works; the periodic sweep with prioritisation and backoff is not wired up.
-
 5. **The DNS backends have not been driven against a live resolver.** The
    systemd-resolved client is written against the documented `resolve1`
    interface and its marshalling is tested byte for byte; `resolvconf` is tested
@@ -160,8 +159,8 @@ absent one:
 
 ## Upstream findings
 
-Eight things were discovered by testing against a real core and a real kernel
-rather than by reading documentation. All eight are load-bearing.
+Eleven things were discovered by testing against a real core and a real kernel
+rather than by reading documentation. All eleven are load-bearing.
 
 Against Xray-core:
 
@@ -198,6 +197,25 @@ Against the kernel and userland, all four found by `scripts/netns-test.sh`:
 8. **A kernel without IPv6 answers every `AF_INET6` route message with
    `EOPNOTSUPP`,** including blackhole routes. The helper installs the IPv4 half
    and reports what it left out.
+9. **`tproxy` in an `inet` table refuses a named address without a family:**
+   "specify `tproxy ip' or `tproxy ip6' in inet table to disambiguate". Leaving
+   the address out avoids the error but then the socket lookup uses the packet's
+   *original* destination, which forces the listener to bind every address on the
+   machine. Naming `tproxy ip to 127.0.0.1:<port>` is what lets it bind loopback
+   instead, so the redirect and the listener's address are one decision.
+10. **A `tproxy` listener that does not set `IP_TRANSPARENT` never completes the
+    handshake.** The accepted socket's local address is the original destination,
+    and the kernel will not send from an address this machine does not own unless
+    the listener is transparent. Tested both ways in a namespace: with the option
+    the connection arrives with its destination intact, without it the client
+    times out. This is why the compiler emits `sockopt.tproxy` and not merely a
+    `dokodemo-door`.
+11. **`geoip:private` is RFC 6890's special-purpose registry, not RFC 1918.** It
+    includes the documentation ranges — `192.0.2.0/24`, `198.51.100.0/24`,
+    `203.0.113.0/24` — which are exactly what a test uses for a stand-in
+    destination. A private-network bypass therefore captures test traffic that
+    looks public. Found when the transparent acceptance test started answering
+    from `control/direct`.
 
 Additionally, upstream's Linux TUN opens `/dev/net/tun` itself and cannot consume
 an inherited file descriptor, which is why the design uses a persistent
@@ -225,12 +243,16 @@ fixed and forgotten:
 
 ## Privileged tests
 
-Nine of them, and they run **only inside a disposable namespace**.
+Thirteen of them, in two suites, and they run **only inside a disposable
+namespace**: twelve in `crates/linux-net/tests/netns.rs`, which prove the
+kernel-side arrangement, and one in `crates/controller/tests/netns_transparent.rs`,
+which proves acceptance scenario M through the real helper, the real command-line
+client and a real core on top of it.
 
-`sudo ./scripts/netns-test.sh` builds the test binary outside the namespace —
-building needs the network, and the namespace deliberately has none — then runs
-it inside a fresh network, mount and PID namespace with a private cgroup v2
-hierarchy. Two things stop it touching a real machine:
+`sudo ./scripts/netns-test.sh` builds the test binaries and the project's own
+binaries outside the namespace — building needs the network, and the namespace
+deliberately has none — then runs them inside a fresh network, mount and PID
+namespace with a private cgroup v2 hierarchy. Two things stop it touching a real machine:
 
 * the tests return immediately unless `XRAYTUI_NETNS_TESTS` is set, which only
   the script does;

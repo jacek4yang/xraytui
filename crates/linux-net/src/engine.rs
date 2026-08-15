@@ -474,12 +474,77 @@ impl Engine {
                 detail: error.to_string(),
             })?;
 
+        // Traffic redirected to a profile's own listener has to be delivered
+        // locally rather than sent anywhere, so each transparent profile gets a
+        // policy rule into a table whose only route says "this is for us".
+        // Without it the marked packet leaves the machine and the listener
+        // never sees it.
+        self.apply_transparent_routing(uid, request)?;
+
         lease.firewall = true;
         self.leases.put(&lease).map_err(internal)?;
         Ok(Response::plain(Outcome::Ack))
     }
 
+    /// Install the local-delivery table and one rule per transparent profile.
+    fn apply_transparent_routing(
+        &self,
+        uid: u32,
+        request: &FirewallRequest,
+    ) -> Result<(), NetdError> {
+        let priority = routing::transparent_rule_priority(uid);
+        let table = xraytui_netd_protocol::transparent_table_for_uid(uid);
+        let netlink = Netlink::open().map_err(internal)?;
+
+        // Rebuild from scratch so that removing a profile removes its rule.
+        let _ = netlink.flush_rules(&[priority]);
+        let _ = netlink.flush_owned_routes(table);
+
+        let redirecting: Vec<usize> = request
+            .cgroup_marks
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.tproxy_port.is_some())
+            .map(|(index, _)| index)
+            .collect();
+        if redirecting.is_empty() {
+            return Ok(());
+        }
+
+        // Loopback is index 1 in every namespace, but asking is cheaper than
+        // assuming and fails loudly if it is not there.
+        let loopback = netlink.link_index("lo").map_err(internal)?;
+        netlink
+            .route_add_local(table, routing::default_v4(), loopback, true)
+            .map_err(internal)?;
+        if ipv6_supported() {
+            let _ = netlink.route_add_local(table, routing::default_v6(), loopback, true);
+        }
+
+        for index in redirecting {
+            let mark = xraytui_netd_protocol::transparent_mark(uid, index + 1);
+            for family in families() {
+                if let Err(error) = netlink.rule_add_fwmark(family, priority, mark, table)
+                    && !error.is_exists()
+                {
+                    let _ = netlink.flush_rules(&[priority]);
+                    let _ = netlink.flush_owned_routes(table);
+                    return Err(NetdError::RolledBack {
+                        operation: "apply-firewall".into(),
+                        detail: error.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn clear_firewall(&self, uid: u32) -> Result<(), NetdError> {
+        if let Ok(netlink) = Netlink::open() {
+            let _ = netlink.flush_rules(&[routing::transparent_rule_priority(uid)]);
+            let _ =
+                netlink.flush_owned_routes(xraytui_netd_protocol::transparent_table_for_uid(uid));
+        }
         if self.options.nft.available() {
             let existing = self.options.nft.chains().map_err(internal)?;
             let script = crate::nft::clear_user(uid, &existing).map_err(internal)?;
@@ -587,6 +652,24 @@ impl Engine {
                 && count > 0
             {
                 removed.push(format!("{count} routes in table {table}"));
+            }
+
+            // The transparent table and its rules go whatever the failure
+            // policy is: a local-delivery route with no listener behind it
+            // would black-hole traffic in a way nobody could diagnose.
+            let transparent_table = xraytui_netd_protocol::transparent_table_for_uid(uid);
+            let transparent_priority = routing::transparent_rule_priority(uid);
+            if let Ok(count) = netlink.flush_owned_routes(transparent_table)
+                && count > 0
+            {
+                removed.push(format!("{count} routes in table {transparent_table}"));
+            }
+            if let Ok(count) = netlink.flush_rules(&[transparent_priority])
+                && count > 0
+            {
+                removed.push(format!(
+                    "{count} transparent policy rules at priority {transparent_priority}"
+                ));
             }
 
             if keep_blocking {

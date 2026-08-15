@@ -627,7 +627,11 @@ impl DesiredState {
     fn validate_listeners(&self, out: &mut Vec<Diagnostic>) {
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
         for (id, profile) in &self.profiles {
-            for (kind, listener) in [("socks", &profile.socks), ("http", &profile.http)] {
+            for (kind, listener) in [
+                ("socks", &profile.socks),
+                ("http", &profile.http),
+                ("transparent", &profile.transparent),
+            ] {
                 let Some(listener) = listener else { continue };
                 let key = listener.listen.to_string();
                 let owner = format!("profile '{id}' {kind}");
@@ -640,7 +644,37 @@ impl DesiredState {
                         .about(&owner),
                     );
                 }
-                if listener.is_exposed() {
+                if kind == "transparent" {
+                    // A transparent listener is not a proxy listener. It is
+                    // reached only through this user's own redirect, which names
+                    // 127.0.0.1 literally, so any other address produces a
+                    // listener nothing can arrive at — refused here rather than
+                    // started and left silent.
+                    if !listener.listen.ip().is_loopback() || !listener.listen.is_ipv4() {
+                        out.push(
+                            Diagnostic::error(
+                                "listener.transparent-not-loopback",
+                                format!(
+                                    "{owner} binds {key}; a transparent listener must bind \
+                                     127.0.0.1, which is the address the redirect names"
+                                ),
+                            )
+                            .about(&owner),
+                        );
+                    }
+                    if listener.username.is_some() || listener.password.is_some() {
+                        out.push(
+                            Diagnostic::error(
+                                "listener.transparent-credentials",
+                                format!(
+                                    "{owner} sets credentials, but a transparent listener has \
+                                     no authentication step for them to guard"
+                                ),
+                            )
+                            .about(&owner),
+                        );
+                    }
+                } else if listener.is_exposed() {
                     if listener.username.is_none() || listener.password.is_none() {
                         out.push(
                             Diagnostic::error(
@@ -1382,6 +1416,86 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|d| d.code == "listener.lan-without-auth"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_transparent_listener_must_bind_loopback() {
+        // The redirect names 127.0.0.1 literally, so any other address produces
+        // a listener nothing can arrive at — and, if it were routable, one the
+        // network could reach.
+        let mut state = state_with_nodes();
+        let pid = ProfileId::new("web").expect("valid");
+        let mut profile = EgressProfile::new(pid.clone(), "Web", Target::Direct);
+        profile.transparent = Some(crate::policy::ListenerSpec {
+            listen: "0.0.0.0:19007".parse().expect("addr"),
+            username: None,
+            password: None,
+        });
+        state.profiles.insert(pid, profile);
+        let diagnostics = state.validate();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "listener.transparent-not-loopback"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_transparent_listener_with_credentials_is_refused_rather_than_ignored() {
+        let mut state = state_with_nodes();
+        let pid = ProfileId::new("web").expect("valid");
+        let mut profile = EgressProfile::new(pid.clone(), "Web", Target::Direct);
+        profile.transparent = Some(crate::policy::ListenerSpec {
+            listen: "127.0.0.1:19007".parse().expect("addr"),
+            username: Some("someone".into()),
+            password: Some(xraytui_secrets::Secret::new("hunter2")),
+        });
+        state.profiles.insert(pid, profile);
+        let diagnostics = state.validate();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "listener.transparent-credentials"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_transparent_listener_collides_with_a_socks_listener_on_the_same_port() {
+        let mut state = state_with_nodes();
+        for (id, port_is_transparent) in [("web", false), ("media", true)] {
+            let pid = ProfileId::new(id).expect("valid");
+            let mut profile = EgressProfile::new(pid.clone(), id, Target::Direct);
+            let spec = crate::policy::ListenerSpec::loopback(19_007);
+            if port_is_transparent {
+                profile.transparent = Some(spec);
+            } else {
+                profile.socks = Some(spec);
+            }
+            state.profiles.insert(pid, profile);
+        }
+        let diagnostics = state.validate();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "listener.port-collision"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_loopback_transparent_listener_is_accepted_without_complaint() {
+        let mut state = state_with_nodes();
+        let pid = ProfileId::new("web").expect("valid");
+        let mut profile = EgressProfile::new(pid.clone(), "Web", Target::Direct);
+        profile.transparent = Some(crate::policy::ListenerSpec::loopback(19_007));
+        state.profiles.insert(pid, profile);
+        let diagnostics = state.validate();
+        assert!(
+            !diagnostics.iter().any(|d| d.code.starts_with("listener.")),
             "{diagnostics:?}"
         );
     }

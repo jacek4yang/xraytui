@@ -42,6 +42,11 @@ url = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "net", "time", "io-util", "fs", "signal", "sync"] }
 xraytui-xray-api = { workspace = true }
 xraytui-test-support = { workspace = true }
+# Test-only, and only for `tests/netns_transparent.rs`: acceptance scenario M is
+# a claim about the core *and* the kernel at once, so proving it needs the
+# privileged engine as well as this crate's. Nothing shipped here links against
+# it, and `xraytui-linux-net` does not depend on this crate, so there is no cycle.
+xraytui-linux-net = { workspace = true }
 url = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }

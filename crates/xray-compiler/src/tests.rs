@@ -1115,3 +1115,229 @@ fn every_generated_rule_has_exactly_one_target() {
         assert!(rule.rule_tag.is_some());
     }
 }
+
+// --- transparent listeners (acceptance scenario M) -------------------------
+
+fn state_with_a_transparent_profile() -> DesiredState {
+    let mut state = base_state();
+    let mut profile = EgressProfile::new(
+        ProfileId::new("work").expect("valid"),
+        "Work",
+        Target::Node {
+            id: NodeId::new("hk-01").expect("valid"),
+        },
+    );
+    profile.transparent = Some(ListenerSpec::loopback(19_007));
+    state.profiles.insert(profile.id.clone(), profile);
+    state
+}
+
+#[test]
+fn a_transparent_profile_gets_a_dokodemo_inbound_that_asks_for_a_transparent_socket() {
+    let compiled = compile(
+        &state_with_a_transparent_profile(),
+        &CompileOptions::default(),
+    )
+    .expect("compile");
+    let inbound = compiled
+        .config
+        .inbounds
+        .iter()
+        .find(|inbound| inbound.tag == "inbound/profile/work/transparent")
+        .expect("a transparent inbound");
+
+    assert_eq!(inbound.protocol, "dokodemo-door");
+    assert_eq!(inbound.listen.as_deref(), Some("127.0.0.1"));
+    assert_eq!(inbound.port, Some(19_007));
+    let settings = inbound.settings.as_ref().expect("settings");
+    // Without `followRedirect` the inbound forwards everything to one fixed
+    // address; it is what makes the original destination be used.
+    assert_eq!(settings["followRedirect"], serde_json::json!(true));
+    assert_eq!(settings["network"], serde_json::json!("tcp,udp"));
+    // And without the socket option the kernel refuses to complete a handshake
+    // for a connection addressed elsewhere. Proven in the namespace suite.
+    let sockopt = inbound
+        .stream_settings
+        .as_ref()
+        .and_then(|stream| stream.sockopt.as_ref())
+        .expect("sockopt");
+    assert_eq!(sockopt.tproxy.as_deref(), Some("tproxy"));
+
+    assert_eq!(
+        compiled.listeners[&ProfileId::new("work").expect("valid")].transparent,
+        Some("127.0.0.1:19007".parse().expect("address")),
+        "the daemon learns the redirect port from here, so it must be recorded"
+    );
+    assert!(
+        compiled
+            .owned_tags
+            .contains("inbound/profile/work/transparent")
+    );
+}
+
+#[test]
+fn traffic_from_a_transparent_inbound_reaches_that_profiles_own_selector() {
+    // This is the mapping acceptance scenario M depends on: one inbound tag,
+    // one selector, no sharing.
+    let compiled = compile(
+        &state_with_a_transparent_profile(),
+        &CompileOptions::default(),
+    )
+    .expect("compile");
+    let rules = &compiled.config.routing.as_ref().expect("routing").rules;
+    let rule = rules
+        .iter()
+        .find(|rule| rule.rule_tag.as_deref() == Some("rule/profile/work/inbound"))
+        .expect("the profile rule");
+    assert!(
+        rule.inbound_tag
+            .contains(&"inbound/profile/work/transparent".to_owned())
+    );
+    assert_eq!(rule.balancer_tag.as_deref(), Some("profile/work/selector"));
+
+    // And no other rule may claim that inbound tag for a different target.
+    let claimants: Vec<&str> = rules
+        .iter()
+        .filter(|rule| {
+            rule.inbound_tag
+                .iter()
+                .any(|tag| tag == "inbound/profile/work/transparent")
+        })
+        .filter_map(|rule| rule.balancer_tag.as_deref())
+        .collect();
+    assert_eq!(claimants, vec!["profile/work/selector"]);
+}
+
+#[test]
+fn every_transparent_inbound_maps_to_exactly_one_selector() {
+    let mut state = state_with_a_transparent_profile();
+    let mut second = EgressProfile::new(
+        ProfileId::new("media").expect("valid"),
+        "Media",
+        Target::Node {
+            id: NodeId::new("jp-02").expect("valid"),
+        },
+    );
+    second.transparent = Some(ListenerSpec::loopback(19_008));
+    state.profiles.insert(second.id.clone(), second);
+
+    let compiled = compile(&state, &CompileOptions::default()).expect("compile");
+    let rules = &compiled.config.routing.as_ref().expect("routing").rules;
+    for id in ["work", "media"] {
+        let tag = format!("inbound/profile/{id}/transparent");
+        let targets: Vec<&str> = rules
+            .iter()
+            .filter(|rule| rule.inbound_tag.contains(&tag))
+            .filter_map(|rule| rule.balancer_tag.as_deref())
+            .collect();
+        assert_eq!(
+            targets,
+            vec![format!("profile/{id}/selector").as_str()],
+            "{tag} must reach exactly its own selector"
+        );
+    }
+}
+
+#[test]
+fn a_profile_without_a_transparent_listener_gets_no_transparent_inbound() {
+    let mut state = state_with_a_transparent_profile();
+    state
+        .profiles
+        .get_mut(&ProfileId::new("work").expect("valid"))
+        .expect("the profile")
+        .transparent = None;
+    let compiled = compile(&state, &CompileOptions::default()).expect("compile");
+    assert!(
+        !compiled
+            .config
+            .inbounds
+            .iter()
+            .any(|inbound| inbound.tag.ends_with("/transparent"))
+    );
+    assert!(
+        !compiled
+            .owned_tags
+            .iter()
+            .any(|tag| tag.ends_with("/transparent"))
+    );
+}
+
+#[test]
+fn private_space_bypasses_a_transparent_profile_before_the_profile_can_claim_it() {
+    // Order is the whole point: the profile rule matches by inbound tag alone,
+    // so a bypass placed after it would never be reached.
+    let compiled = compile(
+        &state_with_a_transparent_profile(),
+        &CompileOptions::default(),
+    )
+    .expect("compile");
+    let rules = &compiled.config.routing.as_ref().expect("routing").rules;
+    let bypass = rules
+        .iter()
+        .position(|rule| rule.rule_tag.as_deref() == Some("rule/system/transparent-private-direct"))
+        .expect("the transparent private bypass");
+    let profile = rules
+        .iter()
+        .position(|rule| rule.rule_tag.as_deref() == Some("rule/profile/work/inbound"))
+        .expect("the profile rule");
+    assert!(bypass < profile, "the bypass must come first");
+    assert_eq!(
+        rules[bypass].outbound_tag.as_deref(),
+        Some(tags::CONTROL_DIRECT)
+    );
+    assert_eq!(rules[bypass].ip, vec!["geoip:private".to_owned()]);
+    // It applies only to traffic that never opted in.
+    assert_eq!(
+        rules[bypass].inbound_tag,
+        vec!["inbound/profile/work/transparent".to_owned()]
+    );
+}
+
+#[test]
+fn the_private_bypass_is_absent_when_the_user_turned_it_off() {
+    let options = CompileOptions {
+        bypass_private_networks: false,
+        ..Default::default()
+    };
+    let compiled = compile(&state_with_a_transparent_profile(), &options).expect("compile");
+    assert!(
+        !compiled
+            .config
+            .routing
+            .as_ref()
+            .expect("routing")
+            .rules
+            .iter()
+            .any(|rule| rule.rule_tag.as_deref() == Some("rule/system/transparent-private-direct"))
+    );
+}
+
+#[test]
+fn a_transparent_inbound_has_its_dns_intercepted_like_the_tunnel() {
+    // The redirect is by mark, not by port, so port 53 arrives here too. Left
+    // alone it would be forwarded to whatever the application thought its
+    // resolver was, which is exactly the leak the DNS module exists to close.
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let compiled = compile(&state_with_a_transparent_profile(), &options).expect("compile");
+    let rule = compiled
+        .config
+        .routing
+        .as_ref()
+        .expect("routing")
+        .rules
+        .iter()
+        .find(|rule| rule.rule_tag.as_deref() == Some("rule/system/dns-intercept"))
+        .expect("the dns intercept rule");
+    assert!(
+        rule.inbound_tag
+            .contains(&"inbound/profile/work/transparent".to_owned()),
+        "{:?}",
+        rule.inbound_tag
+    );
+}

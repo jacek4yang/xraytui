@@ -11,7 +11,12 @@ repository.workspace = true
 xraytui-netd-protocol = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-rustix = { workspace = true, features = ["net", "fs", "process", "system"] }
+# `std` is not optional here even though the workspace default is off: this
+# crate hands `rustix` types and `std::os::fd` types to each other, and without
+# it `rustix::fd::BorrowedFd` is a distinct type. It was previously supplied by
+# accident, through a dev-dependency, so the library compiled under `cargo test`
+# and not on its own.
+rustix = { workspace = true, features = ["std", "net", "fs", "process", "system"] }
 libc = { workspace = true }
 ipnet = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "rt", "time", "sync"] }

@@ -17,6 +17,10 @@ xraytui-ipc = { workspace = true }
 xraytui-tui = { workspace = true }
 xraytui-import = { workspace = true }
 xraytui-config = { workspace = true }
+# For `exec --transparent`: the helper wire protocol and the cgroup path
+# helper live here, and there must be exactly one implementation of both.
+xraytui-linux-net = { workspace = true }
+xraytui-netd-protocol = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }

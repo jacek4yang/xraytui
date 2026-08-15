@@ -51,10 +51,13 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
     match &cli.command {
         Some(Command::Completion { shell }) => return print_completion(*shell),
         Some(Command::Manpages { directory }) => return write_manpages(directory),
+        // Transparent mode is handled here, before the daemon connection,
+        // because it does not need one: what it needs is the configuration on
+        // disk, a listener that is actually up, and the privileged helper. A
+        // daemon that is busy — or restarting — is no reason to refuse to launch
+        // a command, and the daemon is not what decides where the traffic goes.
         Some(Command::Exec(args)) if args.transparent => {
-            if let Err(reason) = exec::check_transparent_available(&args.profile) {
-                return Err(CliError::Other(reason.to_string()));
-            }
+            return run_exec_transparent(&paths, args).await;
         }
         _ => {}
     }
@@ -1097,6 +1100,51 @@ async fn run_exec(client: &mut Client, args: crate::args::ExecArgs) -> Result<()
     }
     exec::run_with_environment(&environment, &args.command)?;
     Ok(())
+}
+
+/// `xraytui exec --transparent` — classify this process, then become the command.
+///
+/// Everything is checked before anything is done, and every failure is fatal:
+/// the alternative is starting the command with its traffic going somewhere the
+/// user did not ask for, while reporting success.
+async fn run_exec_transparent(
+    paths: &xraytui_config::Paths,
+    args: &crate::args::ExecArgs,
+) -> Result<(), CliError> {
+    if let Err(reason) = exec::check_transparent_available(&args.profile) {
+        return Err(CliError::Other(reason.to_string()));
+    }
+    let id = parse_id::<xraytui_domain::ProfileId>(&args.profile, "profile")?;
+    let desired =
+        xraytui_config::store::load(paths).map_err(|error| CliError::Other(error.to_string()))?;
+    let profile = desired
+        .profiles
+        .get(&id)
+        .ok_or_else(|| CliError::NotFound(format!("profile '{}' does not exist", args.profile)))?;
+    let Some(listener) = profile.transparent.as_ref().filter(|_| profile.enabled) else {
+        return Err(CliError::Other(
+            exec::TransparentUnavailable::NoInbound {
+                profile: args.profile.clone(),
+            }
+            .to_string(),
+        ));
+    };
+    // The redirect points at this address, so if nothing is listening the
+    // traffic would be dropped by the kernel rather than proxied. Asking whether
+    // the port can still be *bound* answers that without connecting to it —
+    // which matters, because connecting to a transparent listener is exactly the
+    // loop the ruleset exists to prevent.
+    if std::net::TcpListener::bind(listener.listen).is_ok() {
+        return Err(CliError::Other(
+            exec::TransparentUnavailable::NotListening {
+                profile: args.profile.clone(),
+                address: listener.listen.to_string(),
+            }
+            .to_string(),
+        ));
+    }
+    exec::classify_and_exec(&exec::netd_socket(), &args.profile, &args.command).await?;
+    unreachable!("classify_and_exec does not return on success")
 }
 
 // ------------------------------------------------------------------ helpers

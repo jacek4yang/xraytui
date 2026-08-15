@@ -126,15 +126,207 @@ pub enum TransparentUnavailable {
          Drop --transparent to use proxy environment variables instead."
     )]
     NoCgroupV2,
-    /// The profile has no transparent inbound configured.
+    /// The profile has no transparent listener configured.
     #[error(
-        "profile '{profile}' has no transparent inbound.\n\
-         Set `transparent_inbound = true` on it and restart the core."
+        "profile '{profile}' has no transparent listener, so there is nowhere for \
+         its traffic to go.\n\
+         Give it one — `transparent` with a loopback port of its own — and restart \
+         the core."
     )]
     NoInbound {
         /// Profile that was asked for.
         profile: String,
     },
+    /// The profile has a transparent listener configured, but nothing is on it.
+    #[error(
+        "profile '{profile}' has a transparent listener at {address}, but nothing \
+         is listening there.\n\
+         Its traffic would be redirected to a closed port and dropped, so the \
+         command was not started. Start the core with `xraytui up`."
+    )]
+    NotListening {
+        /// Profile that was asked for.
+        profile: String,
+        /// Where the listener should have been.
+        address: String,
+    },
+    /// The helper refused to classify this process.
+    #[error(
+        "the privileged helper refused to place this process in profile \
+         '{profile}': {reason}\n\
+         The command was not started: running it now would send its traffic \
+         somewhere other than where you asked."
+    )]
+    Refused {
+        /// Profile that was asked for.
+        profile: String,
+        /// The helper's own words.
+        reason: String,
+    },
+    /// The helper said yes, but the kernel does not agree.
+    #[error(
+        "this process was not actually placed in profile '{profile}' \
+         (own cgroup: {actual}).\n\
+         The command was not started."
+    )]
+    NotClassified {
+        /// Profile that was asked for.
+        profile: String,
+        /// What `/proc/self/cgroup` says instead.
+        actual: String,
+    },
+}
+
+/// Where the helper listens, unless overridden.
+pub const NETD_SOCKET: &str = "/run/xraytui/netd.sock";
+
+/// The helper socket to use.
+///
+/// The environment variable exists so a test — or an unusual installation — can
+/// point the client at a helper somewhere else. It changes only which helper
+/// *this* process talks to, and the helper still decides everything that
+/// matters from the connecting credential, so it grants nothing.
+#[must_use]
+pub fn netd_socket() -> std::path::PathBuf {
+    std::env::var_os("XRAYTUI_NETD_SOCKET")
+        .map_or_else(|| std::path::PathBuf::from(NETD_SOCKET), Into::into)
+}
+
+/// Put **this** process in a profile's cgroup, then become `command`.
+///
+/// # Why there is no child to race
+///
+/// The obvious implementation spawns the command, then classifies it, and has to
+/// keep it from opening a socket in between — a barrier, a pipe, a released
+/// child, and a window that has to be argued about. This does not have that
+/// window at all: the process that will *become* the application classifies
+/// itself first and calls `execve` afterwards.
+///
+/// That works because of two kernel properties:
+///
+/// * cgroup membership is a property of the thread group and survives `execve`,
+///   so the program that replaces this image is already classified before its
+///   first instruction;
+/// * a socket's cgroup is recorded when the socket is *created*, so this
+///   process's existing connections — to the daemon and to the helper — keep the
+///   cgroup they were made in and are not redirected. They are also
+///   close-on-exec, so they are gone by the time the command runs.
+///
+/// The application therefore cannot create a connection before classification,
+/// because it does not exist before classification.
+///
+/// # Failure policy
+///
+/// Refusal is fatal, deliberately. If the helper says no, or says yes and the
+/// kernel disagrees, the command is **not** started: silently running it
+/// unclassified would send traffic out of the machine by a path the user did not
+/// choose, while the tool reported success. Both failures are reported with the
+/// profile named.
+///
+/// # Errors
+/// [`CliError::Other`] carrying a [`TransparentUnavailable`] when the helper
+/// refuses or the classification does not take effect, and [`CliError::Io`] when
+/// the command itself cannot be executed. On success this function does not
+/// return.
+pub async fn classify_and_exec(
+    socket: &std::path::Path,
+    profile: &str,
+    command: &[String],
+) -> Result<std::convert::Infallible, CliError> {
+    use std::os::unix::process::CommandExt as _;
+
+    let (program, arguments) = command
+        .split_first()
+        .ok_or_else(|| CliError::Usage("no command was given after `--`".to_owned()))?;
+
+    let mut client = xraytui_linux_net::transport::NetdClient::connect(socket)
+        .await
+        .map_err(|error| refusal(profile, &error))?;
+    classify_here(&mut client, profile)
+        .await
+        .map_err(|reason| CliError::Other(reason.to_string()))?;
+
+    let mut child = std::process::Command::new(program);
+    child.args(arguments);
+    let error = child.exec();
+    Err(CliError::Io {
+        context: format!("cannot execute {program}"),
+        source: error,
+    })
+}
+
+/// Ask the helper to classify this process, and check that it worked.
+///
+/// Separate from [`classify_and_exec`] because everything interesting happens
+/// here and nothing here replaces the process image, so it can be tested.
+///
+/// # Errors
+/// [`TransparentUnavailable::Refused`] when the helper says no, and
+/// [`TransparentUnavailable::NotClassified`] when it says yes but the kernel
+/// disagrees — which is checked rather than assumed, because the helper's answer
+/// is not what decides where the traffic goes.
+pub async fn classify_here(
+    client: &mut xraytui_linux_net::transport::NetdClient,
+    profile: &str,
+) -> Result<(), TransparentUnavailable> {
+    use std::os::fd::AsFd as _;
+
+    let uid = rustix::process::getuid().as_raw();
+    let pidfd = rustix::process::pidfd_open(
+        rustix::process::getpid(),
+        rustix::process::PidfdFlags::empty(),
+    )
+    .map_err(|error| TransparentUnavailable::Refused {
+        profile: profile.to_owned(),
+        reason: format!("cannot open a descriptor for this process: {error}"),
+    })?;
+
+    client
+        .call_with(
+            xraytui_netd_protocol::Operation::ClassifyProcess {
+                profile: profile.to_owned(),
+            },
+            &[pidfd.as_fd()],
+        )
+        .await
+        .map_err(|error| TransparentUnavailable::Refused {
+            profile: profile.to_owned(),
+            reason: error.to_string(),
+        })?;
+
+    let expected = xraytui_linux_net::cgroup::relative_path(uid, profile);
+    let actual = own_cgroup().unwrap_or_default();
+    if actual.trim_end_matches('/').ends_with(&expected) {
+        Ok(())
+    } else {
+        Err(TransparentUnavailable::NotClassified {
+            profile: profile.to_owned(),
+            actual,
+        })
+    }
+}
+
+fn refusal(profile: &str, error: &impl std::fmt::Display) -> CliError {
+    CliError::Other(
+        TransparentUnavailable::Refused {
+            profile: profile.to_owned(),
+            reason: error.to_string(),
+        }
+        .to_string(),
+    )
+}
+
+/// This process's cgroup v2 path, as the kernel sees it.
+///
+/// The unified hierarchy is the line with an empty controller list, which is the
+/// `0::` prefix.
+fn own_cgroup() -> Option<String> {
+    std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("0::").map(str::to_owned))
+        })
 }
 
 /// Check whether the transparent backend can be used, without using it.
@@ -149,7 +341,7 @@ pub fn check_transparent_available(profile: &str) -> Result<(), TransparentUnava
     if !std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
         return Err(TransparentUnavailable::NoCgroupV2);
     }
-    if !std::path::Path::new("/run/xraytui/netd.sock").exists() {
+    if !netd_socket().exists() {
         return Err(TransparentUnavailable::NoHelper);
     }
     let _ = profile;
@@ -257,6 +449,118 @@ mod tests {
         let env = ProxyEnvironment::build(None, None, "");
         let error = run_with_environment(&env, &[]).expect_err("must refuse");
         assert!(matches!(error, CliError::Usage(_)), "{error:?}");
+    }
+
+    // --- the launch barrier ------------------------------------------------
+
+    /// A helper that answers whatever it is told to, so the *client's* half of
+    /// the contract can be tested without root.
+    async fn fake_helper(
+        reply: Result<xraytui_netd_protocol::Outcome, xraytui_netd_protocol::NetdError>,
+    ) -> xraytui_linux_net::transport::NetdClient {
+        let (ours, theirs) = tokio::net::UnixStream::pair().expect("socketpair");
+        tokio::spawn(async move {
+            let received: Result<
+                (
+                    xraytui_netd_protocol::NetdRequest,
+                    Vec<std::os::fd::OwnedFd>,
+                ),
+                _,
+            > = xraytui_linux_net::transport::receive_message(&theirs).await;
+            let Ok((request, descriptors)) = received else {
+                return;
+            };
+            // The pidfd is the whole point of the operation; a helper that got
+            // none could not act, so the test asserts the client sent one.
+            assert_eq!(descriptors.len(), 1, "a pidfd must be attached");
+            let response = xraytui_netd_protocol::NetdReply {
+                id: request.id,
+                result: reply,
+            };
+            let _ = xraytui_linux_net::transport::send_message(&theirs, &response, &[]).await;
+        });
+        xraytui_linux_net::transport::NetdClient::from_stream(ours)
+    }
+
+    #[tokio::test]
+    async fn a_helper_that_says_yes_without_classifying_is_not_believed() {
+        // The helper's answer is not what decides where traffic goes, so a bare
+        // acknowledgement is checked against the kernel — and this test process
+        // is certainly not in a profile cgroup.
+        let mut client = fake_helper(Ok(xraytui_netd_protocol::Outcome::Ack)).await;
+        let error = classify_here(&mut client, "work")
+            .await
+            .expect_err("must not be believed");
+        assert!(
+            matches!(error, TransparentUnavailable::NotClassified { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("was not started"));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_names_the_profile_and_says_nothing_was_started() {
+        let mut client = fake_helper(Err(xraytui_netd_protocol::NetdError::Denied(
+            "that process is not yours".into(),
+        )))
+        .await;
+        let error = classify_here(&mut client, "work")
+            .await
+            .expect_err("must refuse");
+        assert!(
+            matches!(error, TransparentUnavailable::Refused { .. }),
+            "{error:?}"
+        );
+        let rendered = error.to_string();
+        assert!(rendered.contains("work"), "{rendered}");
+        assert!(rendered.contains("not started"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn a_command_is_never_run_when_classification_fails() {
+        // The failure policy, proven by side effect rather than asserted: the
+        // command would create a file, and the file must not appear.
+        let directory = std::env::temp_dir().join(format!(
+            "xraytui-exec-barrier-{}",
+            rustix::process::getpid().as_raw_nonzero()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("temp dir");
+        let witness = directory.join("the-command-ran");
+
+        let missing = directory.join("no-helper-here.sock");
+        let error = classify_and_exec(
+            &missing,
+            "work",
+            &["touch".to_owned(), witness.display().to_string()],
+        )
+        .await
+        .expect_err("must refuse");
+
+        assert!(error.to_string().contains("work"), "{error}");
+        assert!(
+            !witness.exists(),
+            "the command ran even though classification failed"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_transparent_backend_never_reads_the_proxy_environment() {
+        // Scenario M's whole point: the distinction between two instances comes
+        // from the cgroup, not from variables an application might honour. If
+        // this file ever starts building a `ProxyEnvironment` for the
+        // transparent path, this test should be the thing that notices.
+        let source = include_str!("exec.rs");
+        let transparent = source
+            .split("pub async fn classify_and_exec")
+            .nth(1)
+            .expect("the transparent entry point");
+        let body = transparent.split("\n}\n").next().expect("its body");
+        assert!(
+            !body.contains("ProxyEnvironment"),
+            "the transparent path must not depend on proxy variables"
+        );
     }
 
     #[test]

@@ -58,6 +58,15 @@ pub const TABLE_ID_SPAN: u32 = 64;
 pub const FWMARK_BASE: u32 = 0x7261_0000;
 /// Number of marks reserved.
 pub const FWMARK_SPAN: u32 = 0x0000_1000;
+/// Mask selecting the reserved band, for a policy rule that catches all of it.
+pub const FWMARK_MASK: u32 = 0xffff_0000;
+/// Bits of a mark that identify the profile within a user's allocation.
+pub const PROFILE_SLOT_BITS: u32 = 6;
+/// Transparent profiles one user may have at once.
+///
+/// Slot 0 is the user's tunnel, so 63 profiles remain. Nobody has 63 profiles;
+/// the limit exists so that one user's marks provably cannot reach another's.
+pub const MAX_TRANSPARENT_PROFILES: usize = (1 << PROFILE_SLOT_BITS) - 1;
 
 /// Lowest policy-routing rule priority the helper will use.
 pub const RULE_PRIORITY_BASE: u32 = 17_000;
@@ -94,10 +103,38 @@ pub fn table_for_uid(uid: u32) -> u32 {
     TABLE_ID_BASE + (uid % TABLE_ID_SPAN)
 }
 
-/// The firewall mark reserved for a UID.
+/// The firewall mark reserved for a UID's system tunnel.
+///
+/// A mark is `FWMARK_BASE | uid_slot << 6 | profile_slot`, and the tunnel is
+/// profile slot zero. Splitting the reserved band this way is what lets one
+/// user have several *distinguishable* marks — which is how traffic from two
+/// instances of the same program reaches two different exits — while keeping
+/// every mark a user can obtain inside their own allocation.
 #[must_use]
 pub fn fwmark_for_uid(uid: u32) -> u32 {
-    FWMARK_BASE + (uid % FWMARK_SPAN)
+    transparent_mark(uid, 0)
+}
+
+/// The firewall mark reserved for one of a UID's transparent profiles.
+///
+/// `slot` is the profile's position in the sorted list the caller sent, so it
+/// is derived rather than asserted: a client cannot ask for a particular mark,
+/// and therefore cannot ask for somebody else's.
+#[must_use]
+pub fn transparent_mark(uid: u32, slot: usize) -> u32 {
+    let uid_slot = uid % TABLE_ID_SPAN;
+    let profile_slot = (slot as u32) & ((1 << PROFILE_SLOT_BITS) - 1);
+    FWMARK_BASE | (uid_slot << PROFILE_SLOT_BITS) | profile_slot
+}
+
+/// The routing table that delivers transparently-proxied traffic locally.
+///
+/// Separate from the tunnel table because the two hold contradictory default
+/// routes: the tunnel's sends traffic to the device, this one keeps it on the
+/// machine so a `tproxy` rule can hand it to a listener.
+#[must_use]
+pub fn transparent_table_for_uid(uid: u32) -> u32 {
+    TABLE_ID_BASE + TABLE_ID_SPAN + (uid % TABLE_ID_SPAN)
 }
 
 /// The interface name reserved for a UID's system TUN.
@@ -287,12 +324,24 @@ pub struct FirewallRequest {
 }
 
 /// One cgroup-to-mark classification.
+///
+/// **No mark appears here.** The helper derives it from the calling UID and the
+/// profile's position in the sorted list, for the same reason no message
+/// carries a UID: a value a client can choose is a value a client can choose
+/// *badly*, and a mark that reached another user's allocation would route their
+/// traffic into this user's listener.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CgroupMark {
     /// Profile identifier, used to derive the cgroup path.
     pub profile: String,
-    /// Mark to apply. Must be inside the reserved range.
-    pub mark: u32,
+    /// Local port of this profile's transparent listener.
+    ///
+    /// When set, traffic from the profile's cgroup is redirected there with
+    /// `tproxy` — which is what lets two instances of the same program take
+    /// different exits. When unset, the traffic is merely marked for the
+    /// system tunnel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tproxy_port: Option<u16>,
 }
 
 /// Parameters for [`Operation::ApplyDns`].
@@ -595,14 +644,43 @@ fn validate_firewall(request: &FirewallRequest) -> Result<(), NetdError> {
             request.cgroup_marks.len()
         )));
     }
+    if request.cgroup_marks.len() > MAX_TRANSPARENT_PROFILES {
+        return Err(NetdError::Refused(format!(
+            "{} profiles asked for a mark; at most {MAX_TRANSPARENT_PROFILES} fit in one \
+             user's reserved allocation",
+            request.cgroup_marks.len()
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
     for entry in &request.cgroup_marks {
         validate_profile(&entry.profile)?;
-        if !(FWMARK_BASE..FWMARK_BASE + FWMARK_SPAN).contains(&entry.mark) {
+        if !seen.insert(entry.profile.as_str()) {
             return Err(NetdError::Refused(format!(
-                "mark {:#x} is outside the reserved range {:#x}..{:#x}",
-                entry.mark,
-                FWMARK_BASE,
-                FWMARK_BASE + FWMARK_SPAN
+                "profile {:?} appears twice; each needs its own mark",
+                entry.profile
+            )));
+        }
+        if entry.tproxy_port == Some(0) {
+            return Err(NetdError::Refused(format!(
+                "profile {:?} asked for a transparent listener on port 0",
+                entry.profile
+            )));
+        }
+    }
+    // Two profiles redirected to one listener is not a configuration, it is a
+    // mistake: whichever mark arrived would be answered by whichever profile
+    // owns that inbound, so one profile's traffic would silently take the
+    // other's egress. The caller's own validation should catch it first; the
+    // helper checks anyway, because it does not trust the caller.
+    let mut ports = std::collections::BTreeMap::new();
+    for entry in &request.cgroup_marks {
+        let Some(port) = entry.tproxy_port else {
+            continue;
+        };
+        if let Some(previous) = ports.insert(port, entry.profile.as_str()) {
+            return Err(NetdError::Refused(format!(
+                "profiles {:?} and {:?} both want the transparent listener on port {port}",
+                previous, entry.profile
             )));
         }
     }
@@ -812,19 +890,164 @@ mod tests {
     }
 
     #[test]
-    fn marks_outside_the_reserved_range_are_refused() {
+    fn a_mark_cannot_be_asked_for_at_all_so_it_cannot_reach_another_user() {
+        // Every mark one user can obtain lies inside their own allocation, and
+        // no allocation overlaps another's, for every uid.
+        for uid in [0u32, 1, 1000, 1001, 65_534, u32::MAX] {
+            let mine: std::collections::BTreeSet<u32> = (0..=MAX_TRANSPARENT_PROFILES)
+                .map(|slot| transparent_mark(uid, slot))
+                .collect();
+            assert_eq!(mine.len(), MAX_TRANSPARENT_PROFILES + 1);
+            assert!(mine.contains(&fwmark_for_uid(uid)));
+            for mark in &mine {
+                assert_eq!(
+                    mark & FWMARK_MASK,
+                    FWMARK_BASE,
+                    "{mark:#x} left the reserved band"
+                );
+            }
+            // A different uid slot gets a disjoint set.
+            let theirs: std::collections::BTreeSet<u32> = (0..=MAX_TRANSPARENT_PROFILES)
+                .map(|slot| transparent_mark(uid.wrapping_add(1), slot))
+                .collect();
+            assert!(
+                mine.is_disjoint(&theirs),
+                "uid {uid} and uid {} share a mark",
+                uid.wrapping_add(1)
+            );
+        }
+    }
+
+    #[test]
+    fn more_profiles_than_fit_in_one_allocation_are_refused() {
         let request = FirewallRequest {
-            cgroup_marks: vec![CgroupMark {
-                profile: "web".into(),
-                mark: 0x1234,
-            }],
+            cgroup_marks: (0..=MAX_TRANSPARENT_PROFILES)
+                .map(|index| CgroupMark {
+                    profile: format!("p{index}"),
+                    tproxy_port: Some(10_000 + index as u16),
+                })
+                .collect(),
             kill_switch: false,
             bypass_uid: true,
         };
         let error = Operation::ApplyFirewall(request)
             .validate(1000)
             .expect_err("must refuse");
-        assert!(error.to_string().contains("reserved range"), "{error}");
+        assert!(error.to_string().contains("reserved allocation"), "{error}");
+    }
+
+    #[test]
+    fn two_profiles_cannot_share_one_transparent_listener() {
+        // Both would be redirected to whichever profile owns that inbound, so
+        // one profile's traffic would leave by the other's egress — silently.
+        let request = FirewallRequest {
+            cgroup_marks: vec![
+                CgroupMark {
+                    profile: "web".into(),
+                    tproxy_port: Some(12_000),
+                },
+                CgroupMark {
+                    profile: "media".into(),
+                    tproxy_port: Some(12_000),
+                },
+            ],
+            kill_switch: false,
+            bypass_uid: true,
+        };
+        let error = Operation::ApplyFirewall(request)
+            .validate(1000)
+            .expect_err("a shared listener must be refused");
+        assert!(error.to_string().contains("12000"), "{error}");
+    }
+
+    #[test]
+    fn a_profile_without_a_listener_does_not_collide_with_another_one() {
+        let request = FirewallRequest {
+            cgroup_marks: vec![
+                CgroupMark {
+                    profile: "web".into(),
+                    tproxy_port: None,
+                },
+                CgroupMark {
+                    profile: "media".into(),
+                    tproxy_port: None,
+                },
+            ],
+            kill_switch: false,
+            bypass_uid: true,
+        };
+        assert!(Operation::ApplyFirewall(request).validate(1000).is_ok());
+    }
+
+    #[test]
+    fn every_slot_in_a_users_allocation_gets_a_distinct_mark() {
+        // Deterministic allocation: same uid and slot, same mark, every time —
+        // and no two slots collide, which is what keeps two profiles' traffic
+        // apart at prerouting.
+        let mut seen = std::collections::BTreeSet::new();
+        for slot in 0..=MAX_TRANSPARENT_PROFILES {
+            let mark = transparent_mark(1000, slot);
+            assert_eq!(mark, transparent_mark(1000, slot), "not deterministic");
+            assert!(
+                seen.insert(mark),
+                "slot {slot} collided with an earlier one"
+            );
+            assert_eq!(
+                mark & FWMARK_MASK,
+                FWMARK_BASE & FWMARK_MASK,
+                "slot {slot} left this project's reserved range"
+            );
+        }
+        // And two users never share one, however many profiles they have.
+        for slot in 0..=MAX_TRANSPARENT_PROFILES {
+            assert!(
+                !seen.contains(&transparent_mark(1001, slot)),
+                "uid 1001 slot {slot} collided with uid 1000"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_named_twice_is_refused_rather_than_given_two_marks() {
+        let request = FirewallRequest {
+            cgroup_marks: vec![
+                CgroupMark {
+                    profile: "web".into(),
+                    tproxy_port: Some(12_000),
+                },
+                CgroupMark {
+                    profile: "web".into(),
+                    tproxy_port: Some(12_001),
+                },
+            ],
+            kill_switch: false,
+            bypass_uid: true,
+        };
+        assert!(
+            Operation::ApplyFirewall(request).validate(1000).is_err(),
+            "a duplicate profile would silently take two slots"
+        );
+    }
+
+    #[test]
+    fn a_transparent_listener_on_port_zero_is_refused() {
+        let request = FirewallRequest {
+            cgroup_marks: vec![CgroupMark {
+                profile: "web".into(),
+                tproxy_port: Some(0),
+            }],
+            kill_switch: false,
+            bypass_uid: true,
+        };
+        assert!(Operation::ApplyFirewall(request).validate(1000).is_err());
+    }
+
+    #[test]
+    fn the_transparent_table_never_collides_with_the_tunnel_table() {
+        for uid in [0u32, 1, 63, 64, 1000, u32::MAX] {
+            assert_ne!(table_for_uid(uid), transparent_table_for_uid(uid));
+            assert!(transparent_table_for_uid(uid) >= TABLE_ID_BASE + TABLE_ID_SPAN);
+        }
     }
 
     #[test]
