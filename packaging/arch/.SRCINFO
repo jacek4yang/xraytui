@@ -1,0 +1,27 @@
+pkgbase = xraytui
+	pkgdesc = Terminal client for Xray-core with multiple concurrent egress profiles
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/jacek4yang/xraytui
+	install = xraytui.install
+	arch = x86_64
+	license = GPL-3.0-or-later
+	makedepends = pkgconf
+	makedepends = protobuf
+	makedepends = rust
+	depends = glibc
+	depends = libgcc
+	depends = iproute2
+	depends = nftables
+	depends = sqlite
+	depends = systemd
+	depends = xray
+	optdepends = dmenu: profile and target pickers for dwm
+	optdepends = systemd-resolvconf: DNS management through resolvconf
+	optdepends = openresolv: alternative DNS management through resolvconf
+	options = !debug
+	options = !lto
+	source = xraytui-1.0.0.tar.gz::https://github.com/jacek4yang/xraytui/releases/download/v1.0.0/xraytui-1.0.0.tar.gz
+	sha256sums = cb46d312c2a1615368d0a3937d1dd024c2bb768a0febe8ed36c9bf53c9cf06b3
+
+pkgname = xraytui
