@@ -34,7 +34,7 @@ optdepends=(
 )
 install=xraytui.install
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
-sha256sums=('b939bd303cd18a68451e2a5185e9c3284fd4e0edead92dde4e2fab755b1da4ff')
+sha256sums=('7624a9362f56ebc1e3beca804d765fc8bb3a28336dad850b6928a1dd7740ac9f')
 
 prepare() {
   cd "$pkgname-$pkgver"
