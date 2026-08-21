@@ -22,19 +22,21 @@ full, including `recovery-baseline`, `v1.0.0-rc1`, `main` and `release/v1`.
 * The source snapshot and Git bundle were checksum-verified and restored to the
   same tagged tree.
 
-## 1.0.0 release work
+## 1.0.0 release result
 
-* Correct the repository/version metadata and remove stale pre-implementation
-  documentation.
-* Replace the rc1 PKGBUILD's local unchecked source with a deterministic GitHub
-  release asset, fixed checksum, complete dependency list and frozen full test
-  build.
-* Keep `xraytui-netd` as an explicitly enabled system service rather than asking
-  the user service manager to start it.
-* Add GitHub quality, security-policy and clean Arch package checks.
-* Re-run the full quality, smoke, audit, package and live systemd-resolved gates.
-* Merge the release PR, tag the merge commit, upload source/binary/checksum
-  assets, and verify the public 1.0.0 release.
+* Repository/version metadata and stale pre-implementation documentation were
+  corrected.
+* The rc1 PKGBUILD was replaced by an immutable, checksum-pinned release source,
+  complete runtime/build dependencies, frozen full tests and the canonical
+  installer. A clean current-Arch build, package install and `namcap` passed.
+* `xraytui-netd` remains an explicitly enabled system service; the user manager
+  no longer tries to start a unit from the wrong manager.
+* GitHub quality, security-policy and clean Arch package checks run on PRs and
+  `main`.
+* Full quality, real-Xray smoke, audit, deny, 12+1 namespace, live
+  systemd-resolved and package gates passed. `STATUS.md` records the evidence.
+* The release PR is merged before `v1.0.0` is tagged; source/binary/checksum
+  assets are attached to the public GitHub release and verified after upload.
 
 ## Support boundary
 

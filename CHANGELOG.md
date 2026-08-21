@@ -114,8 +114,13 @@ First daily-use release. See `STATUS.md` for the measured acceptance matrix and
 * The Arch package now uses the real repository and immutable release asset,
   verifies its checksum, declares complete dependencies, and installs through
   the canonical manifest.
+* Clean Arch builds now link the distribution's SQLite and disable makepkg's
+  incompatible global GCC LTO for native Rust dependency archives; the
+  workspace's own Rust thin LTO remains enabled.
 * The user systemd unit no longer tries to start the system-level network helper
   from the wrong service manager.
+* `h2` was upgraded from 0.4.15 to 0.4.16 to fix RUSTSEC-2026-0258 before the
+  final release.
 * The privileged helper could not run `nft` at all: `Command::env_clear()` removes
   the `PATH` Rust uses to resolve a relative program name, so a bare name failed
   with `NotFound` on machines where the program was installed. Programs are now

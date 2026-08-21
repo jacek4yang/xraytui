@@ -25,9 +25,9 @@ ordinary failures by hand.
 | G1 | Durable SQLite state, migrations, `init`, doctor | complete |
 | G2 | Typed configuration surface, one mutation path | complete |
 | G3 | Daily-use TUI | complete |
-| G4 | DNS, recovery, reliability | implementation complete; final live resolver rerun in progress |
+| G4 | DNS, recovery, reliability | complete; real resolve1 apply/observe/revert passed |
 | G5 | Smoke test, dist, packaging, RC tag | complete |
-| G6 | audit, deny, upgrade tests, clean Arch, IPv6 policy, v1.0.0 | in progress |
+| G6 | audit, deny, upgrade tests, clean Arch, IPv6 policy, v1.0.0 | complete |
 
 "Blocked here" means the environment cannot run it, not that it is optional:
 the harness is written, guarded and runnable where the environment exists. What

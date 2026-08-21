@@ -31,12 +31,17 @@ independent egress profiles through one supervised core on Linux.
 * Limited the Arch package to the actually verified `x86_64` architecture,
   completed its runtime/build dependency declarations, and made `check()` run
   the ordinary workspace integration tests as well as library tests.
+* Fixed native dependency linking under Arch's makepkg flags by using the
+  distribution SQLite and disabling incompatible global GCC LTO while keeping
+  the project's Rust thin LTO.
 * Removed an invalid cross-manager dependency: the per-user systemd service no
   longer tries to start the optional system-level network helper.
 * Added repeatable GitHub quality, dependency-policy and clean Arch package
   checks for pull requests and the main branch.
 * Updated installation and status documentation that still described already
   implemented TUN, state and editing features as scaffolding.
+* Updated `h2` to 0.4.16 after the final audit detected the newly published
+  RUSTSEC-2026-0258 advisory in rc1's lockfile.
 
 The candidate itself fixed several more serious correctness gaps: a killed
 Xray process had not been supervised by the shipping daemon; `app assign` had

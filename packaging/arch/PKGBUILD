@@ -6,6 +6,10 @@ pkgdesc="Terminal client for Xray-core with multiple concurrent egress profiles"
 arch=('x86_64')
 url="https://github.com/jacek4yang/xraytui"
 license=('GPL-3.0-or-later')
+# ring and other Rust dependencies compile native C/assembly archives. Arch's
+# global GCC LTO objects cannot be consumed by the Rust/lld link step, so this
+# package keeps Cargo's release optimizations but disables makepkg's global LTO.
+options=('!debug' '!lto')
 # Xray-core is a hard runtime dependency: xraytui supervises it, it does not
 # embed or reimplement it. The xray-bin and xray-git AUR packages both provide
 # `xray`, so users may choose either implementation.
@@ -14,10 +18,12 @@ depends=(
   'libgcc'
   'iproute2'
   'nftables'
+  'sqlite'
   'systemd'
   'xray'
 )
 makedepends=(
+  'pkgconf'
   'protobuf'
   'rust'
 )
@@ -42,12 +48,17 @@ build() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  # Arch enables C LTO globally. The workspace's portable builds bundle
+  # SQLite, but that GCC LTO archive cannot be consumed by Arch's lld flags.
+  # Packages should use Arch's maintained shared SQLite in any case.
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
   cargo build --frozen --release --workspace
 }
 
 check() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
   # Privileged/live-host tests are opt-in and therefore skip here; all ordinary
   # unit and integration tests run without touching the host network.
   cargo test --frozen --release --workspace
