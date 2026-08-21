@@ -47,7 +47,7 @@ Last published-release verification: 2026-08-20. Candidate evidence updated:
 | `cargo audit` | **pass** against fresh advisory-db commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
 | release workspace build | **pass** with all features |
 | `scripts/release-smoke.sh` | **pass** against stable Xray: sharing, supervision, persistence, staged install/permissions/uninstall |
-| deterministic source archive | **pass**: three independent builds produced identical bytes and SHA-256 |
+| deterministic source archive | **pass**: independent builds under umask 0002 and 0022 produce identical bytes and SHA-256; CI enforces the comparison |
 | clean Arch `makepkg` | **pass** as an unprivileged builder: frozen release build/tests and typed package installation |
 | `namcap` | PKGBUILD has no findings; package has only reviewed runtime-tool dependency and dynamic-loader false positives |
 | package install/uninstall | **pass**: all three versions report 1.1.0, `systemd-analyze verify` passes, no setuid/setgid binary, first-run files are 0600, uninstall retains user state |

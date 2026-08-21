@@ -44,6 +44,7 @@ tar \
     --owner=root:0 \
     --group=root:0 \
     --numeric-owner \
+    --mode='u+rwX,go+rX,go-w' \
     --mtime='UTC 2020-01-01' \
     -C "$TEMP" \
     -cf - "$NAME" | gzip -n -9 > "$ARCHIVE"

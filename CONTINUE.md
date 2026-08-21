@@ -46,7 +46,8 @@ These are candidate-branch results, not claims about an unbuilt public artifact.
   no issue in 436 locked dependencies.
 * Independent terminal/PNG QR, cross-client round-trip, portable-subscription,
   chain and live loopback REALITY evidence all passed on the relevant channel.
-* Three deterministic source-archive builds matched. An unprivileged clean Arch
+* Deterministic source-archive builds under umask 0002 and 0022 match. An
+  unprivileged clean Arch
   `makepkg` build, `namcap`, installed-unit verification, first-run permission,
   setuid absence and uninstall-retention checks passed. The recipe remaps Rust
   generated-source paths instead of embedding makepkg's temporary directory.

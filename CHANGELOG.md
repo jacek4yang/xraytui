@@ -88,6 +88,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of describing every explicit export as a QR code.
 * Arch release builds remap generated protobuf source locations so installed
   binaries do not embed makepkg's temporary build directory.
+* Source archives now normalize permission bits, closing a reproducibility gap
+  where a caller using umask 0002 produced different bytes from CI using 0022.
 
 ## [1.0.0] - 2026-08-20
 
