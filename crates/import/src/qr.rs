@@ -11,8 +11,11 @@ use std::path::Path;
 
 use qrcode::{EcLevel, QrCode};
 
-/// One-line warning to print before showing a QR code that carries credentials.
-pub const SECRET_WARNING: &str = "This QR code grants access to the proxy. Treat it like a password: do not \
+/// One-line warning for an explicitly revealed credential-bearing share export.
+///
+/// The same text is suitable for links, JSON and QR codes; callers must not
+/// misleadingly describe a plain-text export as a QR code.
+pub const SECRET_WARNING: &str = "This export contains proxy credentials. Treat it like a password: do not \
      photograph it, screen-share it, or paste it where others can see.";
 
 /// Largest payload a QR code can hold (version 40, low error correction).

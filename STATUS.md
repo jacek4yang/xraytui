@@ -2,9 +2,9 @@
 
 Version 1.1.0 is the verified candidate for one trusted interactive user on a
 Linux `x86_64` workstation, with current Arch Linux as the tier-one target. It
-is not a published release until its clean package gate, PR merge, tag, public
-artifacts, downloaded-checksum verification and clean artifact install all
-complete. The historical 1.0.0 evidence remains below.
+is not a published release until its PR merge, tag, public artifacts,
+downloaded-checksum verification and clean artifact install all complete. The
+historical 1.0.0 evidence remains below.
 
 IPv4 is the supported and fully exercised path. IPv6 is implemented,
 fail-closed and disabled by default, but its runtime path has not received
@@ -47,7 +47,11 @@ Last published-release verification: 2026-08-20. Candidate evidence updated:
 | `cargo audit` | **pass** against fresh advisory-db commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
 | release workspace build | **pass** with all features |
 | `scripts/release-smoke.sh` | **pass** against stable Xray: sharing, supervision, persistence, staged install/permissions/uninstall |
-| deterministic archive / clean Arch / `namcap` / package install-upgrade | **pending**; do not inherit 1.0.0's result |
+| deterministic source archive | **pass**: three independent builds produced identical bytes and SHA-256 |
+| clean Arch `makepkg` | **pass** as an unprivileged builder: frozen release build/tests and typed package installation |
+| `namcap` | PKGBUILD has no findings; package has only reviewed runtime-tool dependency and dynamic-loader false positives |
+| package install/uninstall | **pass**: all three versions report 1.1.0, `systemd-analyze verify` passes, no setuid/setgid binary, first-run files are 0600, uninstall retains user state |
+| 1.0.0 → 1.1.0 upgrade | **pass** from the checksum-verified published 1.0.0 portable artifact to the 1.1.0 Arch package: daemon state reopened, canonical node ID remained `upgrade-node-01a0242c370d`, and the new share command exported it |
 | PR/CI/merge/tag/public artifact verification | **pending** |
 
 ## Published 1.0.0 release evidence
@@ -129,8 +133,8 @@ SHA-256 matched its official `.dgst` file before use.
    unauthenticated loopback TCP. A random local port is not a security boundary.
 3. **Architecture.** The package and binary archive are verified only for
    `x86_64`; no `aarch64` artifact is claimed.
-4. **1.1.0 publication.** Clean packaging, upgrade and retrieved-public-artifact
-   verification remain pending and must not be inferred from the 1.0.0 table.
+4. **1.1.0 publication.** PR/CI, merge/tag and retrieved-public-artifact
+   verification remain pending and must not be inferred from candidate tests.
 5. **Diagnostic bundles.** There is no automatic bundle exporter yet. Bug
    reports must use `doctor`, `status` and manually reviewed log excerpts; never
    attach generated JSON, policy files, share exports or QR images.

@@ -46,15 +46,19 @@ These are candidate-branch results, not claims about an unbuilt public artifact.
   no issue in 436 locked dependencies.
 * Independent terminal/PNG QR, cross-client round-trip, portable-subscription,
   chain and live loopback REALITY evidence all passed on the relevant channel.
+* Three deterministic source-archive builds matched. An unprivileged clean Arch
+  `makepkg` build, `namcap`, installed-unit verification, first-run permission,
+  setuid absence and uninstall-retention checks passed. The recipe remaps Rust
+  generated-source paths instead of embedding makepkg's temporary directory.
+* A checksum-verified published 1.0.0 portable artifact created daemon state and
+  node `upgrade-node-01a0242c370d`; the 1.1.0 Arch package reopened it with the
+  same ID, exported it with the new share command and retained it on uninstall.
 
 ## Required next steps
 
-1. Commit the implementation and evidence documentation, build the deterministic
-   source archive, update/check the Arch metadata, and run the final clean Arch,
-   `namcap`, systemd verification, install and 1.0.0→1.1.0 upgrade gates.
-2. Push the feature branch, open the PR with the evidence
+1. Push the feature branch, open the PR with the evidence
    table, monitor every required CI job, and fix root causes.
-3. Merge only after mandatory checks pass. Tag the verified merged `main` commit,
+2. Merge only after mandatory checks pass. Tag the verified merged `main` commit,
    build/publish using the established process, retrieve the public artifacts,
    verify checksums and tag ancestry independently, then run clean install and
    smoke tests from the downloaded artifact.

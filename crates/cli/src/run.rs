@@ -1211,8 +1211,8 @@ async fn share(
         }
     };
 
-    // A share link is a credential. Say so once, on stderr, so piping the link
-    // into another command still works.
+    // Every share representation contains credentials. Say so once, on stderr,
+    // so piping the payload into another command still works.
     eprintln!("warning: {}", xraytui_import::qr::SECRET_WARNING);
 
     for (id, export) in &link_exports {

@@ -84,6 +84,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   extension token or mask password could appear in ordinary inspection output.
 * Cross-package CLI tests now stop the daemon gracefully, allowing it to reap
   the supervised Xray child rather than leaving orphan test processes behind.
+* Share-link and structured exports now use an accurate credential warning
+  instead of describing every explicit export as a QR code.
+* Arch release builds remap generated protobuf source locations so installed
+  binaries do not embed makepkg's temporary build directory.
 
 ## [1.0.0] - 2026-08-20
 

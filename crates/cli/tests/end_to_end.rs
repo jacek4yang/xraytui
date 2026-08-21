@@ -413,7 +413,8 @@ fn importing_a_link_and_switching_a_profile_works_end_to_end() {
     let link_out = String::from_utf8_lossy(&output.stdout);
     assert!(link_out.starts_with("vless://"), "{link_out}");
     let warning = String::from_utf8_lossy(&output.stderr);
-    assert!(warning.contains("grants access to the proxy"), "{warning}");
+    assert!(warning.contains("contains proxy credentials"), "{warning}");
+    assert!(!warning.contains("This QR code"), "{warning}");
     assert!(
         !link_out.contains("warning:"),
         "stdout must contain only the serialized link: {link_out}"
