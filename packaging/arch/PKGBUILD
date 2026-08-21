@@ -1,6 +1,6 @@
 # Maintainer: xraytui contributors
 pkgname=xraytui
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Terminal client for Xray-core with multiple concurrent egress profiles"
 arch=('x86_64')
@@ -34,7 +34,7 @@ optdepends=(
 )
 install=xraytui.install
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
-sha256sums=('96cdcc7802e36e9d43498686c7e17bbf26db9cc277d971f8e0cbfa91fe37a1a9')
+sha256sums=('b939bd303cd18a68451e2a5185e9c3284fd4e0edead92dde4e2fab755b1da4ff')
 
 prepare() {
   cd "$pkgname-$pkgver"
