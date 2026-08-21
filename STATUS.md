@@ -1,10 +1,10 @@
 # Status
 
-Version 1.1.0 is the verified candidate for one trusted interactive user on a
-Linux `x86_64` workstation, with current Arch Linux as the tier-one target. It
-is not a published release until its PR merge, tag, public artifacts,
-downloaded-checksum verification and clean artifact install all complete. The
-historical 1.0.0 evidence remains below.
+Version 1.1.0 is published and verified for one trusted interactive user on a
+Linux `x86_64` workstation, with current Arch Linux as the tier-one target. The
+release, tag and artifacts are at
+<https://github.com/jacek4yang/xraytui/releases/tag/v1.1.0>. The historical
+1.0.0 evidence remains below.
 
 IPv4 is the supported and fully exercised path. IPv6 is implemented,
 fail-closed and disabled by default, but its runtime path has not received
@@ -12,12 +12,12 @@ equivalent coverage and remains experimental. Shared machines with mutually
 untrusted local users are outside scope because Xray's loopback TCP commander
 has no authentication.
 
-Last published-release verification: 2026-08-20. Candidate evidence updated:
-2026-08-21. An unexecuted test is never recorded as passing.
+Last published-release verification: 2026-08-21. An unexecuted test is never
+recorded as passing.
 
-## 1.1.0 candidate sharing evidence (pre-release)
+## Published 1.1.0 sharing evidence
 
-| Capability | Current branch evidence |
+| Capability | Release evidence |
 |---|---|
 | standard links | VLESS, VMess classic/authority, Trojan, Shadowsocks, SOCKS, HTTP proxy, WireGuard and Xray-native Hysteria unit round trips pass |
 | modern VLESS | REALITY Vision, XHTTP `extra`, `finalmask`, ECH, pins/names, ALPN, fingerprint, `pqv`, SpiderX and IPv6 literals survive normalized round trips |
@@ -30,9 +30,9 @@ Last published-release verification: 2026-08-20. Candidate evidence updated:
 | secret handling | JSON node lists and opaque `node show` fields are redacted; output files replace atomically at 0600; relative and absolute destinations are tested; clipboard payload uses stdin |
 | upstream review | live stable/preview releases and commits, 33 Xray source snapshots, eight vendored protobuf files, and current v2rayN/v2rayNG serializer paths are checked by `cargo xtask upstream-check` |
 
-## 1.1.0 candidate gate evidence
+## Published 1.1.0 gate evidence
 
-| Gate | Candidate result |
+| Gate | Release result |
 |---|---|
 | `cargo fmt --all --check` | **pass** |
 | `cargo check --workspace --all-targets --all-features` | **pass** |
@@ -52,7 +52,9 @@ Last published-release verification: 2026-08-20. Candidate evidence updated:
 | `namcap` | PKGBUILD has no findings; package has only reviewed runtime-tool dependency and dynamic-loader false positives |
 | package install/uninstall | **pass**: all three versions report 1.1.0, `systemd-analyze verify` passes, no setuid/setgid binary, first-run files are 0600, uninstall retains user state |
 | 1.0.0 → 1.1.0 upgrade | **pass** from the checksum-verified published 1.0.0 portable artifact to the 1.1.0 Arch package: daemon state reopened, its persisted node ID remained byte-for-byte identical, and the new share command exported it |
-| PR/CI/merge/tag/public artifact verification | **pending** |
+| PR/CI/merge | **pass**: PR [#3](https://github.com/jacek4yang/xraytui/pull/3) merged as `2eb98ba87093a1e2b88d16c50666c717d8e7890f`; Rust, dependency-policy and clean-Arch jobs all passed |
+| tag and public artifacts | **pass**: annotated `v1.1.0` peels to the merged commit; all seven assets were downloaded again; source SHA-256 is `96cb495f885bffb106033b6b3684646e61b2e1d3a9512183368f5eea2f0c1f3b`, binary SHA-256 is `913cb58fe612b2f6487e61a681787493fee9f2d433cb7c1052ee1677f5d08ca9` |
+| downloaded artifact verification | **pass**: both checksum files, byte-identical Arch metadata, complete release smoke and a separate clean Arch filesystem install/systemd verification |
 
 ## Published 1.0.0 release evidence
 
@@ -133,9 +135,7 @@ SHA-256 matched its official `.dgst` file before use.
    unauthenticated loopback TCP. A random local port is not a security boundary.
 3. **Architecture.** The package and binary archive are verified only for
    `x86_64`; no `aarch64` artifact is claimed.
-4. **1.1.0 publication.** PR/CI, merge/tag and retrieved-public-artifact
-   verification remain pending and must not be inferred from candidate tests.
-5. **Diagnostic bundles.** There is no automatic bundle exporter yet. Bug
+4. **Diagnostic bundles.** There is no automatic bundle exporter yet. Bug
    reports must use `doctor`, `status` and manually reviewed log excerpts; never
    attach generated JSON, policy files, share exports or QR images.
 
@@ -147,7 +147,7 @@ are redacted from normal output and logs, but exported material must still be
 handled as secret.
 
 The 1.0.0 audit found RUSTSEC-2026-0258 in `h2` 0.4.15 and upgraded it to
-0.4.16. The 1.1.0 candidate additionally removed the advisory-affected
+0.4.16. The 1.1.0 release additionally removed the advisory-affected
 `rqrr`/`lru` QR path. Its release policy has no RustSec ignores, and the fresh
 audit and `cargo deny check` results are recorded above and in `SECURITY.md`.
 

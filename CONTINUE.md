@@ -3,14 +3,15 @@
 ## Repository and release target
 
 * GitHub: `https://github.com/jacek4yang/xraytui`
-* Base release: `v1.0.0`, commit `f9051059af1e331c0577e41dfa3c45d7b0907c33`
-* Development branch: `feature/node-sharing-interoperability`
-* Intended semantic version: `v1.1.0` (new backward-compatible CLI/TUI and
-  interchange capability; do not create the tag before the verified PR merge)
+* Published release: `v1.1.0`, merged commit
+  `2eb98ba87093a1e2b88d16c50666c717d8e7890f`
+* Release PR: <https://github.com/jacek4yang/xraytui/pull/3>
+* Release page: <https://github.com/jacek4yang/xraytui/releases/tag/v1.1.0>
+* Development branch after release: `main`
 * Official Xray stable under test: `v26.3.27`
 * Explicit preview under test: `v26.7.28`
 
-## Implemented on the branch
+## Implemented in 1.1.0
 
 First-class standard link export now covers VLESS, both VMess dialects, Trojan,
 Shadowsocks, SOCKS, HTTP proxy, WireGuard and Xray-native Hysteria v2. Export has
@@ -24,9 +25,9 @@ are implemented. `docs/SHARING.md` is the behavioral specification.
 channels and tag commits, Xray source snapshots, the vendored protobuf closure,
 and current v2rayN/v2rayNG serializer paths against `upstream-compat.toml`.
 
-## Final pre-publication evidence executed
+## Final release evidence executed
 
-These are candidate-branch results, not claims about an unbuilt public artifact.
+These results include the merged commit and retrieved public artifact.
 
 * Final fmt, all-target/all-feature check, strict Clippy and debug workspace build
   passed.
@@ -54,15 +55,22 @@ These are candidate-branch results, not claims about an unbuilt public artifact.
 * A checksum-verified published 1.0.0 portable artifact created daemon state and
   a node; the 1.1.0 Arch package reopened it with the byte-identical persisted
   ID, exported it with the new share command and retained it on uninstall.
+* PR #3 passed all mandatory GitHub jobs and merged as
+  `2eb98ba87093a1e2b88d16c50666c717d8e7890f`. The annotated `v1.1.0` tag peels
+  to that commit.
+* All seven public assets were downloaded into a fresh directory. Both checksum
+  files passed independently; the source and binary SHA-256 values are recorded
+  in `STATUS.md`, and the Arch metadata matched the tag byte-for-byte.
+* The downloaded public binaries passed the complete release smoke workflow and
+  a separate clean Arch filesystem install with systemd verification, version,
+  mode-0600 first-run state and setuid/setgid checks.
 
 ## Required next steps
 
-1. Push the feature branch, open the PR with the evidence
-   table, monitor every required CI job, and fix root causes.
-2. Merge only after mandatory checks pass. Tag the verified merged `main` commit,
-   build/publish using the established process, retrieve the public artifacts,
-   verify checksums and tag ancestry independently, then run clean install and
-   smoke tests from the downloaded artifact.
+1. Keep IPv6 experimental until the deterministic IPv6-only, dual-stack and
+   leak suites execute with evidence equivalent to the IPv4 namespace suite.
+2. Add an automatic redacted diagnostic-bundle exporter without including
+   policy, generated Xray JSON, share links, QR images or subscription secrets.
 
 Never record an unexecuted gate as passing. `STATUS.md` remains the authoritative
 published evidence matrix.
