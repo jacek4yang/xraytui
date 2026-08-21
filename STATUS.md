@@ -51,7 +51,7 @@ Last published-release verification: 2026-08-20. Candidate evidence updated:
 | clean Arch `makepkg` | **pass** as an unprivileged builder: frozen release build/tests and typed package installation |
 | `namcap` | PKGBUILD has no findings; package has only reviewed runtime-tool dependency and dynamic-loader false positives |
 | package install/uninstall | **pass**: all three versions report 1.1.0, `systemd-analyze verify` passes, no setuid/setgid binary, first-run files are 0600, uninstall retains user state |
-| 1.0.0 → 1.1.0 upgrade | **pass** from the checksum-verified published 1.0.0 portable artifact to the 1.1.0 Arch package: daemon state reopened, canonical node ID remained `upgrade-node-01a0242c370d`, and the new share command exported it |
+| 1.0.0 → 1.1.0 upgrade | **pass** from the checksum-verified published 1.0.0 portable artifact to the 1.1.0 Arch package: daemon state reopened, its persisted node ID remained byte-for-byte identical, and the new share command exported it |
 | PR/CI/merge/tag/public artifact verification | **pending** |
 
 ## Published 1.0.0 release evidence

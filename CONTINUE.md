@@ -51,8 +51,8 @@ These are candidate-branch results, not claims about an unbuilt public artifact.
   setuid absence and uninstall-retention checks passed. The recipe remaps Rust
   generated-source paths instead of embedding makepkg's temporary directory.
 * A checksum-verified published 1.0.0 portable artifact created daemon state and
-  node `upgrade-node-01a0242c370d`; the 1.1.0 Arch package reopened it with the
-  same ID, exported it with the new share command and retained it on uninstall.
+  a node; the 1.1.0 Arch package reopened it with the byte-identical persisted
+  ID, exported it with the new share command and retained it on uninstall.
 
 ## Required next steps
 
