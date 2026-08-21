@@ -2,16 +2,19 @@ post_install() {
   cat <<'MESSAGE'
 xraytui is installed. Next steps:
 
-  1. Start the per-user daemon:
+  1. Create the starter policy and state database:
+       xraytui init
+
+  2. Start the per-user daemon:
        systemctl --user enable --now xraytuid.service
 
-  2. Only if you want the system TUN, enable the privileged helper and add
+  3. Only if you want the system TUN, enable the privileged helper and add
      yourself to the group that may talk to it:
        sudo systemctl enable --now xraytui-netd.service
        sudo usermod -aG xraytui "$USER"
      Log out and back in for the group change to take effect.
 
-  3. Check the environment:
+  4. Check the environment:
        xraytui doctor
 
 Nothing proxies anything until you add a node and point a profile at it.

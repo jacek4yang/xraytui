@@ -3,8 +3,8 @@
 Linux only. The tier-one target is current Arch Linux with systemd, nftables and
 cgroup v2; Debian stable, Ubuntu LTS and current Fedora are secondary targets.
 
-Read `STATUS.md` first: several components are not implemented yet, and the
-system TUN is one of them.
+Read `STATUS.md` for the tested feature matrix. IPv4 is the supported path in
+1.0.0; IPv6 is experimental, disabled by default and fail-closed.
 
 ## Prerequisites
 
@@ -20,6 +20,7 @@ system TUN is one of them.
 ```sh
 cargo build --release --workspace
 sudo cargo xtask install --prefix /usr
+xraytui init
 systemctl --user enable --now xraytuid.service
 xraytui doctor
 ```
@@ -28,7 +29,7 @@ xraytui doctor
 `DESTDIR=/tmp/stage cargo xtask install --prefix /usr` stages an install for
 packaging. Nothing is ever installed setuid.
 
-Only if you want the system TUN, which is **not implemented yet**:
+Only if you want the system TUN or transparent per-process routing:
 
 ```sh
 sudo systemctl enable --now xraytui-netd.service
@@ -37,14 +38,24 @@ sudo usermod -aG xraytui "$USER"     # log out and back in
 
 ## Arch
 
+Xray-core is available from the AUR. Install one package that provides `xray`
+before using plain `makepkg`; an AUR helper can resolve that provider for you:
+
 ```sh
-cd packaging/arch
+paru -S xray-bin                       # or xray / xray-git
+git clone https://github.com/jacek4yang/xraytui.git
+cd xraytui/packaging/arch
+makepkg --verifysource                 # verify the release asset before building
 makepkg -si
 ```
 
-The `PKGBUILD` runs `cargo test --lib` during `check()` — the privileged and
-network-namespace tests are deliberately excluded, because a package build must
-not need `CAP_NET_ADMIN` and must not touch host networking.
+The PKGBUILD follows Arch's Rust packaging guidance: it fetches the exact locked
+dependency graph in `prepare()`, builds and tests with `--frozen`, and supports
+only the verified `x86_64` architecture. Privileged and live-host tests are
+explicitly opt-in and skip during `check()`; all ordinary workspace unit and
+integration tests run. Installation goes through the same typed manifest used
+by the release smoke test, so binaries, systemd units, completions, man pages and
+documentation cannot silently drift between install methods.
 
 ## What gets installed where
 
@@ -62,9 +73,10 @@ not need `CAP_NET_ADMIN` and must not touch host networking.
 
 ## First run
 
-The daemon writes a starter configuration on first start: one `direct` profile
-with loopback SOCKS and HTTP listeners, mode `off`. Nothing is proxied until you
-add a node.
+Run `xraytui init` once. It creates private XDG directories, a starter policy
+with one `direct` profile and loopback SOCKS/HTTP listeners, and the versioned
+state database. It is idempotent and refuses to overwrite policy it cannot
+parse. Nothing is proxied until you add a node.
 
 ```sh
 xraytui node import 'vless://…'
@@ -81,6 +93,9 @@ sudo cargo xtask install --prefix /usr
 systemctl --user restart xraytuid.service
 xraytui doctor
 ```
+
+For an Arch package upgrade, rebuild from the updated PKGBUILD and use
+`makepkg -si`; its install hook reminds you to restart the user daemon.
 
 Configuration is migrated automatically, after a timestamped backup of the whole
 configuration directory beside it. A file written by a *newer* xraytui is a hard

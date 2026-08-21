@@ -23,11 +23,33 @@ reload, and no disturbance to the connections belonging to the other profiles.
 transparent routing and system DNS management. Per-profile SOCKS/HTTP listeners
 and `xraytui exec` work without it.
 
+## Install on Arch Linux
+
+Xray-core is deliberately external. Install either AUR provider first, then
+build the release package definition shipped in this repository:
+
+```sh
+paru -S xray-bin                       # or another package that provides xray
+git clone https://github.com/jacek4yang/xraytui.git
+cd xraytui/packaging/arch
+makepkg -si
+xraytui init
+systemctl --user enable --now xraytuid.service
+xraytui doctor
+```
+
+The PKGBUILD downloads the immutable `v1.0.0` source asset, verifies its SHA-256
+checksum, builds with `Cargo.lock` frozen, runs the unprivileged test suite, and
+installs the three binaries, hardened systemd units, completions, man pages and
+documentation. See [docs/INSTALLATION.md](docs/INSTALLATION.md) for TUN setup,
+upgrades and removal.
+
 ## Quick start
 
 ```sh
 cargo build --release                          # needs protoc; see CONTRIBUTING.md
 cargo xtask install --dry-run                  # print exactly what would be installed, where
+xraytui init                                   # create private XDG configuration and state
 xraytui doctor                                 # check xray binary, gRPC capabilities, permissions
 xraytui node import --file ~/nodes.txt         # share links, one per line; or --png for a QR
 xraytui                                        # TUI: define profiles, pick targets, write rules
@@ -60,11 +82,14 @@ they do not land in shell history.
 
 ## Status
 
-This is a work in progress and parts of the workspace are still scaffolding.
-`STATUS.md` is the single authoritative record of what is implemented, what is
-partially implemented and what is not started. Nothing in this README should be
-read as a claim that a given feature is finished — check `STATUS.md` first, and
-`PLAN.md` for the phase ordering.
+Version 1.0.0 is the first daily-use release for a trusted single-user Linux
+workstation. IPv4 is the supported and fully exercised path. IPv6 remains
+experimental and disabled by default until its runtime path receives the same
+coverage. Shared machines with mutually untrusted local users are outside the
+support boundary because Xray's loopback commander has no authentication.
+
+`STATUS.md` is the authoritative, evidence-backed feature and test matrix;
+`SECURITY.md` records the residual risks and dependency review.
 
 ## Documentation
 

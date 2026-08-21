@@ -124,9 +124,11 @@ hostname), `HTTP_PROXY`, `HTTPS_PROXY`, their lowercase spellings and `NO_PROXY`
 then replaces itself with the command. The command is never passed through a
 shell.
 
-`--transparent` uses the cgroup v2 backend. It is not implemented yet and refuses
-with a typed reason naming the alternative, rather than silently doing something
-weaker.
+`--transparent` uses the cgroup v2/pidfd backend. The process that will become
+the requested command classifies itself first, verifies its actual cgroup, and
+only then calls `execve`, so there is no launch window for an unclassified
+socket. A missing helper, listener or kernel capability is a typed, fail-closed
+error that names the unprivileged alternative.
 
 ## Rules
 
@@ -139,11 +141,15 @@ xraytui rule validate
 
 ## Subscriptions
 
-Not implemented; see `STATUS.md`. Until then:
-
 ```sh
-curl -s "$SUBSCRIPTION_URL" | xraytui node import --stdin
+xraytui subscription add "$SUBSCRIPTION_URL" --name work
+xraytui subscription diff work
+xraytui subscription update work
+xraytui subscription update --all
 ```
+
+Fetches are size-bounded and transactional. An error page, empty result or
+change that would strand a referenced node is rejected without changing policy.
 
 ## Runtime and logs
 

@@ -39,9 +39,9 @@ and nothing else. Never ask the user to restate the requirements.
 
 ## The rule this project was built by, the hard way
 
-**This environment has destroyed committed work three times.** A local commit is
-not durable here. The only thing that survives is a file the user has
-downloaded.
+**This environment destroyed committed work three times before the project was
+published.** A local commit is not durable here. GitHub is now the primary
+off-machine copy, while checkpoint bundles remain independent recovery media.
 
 So: a slice is not finished when it compiles, and not when it is committed. It
 is finished when
@@ -50,12 +50,11 @@ is finished when
 cargo xtask checkpoint --label <slice>
 ```
 
-has produced an archive **and that archive has been sent to the user**. Never
-leave more than one coherent slice unexported. Before any long or risky
-operation, checkpoint first.
-
-Nothing is ever pushed to a remote. The user has forbidden it. The Git bundle
-inside each checkpoint is the only copy of the history.
+has produced an archive **or the corresponding commit and refs have been pushed
+to GitHub**. For release boundaries, keep both: publish the refs and preserve a
+verified bundle/source checkpoint. Never leave more than one coherent slice
+without an off-machine copy. Before any long or risky operation, checkpoint or
+push first.
 
 ## Architecture, frozen
 

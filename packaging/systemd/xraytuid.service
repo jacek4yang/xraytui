@@ -2,9 +2,9 @@
 Description=xraytui per-user desired-state daemon
 Documentation=man:xraytui(1)
 After=network.target
-# The privileged helper is optional: without it every mode except the system
-# TUN still works, so this is Wants= rather than Requires=.
-Wants=xraytui-netd.service
+# xraytui-netd is a system service, while this is a user unit. User managers
+# cannot start system units, so administrators enable that optional helper
+# separately only when TUN or transparent routing is wanted.
 
 [Service]
 Type=simple
@@ -17,7 +17,9 @@ RestartSec=2
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ProtectHome=read-write
+# The daemon's entire durable state is in this user's XDG directories. A user
+# service already has no access beyond the user's ordinary file permissions.
+ProtectHome=false
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

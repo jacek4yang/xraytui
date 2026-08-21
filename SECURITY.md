@@ -60,9 +60,6 @@ which Xray-core releases each version is tested against.
 * **A member of the `xraytui` group can create project-owned TUN devices and
   routes for their own UID.** That is the grant the administrator made by adding
   them to the group.
-* **The dependency set has not been audited.** `cargo audit` and `cargo deny`
-  have not been run; see `STATUS.md`.
-
 ## Out of scope
 
 A compromised proxy endpoint, a malicious Xray-core binary installed by the
@@ -70,9 +67,13 @@ administrator, and an attacker who already has the user's UID.
 
 ## Dependency advisories
 
-Run on 2026-08-15 with `cargo audit` and `cargo deny check` against
+Run on 2026-08-20 with the current RustSec database and `cargo deny check` against
 `Cargo.lock`. **0 vulnerabilities.** Three warnings, each reviewed rather than
 silenced; the policy that encodes them is `deny.toml`.
+
+The final audit initially found RUSTSEC-2026-0258 in `h2` 0.4.15 (unbounded
+empty DATA frames), published after rc1. The lockfile was upgraded to the fixed
+0.4.16 before release and the complete gate was re-run.
 
 | Advisory | Crate | Kind | Reachable from | Decision |
 |---|---|---|---|---|

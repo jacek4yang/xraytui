@@ -370,18 +370,23 @@ fn ci() -> Result<()> {
     let root = workspace_root()?;
     let gates: &[(&str, &[&str])] = &[
         ("cargo fmt", &["fmt", "--all", "--check"]),
-        ("cargo check", &["check", "--workspace", "--all-targets"]),
+        (
+            "cargo check",
+            &["check", "--workspace", "--all-targets", "--all-features"],
+        ),
         (
             "cargo clippy",
             &[
                 "clippy",
                 "--workspace",
                 "--all-targets",
+                "--all-features",
                 "--",
                 "-D",
                 "warnings",
             ],
         ),
+        ("cargo build", &["build", "--workspace"]),
         ("cargo test", &["test", "--workspace"]),
         ("cargo doc", &["doc", "--workspace", "--no-deps"]),
     ];
@@ -455,9 +460,10 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>> {
 fn dist() -> Result<()> {
     let root = workspace_root()?;
     let version = env!("CARGO_PKG_VERSION");
-    let name = format!("xraytui-{version}");
+    let tree_name = format!("xraytui-{version}");
+    let artifact_name = format!("{tree_name}-linux-x86_64");
     let out = root.join("target/dist");
-    let staging = out.join(&name);
+    let staging = out.join(&tree_name);
     if staging.exists() {
         std::fs::remove_dir_all(&staging)?;
     }
@@ -482,15 +488,15 @@ fn dist() -> Result<()> {
         }
     }
 
-    let archive = out.join(format!("{name}.tar.gz"));
-    tar_directory(&out, &name, &archive)?;
+    let archive = out.join(format!("{artifact_name}.tar.gz"));
+    tar_directory(&out, &tree_name, &archive)?;
     let sum = sha256_of(&archive)?;
     std::fs::write(
-        out.join(format!("{name}.tar.gz.sha256")),
-        format!("{sum}  {name}.tar.gz\n"),
+        out.join(format!("{artifact_name}.tar.gz.sha256")),
+        format!("{sum}  {artifact_name}.tar.gz\n"),
     )?;
     println!("{}", archive.display());
-    println!("{sum}  {name}.tar.gz");
+    println!("{sum}  {artifact_name}.tar.gz");
     Ok(())
 }
 

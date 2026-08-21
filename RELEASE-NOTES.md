@@ -1,69 +1,69 @@
-# xraytui 1.0.0-rc1
+# xraytui 1.0.0
 
-A terminal client for Xray-core that runs several egress profiles at once
-through one supervised core, on Linux, for a machine you own.
+The first daily-use release of a terminal client for Xray-core that runs several
+independent egress profiles through one supervised core on Linux.
 
-**This is a release candidate, not 1.0.0.** Two mandatory gates cannot run in
-the environment it was built in, and the project's own rule is that a gate
-which was never executed is not a gate that passed. Both are named below, both
-have a harness that is written and ready, and neither was quietly skipped.
+## Highlights
 
-## What it does
+* Several profiles can expose their own loopback SOCKS5 and HTTP listeners at
+  the same time. Switching one profile uses Xray's gRPC API and does not restart
+  the core or disturb another profile.
+* `xraytui exec` offers an unprivileged proxy-environment backend and an exact
+  cgroup/pidfd transparent backend. Classification is verified before the
+  requested program starts; failure is fail-closed.
+* Nodes, groups, two-hop chains, subscriptions, application routing rules and
+  listeners are editable from both the CLI and the 80x24-capable TUI.
+* The per-user daemon persists desired and observed state in SQLite, supervises
+  Xray-core, restarts it after unexpected exit, and rolls back failed runtime
+  changes to the last known-good generation.
+* The narrowly privileged `xraytui-netd` helper owns TUN, routes, policy rules,
+  nftables, cgroups and DNS through a closed typed operation set. It never
+  accepts a command line or shell fragment from the client.
+* The Arch PKGBUILD verifies an immutable release asset, builds and tests with a
+  frozen lockfile, and installs the binaries, hardened systemd units,
+  completions, man pages and documentation through the same manifest exercised
+  by the release smoke test.
 
-* Several egress profiles at the same time through one Xray process, each with
-  its own loopback SOCKS5 and HTTP listeners and its own selector.
-* Switching one profile's target through the gRPC API: new connections move,
-  the other profiles do not notice, and the core is not restarted.
-* Per-instance transparent routing: two instances of the *same* executable,
-  same arguments, same destination, leaving by two different exits, with no
-  proxy environment variables — classified by cgroup and pidfd before the
-  program can open a connection.
-* Nodes typed in or imported, groups, chains, application rules, routing rules
-  and subscriptions — all from the command line or the interface, never by
-  editing generated JSON.
-* A TUN mode with policy routing, nftables and DNS, owned entirely by a
-  narrowly privileged helper that has a closed operation set and no shell.
+## Important fixes since 1.0.0-rc1
 
-## Fixed in this candidate
+* Corrected the release repository URL and replaced the PKGBUILD's unchecked
+  local source with a versioned GitHub release asset and SHA-256 verification.
+* Limited the Arch package to the actually verified `x86_64` architecture,
+  completed its runtime/build dependency declarations, and made `check()` run
+  the ordinary workspace integration tests as well as library tests.
+* Removed an invalid cross-manager dependency: the per-user systemd service no
+  longer tries to start the optional system-level network helper.
+* Added repeatable GitHub quality, dependency-policy and clean Arch package
+  checks for pull requests and the main branch.
+* Updated installation and status documentation that still described already
+  implemented TUN, state and editing features as scaffolding.
 
-Each of these was the program quietly claiming something untrue:
-
-* **The core was not supervised.** `note_core_exit` and `has_exited` existed,
-  were unit-tested, and had no callers. A core killed by the OOM killer was
-  reported as `running` with a dead pid, indefinitely, while every listener was
-  dead. The end-to-end test was confirmed to fail without the fix.
-* **`app assign` printed a TOML snippet and exited 1** instead of changing
-  anything — a feature that looked implemented in `--help` and was not.
-* **Narrow mutations skipped validation.** `profile set-target work
-  node:does-not-exist` was accepted and restarted the core onto a profile
-  pointing at nothing.
-* **`xraytui init` overwrote policy it could not parse**, so one typo in
-  `groups.toml` deleted every node a user owned.
-* **The plain-HTTP subscription refusal named a setting that did not exist.**
-  `allow_plaintext` is now a real field with a real flag.
-* **Piping any command into `head` or `dmenu` panicked** with a backtrace,
-  because Rust ignores `SIGPIPE`. Both are documented workflows.
-
-## What is not verified
-
-* **Live `systemd-resolved`.** No D-Bus system bus here.
-  `crates/linux-net/tests/resolved.rs` drives the real
-  `org.freedesktop.resolve1`, checks the result with `resolvectl` rather than
-  with the code under test, and reverts. It needs `XRAYTUI_TEST_RESOLVED=1`
-  because resolved is a host service that cannot be namespaced.
-* **A clean Arch package build.** No container runtime here.
-* **IPv6 at runtime.** This kernel has no IPv6 at all. IPv6 is implemented,
-  disabled by default, and fail-closed: unwanted IPv6 gets a `::/0` blackhole
-  in the project's own routing table rather than a path around the tunnel.
-* **aarch64.** No aarch64 archive is published, because a renamed x86_64 binary
-  is not a port.
+The candidate itself fixed several more serious correctness gaps: a killed
+Xray process had not been supervised by the shipping daemon; `app assign` had
+printed TOML instead of mutating policy; narrow changes could bypass validation;
+`init` could overwrite policy it could not parse; and a closed output pipe could
+panic instead of ending normally.
 
 ## Support boundary
 
-Linux only; current Arch Linux is tier one. systemd, nftables, cgroup v2,
-Xray-core as an external process. One trusted interactive user on a laptop or
-workstation. IPv4 fully supported.
+Linux `x86_64`; current Arch Linux is tier one. systemd, nftables, cgroup v2 and
+an external Xray-core are required for the complete feature set. The intended
+deployment is one trusted interactive user on a laptop or workstation.
 
-**Shared servers with mutually untrusted local users are out of scope.** Xray's
-commander is a loopback TCP socket with no authentication. A random port is not
-authentication and this project does not pretend otherwise.
+IPv4 is the fully exercised path. IPv6 is implemented, disabled by default,
+fail-closed and experimental until its runtime path receives equivalent
+coverage. Shared machines with mutually untrusted local users are out of scope:
+Xray's commander is loopback TCP without authentication, so a random local port
+is not a security boundary.
+
+## Security and privacy
+
+There is no telemetry, crash upload, automatic issue submission, packet capture
+or TLS interception. Share links, subscription URLs, QR codes and generated
+Xray JSON contain credentials and should be handled as secrets. The release
+installs no setuid files; only `xraytui-netd` runs as root, under a restricted
+systemd unit and a closed protocol.
+
+See `STATUS.md` for the evidence-backed test matrix, `SECURITY.md` for the
+dependency review and residual risks, and `docs/INSTALLATION.md` for package and
+first-run instructions.

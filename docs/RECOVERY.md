@@ -2,11 +2,10 @@
 
 What to do if xraytui dies leaving the host's networking modified.
 
-**As of this writing xraytui does not modify host networking at all** — the
-privileged helper is not implemented, so nothing below can currently have
-happened. This document describes the recovery procedure for the state the helper
-*will* create, and is the contract that implementation has to satisfy: every
-resource must be identifiable and removable by hand.
+The normal recovery path is automatic: the systemd unit calls recovery after a
+stop, disconnected leases expire, and every resource is tagged so the helper
+removes only project-owned state. This document is the independent manual path
+for an interrupted service or damaged installation.
 
 ## Everything xraytui may own
 
