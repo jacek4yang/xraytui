@@ -48,4 +48,5 @@ tar \
     -C "$TEMP" \
     -cf - "$NAME" | gzip -n -9 > "$ARCHIVE"
 
-sha256sum "$ARCHIVE" | tee "$ARCHIVE.sha256"
+SUM=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+printf '%s  %s\n' "$SUM" "$NAME.tar.gz" | tee "$ARCHIVE.sha256"

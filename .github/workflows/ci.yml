@@ -36,8 +36,13 @@ jobs:
   security:
     name: Dependency policy
     runs-on: ubuntu-latest
+    env:
+      # cargo-audit tracks current stable Rust independently of the project's
+      # supported toolchain, so build the policy tools with current stable.
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -48,9 +53,12 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
-      - uses: actions/checkout@v5
+      # The Arch base-devel image does not include Git. Install it before
+      # checkout so actions/checkout creates the repository metadata required
+      # by scripts/source-dist.sh instead of falling back to a REST snapshot.
       - name: Install clean build dependencies
         run: pacman -Syu --noconfirm git rust protobuf
+      - uses: actions/checkout@v5
       - name: Build deterministic source archive
         run: sh scripts/source-dist.sh
       - name: Build and test with makepkg as an unprivileged user
