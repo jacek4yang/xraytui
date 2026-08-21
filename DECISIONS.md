@@ -346,3 +346,38 @@ it cannot be faked — that the command really does not run.
 variable. The distinction between two instances must come from the cgroup alone,
 which is also what the acceptance test asserts by clearing the environment
 entirely.
+
+---
+
+## D-020 — Sharing uses ecosystem formats with explicit fidelity
+
+**Context.** A normalized Xray node may contain more semantics than a particular
+de-facto URI dialect can represent. Emitting a plausible-looking link after
+dropping a socket option, transport extension, chain hop, or modern TLS field is
+more dangerous than refusing: the recipient believes it received the same route.
+
+**Decision.** External interchange prefers established `vless://`, `vmess://`,
+`trojan://`, SIP002 `ss://`, `socks://`, `http-proxy://`, `wireguard://` and
+`hysteria2://` forms. Every serialization is classified `Lossless`,
+`Compatible`, `Lossy`, or `Unsupported`. `Lossy` requires the explicit
+`--allow-lossy` policy; there is no automatic downgrade. Normalized JSON and
+Xray JSON are optional lossless alternatives, not replacements for ecosystem
+formats. VMess supports both mature-client classic JSON and the modern authority
+form, selected automatically by representability.
+
+**Chains.** A chain is a routing composition, not a node. It is never flattened
+into a single link. `chain export` emits all Xray outbounds and all
+`dialerProxy` edges or fails.
+
+**Secrets.** Link and QR generation happens only after an explicit command or
+TUI action. stdout carries only the requested serialized value; notices use
+stderr. Clipboard helpers receive payloads over stdin. File output uses an
+exclusive mode-0600 sibling, fsync, atomic rename and parent-directory fsync.
+Normal lists, logs, SQLite operation history and diagnostic bundles never receive
+the generated payload.
+
+**Compatibility maintenance.** `upstream-compat.toml` hashes the reviewed Xray
+connection-schema paths and active v2rayN/v2rayNG serializers. A changed path
+turns `cargo xtask upstream-check` into a mandatory model/parser/serializer/
+compiler/fixture review. Round-trip identity and independent QR decode tests are
+the executable contract; `docs/SHARING.md` is the user-facing contract.

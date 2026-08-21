@@ -67,24 +67,24 @@ administrator, and an attacker who already has the user's UID.
 
 ## Dependency advisories
 
-Run on 2026-08-20 with the current RustSec database and `cargo deny check` against
-`Cargo.lock`. **0 vulnerabilities.** Three warnings, each reviewed rather than
-silenced; the policy that encodes them is `deny.toml`.
+Run on 2026-08-21 against a fresh RustSec advisory-db clone at commit
+`bf5c0d245a92671908518d7e765914d437954ed6` (1,225 advisories) and against
+`Cargo.lock`'s 436 dependencies. **0 vulnerabilities, 0 ignored advisories.**
+`cargo deny check` also passed all advisory, ban, license and source policies.
+The policy is encoded in `deny.toml`; releases do not carry advisory exceptions.
 
 The final audit initially found RUSTSEC-2026-0258 in `h2` 0.4.15 (unbounded
 empty DATA frames), published after rc1. The lockfile was upgraded to the fixed
 0.4.16 before release and the complete gate was re-run.
 
-| Advisory | Crate | Kind | Reachable from | Decision |
-|---|---|---|---|---|
-| RUSTSEC-2024-0436 | `paste` 1.0.15 | unmaintained | ratatui, compile time only | Accepted. A proc-macro produces no runtime code of its own; nothing an attacker controls reaches it. |
-| RUSTSEC-2026-0002 | `lru` 0.12.5 | unsound | ratatui's layout cache; rqrr's decoder | Accepted. Both callers feed it data this program just produced — a rendered pane, an image it encoded — not attacker-chosen input. |
-| RUSTSEC-2026-0253 | `lru` 0.12.5 | unsound | as above | Accepted, same reasoning. |
+The sharing review found that the previous rationale for accepting two `lru`
+soundness advisories was incorrect: `node import --qr` sends an
+attacker-controlled image through the decoder. The release therefore replaces
+`rqrr` with the independent pure-Rust `quircs` decoder, upgrades ratatui to
+0.30.2 and `lru` to the fixed 0.18.2, and removes every advisory ignore from
+`deny.toml`. QR image dimensions and decoder allocation are additionally capped
+before decoding.
 
-The `lru` fixes are in 0.13, which ratatui has not moved to. Upgrading ratatui
-out from under a working interface to resolve an unreachable soundness bug
-would trade a real risk for a theoretical one; the follow-up is to take the
-upgrade when ratatui does.
-
-A critical or high advisory reachable from a production path blocks a release.
-These are neither.
+A vulnerability in a production dependency blocks a release unless it is
+removed or upgraded; an exception requires a new, evidence-backed security
+decision and is not part of this release.

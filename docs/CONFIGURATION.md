@@ -176,6 +176,15 @@ are refused.
 | `log_buffer_lines` | integer | `2000` | Lines kept in the log view. |
 | `keymap` | table of string to string | `{}` | Key overrides, written as `"action" = "key"`. |
 
+### Sharing and export
+
+Sharing has no persistent enable switch and no destination-directory setting.
+A share link, QR image or exported Xray JSON contains live credentials and is
+materialized only by an explicit `node share`, `chain export` or TUI Share
+action. Output format, lossy-export acknowledgement and exact path belong to
+that invocation. File exports use a private atomic writer and end with mode
+0600, including when replacing a previously public file. See `docs/SHARING.md`.
+
 ### Validation
 
 Values that serde cannot express are checked when the file is loaded, and **every

@@ -1,10 +1,10 @@
 # Status
 
-Version 1.0.0 is ready for its supported deployment: one trusted interactive
-user on a Linux `x86_64` workstation, with current Arch Linux as the tier-one
-target. Thirteen of the fourteen acceptance scenarios pass. Scenario H has
-unit and release-smoke coverage but remains partial because no test decodes a
-QR code from an actual terminal capture.
+Version 1.1.0 is the verified candidate for one trusted interactive user on a
+Linux `x86_64` workstation, with current Arch Linux as the tier-one target. It
+is not a published release until its clean package gate, PR merge, tag, public
+artifacts, downloaded-checksum verification and clean artifact install all
+complete. The historical 1.0.0 evidence remains below.
 
 IPv4 is the supported and fully exercised path. IPv6 is implemented,
 fail-closed and disabled by default, but its runtime path has not received
@@ -12,9 +12,45 @@ equivalent coverage and remains experimental. Shared machines with mutually
 untrusted local users are outside scope because Xray's loopback TCP commander
 has no authentication.
 
-Last verified: 2026-08-20. An unexecuted test is never recorded as passing.
+Last published-release verification: 2026-08-20. Candidate evidence updated:
+2026-08-21. An unexecuted test is never recorded as passing.
 
-## Release evidence
+## 1.1.0 candidate sharing evidence (pre-release)
+
+| Capability | Current branch evidence |
+|---|---|
+| standard links | VLESS, VMess classic/authority, Trojan, Shadowsocks, SOCKS, HTTP proxy, WireGuard and Xray-native Hysteria unit round trips pass |
+| modern VLESS | REALITY Vision, XHTTP `extra`, `finalmask`, ECH, pins/names, ALPN, fingerprint, `pqv`, SpiderX and IPv6 literals survive normalized round trips |
+| cross-client corpus | eight sanitized current v2rayN/v2rayNG links import, export and re-import to the same canonical semantic set |
+| terminal QR | captured Unicode half-block output independently decodes with `quircs` to the exact original link |
+| PNG QR | mode-0600 PNG independently decodes with `quircs`, including a long REALITY/XHTTP/Unicode link |
+| portable subscription | multi-node Base64 output independently decodes, imports again, and produces the same canonical node set |
+| live REALITY | export → PNG QR decode → re-import → compile → real loopback connection passes separately with Xray v26.3.27 and v26.7.28 |
+| chain semantics | `chain export` retains all hop outbounds and `dialerProxy` edges, validates against stable Xray and never emits a single-node link |
+| secret handling | JSON node lists and opaque `node show` fields are redacted; output files replace atomically at 0600; relative and absolute destinations are tested; clipboard payload uses stdin |
+| upstream review | live stable/preview releases and commits, 33 Xray source snapshots, eight vendored protobuf files, and current v2rayN/v2rayNG serializer paths are checked by `cargo xtask upstream-check` |
+
+## 1.1.0 candidate gate evidence
+
+| Gate | Candidate result |
+|---|---|
+| `cargo fmt --all --check` | **pass** |
+| `cargo check --workspace --all-targets --all-features` | **pass** |
+| strict all-target/all-feature Clippy | **pass**, zero warnings |
+| stable v26.3.27 workspace | **pass**: Cargo reported 799 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
+| preview v26.7.28 workspace | **pass**: Cargo reported 799 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
+| ignored TUN/DNS Xray validation | **pass separately** with `CAP_NET_ADMIN` on both stable and preview; `xraytui0` absent afterward |
+| privileged namespaces | **pass**: 12 kernel/network scenarios plus one real CLI/helper/core exact-instance scenario; no skip |
+| `cargo xtask ci` | **pass**: fmt, check, strict Clippy, workspace build/test and rustdoc |
+| `cargo xtask upstream-check` | **pass** against live GitHub release/tag/source state on 2026-08-21 |
+| `cargo deny check` | **pass**: advisories, bans, licenses and sources |
+| `cargo audit` | **pass** against fresh advisory-db commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
+| release workspace build | **pass** with all features |
+| `scripts/release-smoke.sh` | **pass** against stable Xray: sharing, supervision, persistence, staged install/permissions/uninstall |
+| deterministic archive / clean Arch / `namcap` / package install-upgrade | **pending**; do not inherit 1.0.0's result |
+| PR/CI/merge/tag/public artifact verification | **pending** |
+
+## Published 1.0.0 release evidence
 
 | Gate | Result |
 |---|---|
@@ -56,7 +92,7 @@ SHA-256 matched its official `.dgst` file before use.
 | E | two-hop chain reaches the terminal through hop one | **passing** with an observed transit connection |
 | F | import valid, malformed and unsupported node representations | **passing**, including property tests over arbitrary input |
 | G | subscription add/change/remove, diff and rollback | **passing** against a real local HTTP fixture |
-| H | terminal and PNG QR round-trip decode | **partial**: PNG encode/decode round-trip passes and release smoke exports both forms; terminal pixels are not captured and decoded by an independent scanner |
+| H | terminal and PNG QR round-trip decode | **passing on the 1.1.0 candidate branch**: both a captured terminal module matrix and PNG are decoded by independent `quircs`; **published 1.0.0 remained partial** |
 | I | kill Xray in restore mode | **passing**: listener death, backoff and a new live PID are observed |
 | J | daemon loss while TUN is active; lease cleanup | **passing** for disconnect and expired-lease recovery |
 | K | repeated TUN enable/disable leaves no residue | **passing** over three cycles, checking links, routes, rules, nftables and leases |
@@ -93,9 +129,11 @@ SHA-256 matched its official `.dgst` file before use.
    unauthenticated loopback TCP. A random local port is not a security boundary.
 3. **Architecture.** The package and binary archive are verified only for
    `x86_64`; no `aarch64` artifact is claimed.
-4. **Terminal QR decoding.** The terminal renderer is tested structurally and
-   in release smoke, but scenario H will not be called complete until an
-   independent decoder reads an actual terminal capture.
+4. **1.1.0 publication.** Clean packaging, upgrade and retrieved-public-artifact
+   verification remain pending and must not be inferred from the 1.0.0 table.
+5. **Diagnostic bundles.** There is no automatic bundle exporter yet. Bug
+   reports must use `doctor`, `status` and manually reviewed log excerpts; never
+   attach generated JSON, policy files, share exports or QR images.
 
 ## Security posture
 
@@ -104,11 +142,10 @@ Credentials in share links, subscription URLs, QR codes and generated Xray JSON
 are redacted from normal output and logs, but exported material must still be
 handled as secret.
 
-The final dependency audit found RUSTSEC-2026-0258 in `h2` 0.4.15, published
-after rc1. `Cargo.lock` was updated to the fixed 0.4.16 and every quality,
-package and integration gate above was run with that version. The remaining
-three RustSec warnings are reviewed transitive risks, not known vulnerabilities;
-their exact reachability and decisions are in `SECURITY.md` and `deny.toml`.
+The 1.0.0 audit found RUSTSEC-2026-0258 in `h2` 0.4.15 and upgraded it to
+0.4.16. The 1.1.0 candidate additionally removed the advisory-affected
+`rqrr`/`lru` QR path. Its release policy has no RustSec ignores, and the fresh
+audit and `cargo deny check` results are recorded above and in `SECURITY.md`.
 
 ## Privileged-test containment
 

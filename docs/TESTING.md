@@ -10,10 +10,12 @@
 | end-to-end | `crates/cli/tests/end_to_end.rs` | an Xray binary; runs the real daemon and CLI |
 | privileged | `crates/linux-net/tests/netns.rs` | a network namespace, **never the host** |
 | invariants | `xtask/tests/no_shell.rs` | nothing; greps the shipping code |
+| share interoperability | `crates/import/tests/cross_client.rs` | stable and preview Xray for config validation |
 
 Tests that need a core skip with a printed `SKIPPED …` rather than passing
 silently. Nothing in this repository requires internet access, a public proxy or
-a public resolver.
+a public resolver during the test run. `cargo xtask upstream-check` is a separate
+compatibility audit and deliberately uses GitHub release and raw-source APIs.
 
 ```sh
 cargo build --workspace
@@ -44,10 +46,27 @@ requested. A chain test then asserts both that the exit identified itself *and*
 that the transit hop saw exactly one connection — which is what distinguishes
 "went through the chain" from "went straight to the exit".
 
+The VLESS REALITY sharing acceptance test uses the same observable-egress
+principle. It starts a loopback TLS target, an official-Xray REALITY server and a
+compiled official-Xray client, then proves import → export → independently
+decoded PNG QR → re-import → live SOCKS connection. No public service is used.
+
+## Share and QR oracles
+
+Share-link tests compare canonical connection semantics after export and
+re-import; display names and harmless ordering differences are excluded. The
+cross-client corpus contains sanitized links emitted by current v2rayN and
+v2rayNG serializers. Both stable and preview Xray validate the resulting config.
+
+QR generation and decoding use unrelated implementations: `qrcode` encodes and
+the pure-Rust `quircs` scanner decodes. One test rasterizes the Unicode terminal
+blocks exactly as a captured terminal would, and another reads the PNG file.
+Both must yield the original long REALITY/XHTTP link.
+
 ## The privileged suite
 
 ```sh
-sudo ./scripts/netns-test.sh
+./scripts/netns-test.sh
 ```
 
 Twelve linux-net tests plus one full controller/CLI scenario exercise TUN
@@ -57,8 +76,10 @@ cover acceptance scenarios C, J, K and M.
 
 Three separate things keep them off a real machine:
 
-1. **The script builds outside and runs inside.** Building may need the network;
-   the namespace deliberately has none. `unshare --net --mount --pid --fork
+1. **The script builds outside as the invoking user and runs inside as root.**
+   Building may need the network and must not depend on root's Cargo setup; the
+   namespace deliberately has none. Only the resolved test binaries cross the
+   explicit `sudo unshare` boundary. `unshare --net --mount --pid --fork
    --mount-proc --propagation private` then gives the test binary a network
    stack with nothing in it but loopback, a mount namespace where a private
    cgroup v2 hierarchy is mounted over `/sys/fs/cgroup`, and a PID namespace
@@ -112,6 +133,11 @@ cargo xtask ci
 
 runs fmt, check, clippy with `-D warnings`, builds the real cross-package
 binaries, then runs tests and docs. CI runs the same list.
+
+The release gate is broader: `cargo audit`, `cargo deny check`, stable/preview
+real-Xray suites, disposable namespace tests, packaging checks and
+published-artifact verification are also required. `docs/RELEASE.md` is the
+authoritative checklist. Skipped tests are recorded as skipped, never passed.
 
 ## Adding a test
 

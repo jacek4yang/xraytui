@@ -146,8 +146,10 @@ its directory or follows a symlink into something privileged.
 to be owned by the caller and not a symlink before use. Privileged file access in
 netd uses `openat2(RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH)` against a directory FD
 for `/run/xraytui` and `/sys/fs/cgroup/xraytui.slice`. Node-derived filenames are
-never used; exports go to a caller-specified path opened with `O_NOFOLLOW` in the
-*caller's* process, not in netd.
+never used. A share export is encoded in memory, written to an unpredictable
+`create_new` sibling with mode 0600, flushed, and atomically renamed to the exact
+caller-selected path in the *caller's* process, not in netd. An existing target
+symlink is replaced as a directory entry and is never followed.
 
 ### T7 — Secret leakage
 
@@ -159,10 +161,13 @@ and `Drop` that zeroizes. Secrets are never passed as argv and never placed in
 long-lived environment variables — the core receives them only in a 0600 config
 file. `tracing` fields go through a redaction layer that rewrites userinfo, known
 query parameters (`token`, `key`, `password`, `sub`, `auth`), and any path segment
-longer than 24 characters in a subscription URL. `xraytui diag export` produces a
-redacted bundle and diff-tests it against a secret corpus. Share links and QR codes
-are treated as secrets: displaying one prints a one-line warning that it grants
-proxy access. No crash upload, no automatic issue submission.
+longer than 24 characters in a subscription URL. There is not yet an automatic
+diagnostic-bundle exporter; reports must use `doctor`, `status` and manually
+reviewed runtime logs, never generated JSON or policy files. A share link or QR
+is materialized only after an explicit share action, is never logged or persisted
+in history, and file exports use the private atomic writer described in T6. Human
+warnings go to stderr so stdout remains a clean secret-bearing pipeline. No crash
+upload, no automatic issue submission.
 
 ### T8 — Supply chain: the Xray binary
 

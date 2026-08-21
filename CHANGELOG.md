@@ -5,6 +5,86 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-21
+
+### Added
+
+* First-class `node share` for one or many nodes: standard newline-separated
+  links, conventional Base64 subscriptions, versioned normalized JSON and Xray
+  outbound JSON. Selection accepts repeated node IDs, a subscription, or all
+  nodes; stdout contains only the requested payload.
+* Standard/de-facto serialization for VLESS, VMess (classic v2rayN JSON and
+  modern authority form), Trojan, Shadowsocks SIP002, SOCKS, HTTP proxy,
+  WireGuard and Xray-native Hysteria v2. Modern VLESS retains REALITY, Vision,
+  XHTTP `extra`, `finalmask`, post-quantum verification, ECH, certificate pins,
+  verified names, ALPN, fingerprints and every modeled transport field.
+* Explicit `lossless`, `compatible`, `lossy` and `unsupported` export fidelity.
+  Lossy standard output is refused until `--allow-lossy` is requested, with
+  non-secret omitted field names reported on stderr.
+* Terminal QR rendering with automatic H/Q/M/L correction selection and terminal
+  fit checks; atomic mode-0600 PNG QR and text/JSON exports; clipboard transfer
+  over stdin. Independent `quircs` acceptance tests decode captured half-block
+  terminal output and PNG output, including long Unicode REALITY/XHTTP links.
+* The Nodes TUI share menu (`Q`): show link, show QR, export PNG, export link, or
+  export Xray JSON. Credential overlays are explicit, closable, and tested at
+  80x24.
+* Lossless `chain export` to Xray JSON. It retains every hop and
+  `streamSettings.sockopt.dialerProxy` edge and refuses to masquerade as a
+  portable single-node link.
+* Sanitized current v2rayN/v2rayNG fixture corpus and import → export → re-import
+  semantic equivalence tests. A loopback-only acceptance test additionally
+  exports VLESS REALITY Vision, independently decodes its QR, re-imports it,
+  compiles it, and carries a real connection through Xray stable and preview.
+* A network-backed `cargo xtask upstream-check`: live stable/preview release and
+  tag-commit checks, SHA-256 watches over 33 Xray connection/routing source
+  paths, byte comparison of the eight vendored protobuf files, and watches over
+  current v2rayN/v2rayNG share serializers. Reviewed snapshots live in
+  `upstream-compat.toml`.
+
+### Changed
+
+* Node identity is now a SHA-256 canonical fingerprint of every modeled
+  connection layer, including credential fingerprints, transport, TLS/REALITY,
+  `finalmask`, mux, socket settings and unknown extension fields, while ignoring
+  display name/source/tags. Rename/reorder no longer changes identity; endpoint,
+  credential, protocol, transport or security changes do.
+* Xray JSON import and compilation track modern mKCP `finalmask`, TLS ECH/pins/
+  verified names/cipher fields, REALITY post-quantum verification, and Xray's
+  native Hysteria protocol/transport split. WireGuard and Hysteria de-facto links
+  are preserved as Xray nodes rather than mislabeled as foreign runtimes.
+* mKCP share fields are compiled through a startup capability probe instead of a
+  brittle version check. Stable v26.3.27 uses layered `header-*` and
+  `mkcp-aes128gcm` masks; preview v26.7.28 uses repeated `mkcp-legacy` masks.
+  Runtime, node export and chain export all use the selected binary's proven
+  dialect.
+
+### Fixed
+
+* Export no longer emits an apparently valid link while silently dropping mux,
+  socket options, custom WebSocket headers, VMess `alterId`, WireGuard routing,
+  Hysteria-only fields, or dialect-specific extensions.
+* `node list --format json` no longer serializes UUIDs or passwords; it emits a
+  redacted summary and canonical fingerprint.
+* A bare relative output such as `--output node.txt` no longer writes the file
+  and then reports a false failure while trying to fsync an empty parent path.
+* Hysteria port ranges using the older colon spelling are normalized before
+  identity calculation, so export/re-import cannot rotate the node fingerprint.
+* Hostile QR imports no longer traverse the advisory-affected `rqrr`/`lru`
+  dependency path. The independent decoder is now `quircs`; input dimensions and
+  decode allocation are bounded, ratatui is 0.30.2, `lru` is fixed at 0.18.2,
+  and the release policy carries no RustSec ignores.
+* Stable Xray's post-2026-06 removal of `allowInsecure` is enforced rather than
+  silently ignored. Links requiring it remain preserved and explain why the
+  installed core cannot execute them.
+* TLS-only extension keys found on a REALITY link are retained for ecosystem
+  round trips and mark the node degraded instead of being silently consumed as
+  if current Xray REALITY used them.
+* `node show` now redacts opaque `finalmask` values and preserved future query
+  values as well as typed credentials. This closes a leak where an imported
+  extension token or mask password could appear in ordinary inspection output.
+* Cross-package CLI tests now stop the daemon gracefully, allowing it to reap
+  the supervised Xray child rather than leaving orphan test processes behind.
+
 ## [1.0.0] - 2026-08-20
 
 First daily-use release. See `STATUS.md` for the measured acceptance matrix and

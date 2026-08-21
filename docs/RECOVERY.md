@@ -25,6 +25,10 @@ removed in xraytui's name.
 Every rule the helper installs carries a comment of the form
 `xraytui:<uid>:<generation>`.
 
+Share-link text files, QR PNGs and exported Xray JSON are never recovery state.
+They contain credentials but cannot modify networking, and neither `--recover`
+nor `doctor --repair` deletes them. Manage them as ordinary private user files.
+
 ## The supported way
 
 ```sh

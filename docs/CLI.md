@@ -90,11 +90,20 @@ xraytui node test hk-01                      # probe through a profile listener
 xraytui node share hk-01                     # prints a share link
 xraytui node share hk-01 --qr                # terminal QR
 xraytui node share hk-01 --qr --invert       # for dark terminals
-xraytui node share hk-01 --png node.png      # PNG, written 0600
+xraytui node share hk-01 --png node.png      # PNG, atomically written 0600
+xraytui node share hk-01 --output node.txt   # link file, atomically written 0600
+xraytui node share hk-01 jp-02               # links, one per line
+xraytui node share --subscription provider-a # every owned node
+xraytui node share hk-01 jp-02 --as base64   # portable subscription
+xraytui node share hk-01 --as xray-json      # lossless Xray outbound
 ```
 
 A share link and a QR code are credentials. `node share` prints a warning to
-stderr, so piping the link still works.
+stderr, so piping the link still works. Standard-link export refuses omissions
+unless `--allow-lossy` is explicitly supplied; `--format json` reports fidelity
+and non-secret notes separately. VMess supports `--vmess-format
+auto|classic|standard`. Full semantics, limits and the interoperability matrix
+are in `docs/SHARING.md`.
 
 ## Groups and chains
 
@@ -104,10 +113,13 @@ xraytui group select auto-hk node:hk-02      # manual groups only; one RPC
 xraytui group test auto-hk
 xraytui chain list                           # Local -> HK -> US -> Internet
 xraytui chain test hk-us
+xraytui chain export hk-us                   # complete Xray JSON, never a fake node link
+xraytui chain export hk-us --output chain.json  # private 0600 file
 ```
 
 Chains are printed in traffic order: the first hop is the one the local machine
-talks to, the last is the exit.
+talks to, the last is the exit. A chain cannot be flattened into an ordinary
+share link; export retains every hop and `dialerProxy` edge.
 
 ## Applications and exec
 

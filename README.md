@@ -38,7 +38,7 @@ systemctl --user enable --now xraytuid.service
 xraytui doctor
 ```
 
-The PKGBUILD downloads the immutable `v1.0.0` source asset, verifies its SHA-256
+The PKGBUILD downloads the immutable `v1.1.0` source asset, verifies its SHA-256
 checksum, builds with `Cargo.lock` frozen, runs the unprivileged test suite, and
 installs the three binaries, hardened systemd units, completions, man pages and
 documentation. See [docs/INSTALLATION.md](docs/INSTALLATION.md) for TUN setup,
@@ -51,17 +51,22 @@ cargo build --release                          # needs protoc; see CONTRIBUTING.
 cargo xtask install --dry-run                  # print exactly what would be installed, where
 xraytui init                                   # create private XDG configuration and state
 xraytui doctor                                 # check xray binary, gRPC capabilities, permissions
-xraytui node import --file ~/nodes.txt         # share links, one per line; or --png for a QR
+xraytui node import --file ~/nodes.txt         # share links, one per line; use --qr for a QR image
+xraytui node share hk-01                       # clean standard link on stdout
+xraytui node share hk-01 --qr                  # terminal QR; --output node.png for private PNG
+xraytui node share hk-01 jp-02 --as base64     # portable curated subscription
 xraytui                                        # TUI: define profiles, pick targets, write rules
 xraytui exec --profile work -- curl https://example.com   # exact, unprivileged per-process routing
 xraytui mode cycle                             # off -> rule -> global -> direct (needs netd for TUN)
 xraytui tun plan                               # show every intended kernel change before applying it
-xraytui diag export                            # redacted diagnostics bundle for a bug report
 ```
 
-Share links and QR codes grant proxy access; treat the files you import from as
-credentials. `xraytui node import` reads from a file or stdin rather than argv so
-they do not land in shell history.
+Share links and QR codes grant proxy access. Import reads from a file or stdin so
+credentials need not land in shell history; export is an explicit reveal, keeps
+stdout machine-clean, and writes files atomically with mode 0600. Standard VLESS,
+VMess, Trojan, Shadowsocks, SOCKS, HTTP-proxy, WireGuard and Xray-native Hysteria
+representations round-trip through the typed model. Lossy links are refused unless
+the user explicitly opts in. See [docs/SHARING.md](docs/SHARING.md).
 
 ## What this is not
 
@@ -82,11 +87,12 @@ they do not land in shell history.
 
 ## Status
 
-Version 1.0.0 is the first daily-use release for a trusted single-user Linux
-workstation. IPv4 is the supported and fully exercised path. IPv6 remains
-experimental and disabled by default until its runtime path receives the same
-coverage. Shared machines with mutually untrusted local users are outside the
-support boundary because Xray's loopback commander has no authentication.
+Version 1.1.0 adds first-class interoperable sharing for a trusted single-user
+Linux workstation. `STATUS.md` separates verified candidate evidence from
+post-publication evidence. IPv4 is the supported and fully exercised path. IPv6
+remains experimental and disabled by default until its runtime path receives the
+same coverage. Shared machines with mutually untrusted local users are outside
+the support boundary because Xray's loopback commander has no authentication.
 
 `STATUS.md` is the authoritative, evidence-backed feature and test matrix;
 `SECURITY.md` records the residual risks and dependency review.
@@ -98,6 +104,7 @@ support boundary because Xray's loopback commander has no authentication.
 | `docs/ARCHITECTURE.md` | Component split, desired vs observed state, IPC boundaries, startup sequence, crate map. |
 | `docs/XRAY-INTEGRATION.md` | Generated tag namespace, rule order, profile switching, group loopback, chains, upstream constraints. |
 | `docs/CONFIGURATION.md` | XDG layout, permissions, every `config.toml` field, target/action token syntax. |
+| `docs/SHARING.md` | Share-link fidelity, CLI/TUI workflows, QR behavior, portable subscriptions and secret handling. |
 | `docs/NETWORKING.md` | TUN privilege separation, routes, marks, nftables, failure policies, per-application routing. |
 | `docs/DNS.md` | DNS managers, Xray DNS module, split DNS, loop prevention, leak diagnostics. |
 | `docs/TROUBLESHOOTING.md` | Symptom to cause to fix. |
