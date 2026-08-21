@@ -36,6 +36,14 @@ install=xraytui.install
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
 sha256sums=('7624a9362f56ebc1e3beca804d765fc8bb3a28336dad850b6928a1dd7740ac9f')
 
+_xraytui_set_rustflags() {
+  local remap="--remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+  case " ${RUSTFLAGS:-} " in
+    *" $remap "*) ;;
+    *) export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$remap" ;;
+  esac
+}
+
 prepare() {
   cd "$pkgname-$pkgver"
   # Fetch exactly Cargo.lock's dependency graph up front. `--frozen` below can
@@ -51,7 +59,7 @@ build() {
   # prost/tonic use generated sources from OUT_DIR. Remap the clean-build
   # directory so panic locations do not disclose or depend on makepkg's
   # temporary path, and so repeated package builds remain reproducible.
-  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+  _xraytui_set_rustflags
   # Arch enables C LTO globally. The workspace's portable builds bundle
   # SQLite, but that GCC LTO archive cannot be consumed by Arch's lld flags.
   # Packages should use Arch's maintained shared SQLite in any case.
@@ -62,7 +70,7 @@ build() {
 check() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
-  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+  _xraytui_set_rustflags
   export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
   # Privileged/live-host tests are opt-in and therefore skip here; all ordinary
   # unit and integration tests run without touching the host network.
