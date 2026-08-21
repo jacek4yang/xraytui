@@ -36,6 +36,10 @@ jobs:
   security:
     name: Dependency policy
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # rustsec/audit-check publishes its result as a Check Run on pushes.
+      checks: write
     env:
       # cargo-audit tracks current stable Rust independently of the project's
       # supported toolchain, so build the policy tools with current stable.
