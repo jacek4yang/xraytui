@@ -1,6 +1,6 @@
 # Maintainer: xraytui contributors
 pkgname=xraytui
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Terminal client for Xray-core with multiple concurrent egress profiles"
 arch=('x86_64')
@@ -34,7 +34,15 @@ optdepends=(
 )
 install=xraytui.install
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
-sha256sums=('96cdcc7802e36e9d43498686c7e17bbf26db9cc277d971f8e0cbfa91fe37a1a9')
+sha256sums=('96cb495f885bffb106033b6b3684646e61b2e1d3a9512183368f5eea2f0c1f3b')
+
+_xraytui_set_rustflags() {
+  local remap="--remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+  case " ${RUSTFLAGS:-} " in
+    *" $remap "*) ;;
+    *) export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$remap" ;;
+  esac
+}
 
 prepare() {
   cd "$pkgname-$pkgver"
@@ -48,6 +56,10 @@ build() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  # prost/tonic use generated sources from OUT_DIR. Remap the clean-build
+  # directory so panic locations do not disclose or depend on makepkg's
+  # temporary path, and so repeated package builds remain reproducible.
+  _xraytui_set_rustflags
   # Arch enables C LTO globally. The workspace's portable builds bundle
   # SQLite, but that GCC LTO archive cannot be consumed by Arch's lld flags.
   # Packages should use Arch's maintained shared SQLite in any case.
@@ -58,6 +70,7 @@ build() {
 check() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
+  _xraytui_set_rustflags
   export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
   # Privileged/live-host tests are opt-in and therefore skip here; all ordinary
   # unit and integration tests run without touching the host network.

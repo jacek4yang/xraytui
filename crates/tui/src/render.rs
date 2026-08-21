@@ -89,7 +89,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         } => draw_picker(frame, area, profile, candidates, *selected),
         Overlay::Confirm { prompt, .. } => draw_confirm(frame, area, prompt),
         Overlay::Form(form) => draw_form(frame, area, form),
-        Overlay::Qr { art, node } => draw_qr(frame, area, art, node),
+        Overlay::Qr { art, node } => draw_qr(frame, area, art.expose(), node),
+        Overlay::ShareMenu { node, selected } => {
+            draw_share_menu(frame, area, node, *selected);
+        }
+        Overlay::SecretText { title, content } => {
+            draw_secret_text(frame, area, title, content.expose());
+        }
     }
 }
 
@@ -404,7 +410,12 @@ fn draw_form(frame: &mut Frame<'_>, area: Rect, form: &crate::edit::Form) {
 
 /// A QR code, with the warning that it is a credential.
 fn draw_qr(frame: &mut Frame<'_>, area: Rect, art: &str, node: &str) {
-    let width = art.lines().map(str::len).max().unwrap_or(0) as u16 + 4;
+    let width = art
+        .lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0) as u16
+        + 4;
     let height = art.lines().count() as u16 + 4;
     let popup = centred(area, width.min(area.width), height.min(area.height));
     frame.render_widget(Clear, popup);
@@ -423,6 +434,69 @@ fn draw_qr(frame: &mut Frame<'_>, area: Rect, art: &str, node: &str) {
                 .title(format!(" {node} — any key closes "))
                 .border_style(Style::default().fg(theme::WARN)),
         ),
+        popup,
+    );
+}
+
+fn draw_share_menu(frame: &mut Frame<'_>, area: Rect, node: &str, selected: usize) {
+    const CHOICES: [&str; 5] = [
+        "Show QR",
+        "Show share link",
+        "Export PNG QR",
+        "Export share link",
+        "Export Xray JSON",
+    ];
+    let popup = centred(area, 54, 9);
+    frame.render_widget(Clear, popup);
+    let items = CHOICES
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let style = if index == selected {
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!(" {}. {label}", index + 1)).style(style)
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Share {node} — enter select, esc cancel "))
+                .border_style(Style::default().fg(theme::WARN)),
+        ),
+        popup,
+    );
+}
+
+fn draw_secret_text(frame: &mut Frame<'_>, area: Rect, title: &str, content: &str) {
+    let popup = centred(
+        area,
+        area.width.saturating_sub(4).min(100),
+        9.min(area.height),
+    );
+    frame.render_widget(Clear, popup);
+    let lines = vec![
+        Line::from(Span::styled(
+            "credential visible — anyone who copies it can use the server",
+            Style::default().fg(theme::WARN),
+        )),
+        Line::from(""),
+        Line::from(content.to_owned()),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {title} — enter/esc closes "))
+                    .border_style(Style::default().fg(theme::WARN)),
+            )
+            .wrap(Wrap { trim: false }),
         popup,
     );
 }

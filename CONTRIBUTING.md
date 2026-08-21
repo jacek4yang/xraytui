@@ -65,11 +65,13 @@ sudo unshare --net --mount --pid --fork -- \
 cargo xtask upstream-check
 ```
 
-Lists the pinned protobuf closure and tells you what to compare it against. It
-performs no network I/O. When the pinned Xray tag moves, update
-`docs/UPSTREAM-COMPATIBILITY.md` **with the date you checked** and re-run the
-compiler's `xray_validates_output` tests, which are what actually prove the
-generated configuration still loads.
+Fetches official stable and preview release metadata, resolves both tag commits,
+and byte-compares watched Xray source/protobuf files and mature-client serializer
+sources against `upstream-compat.toml`. It requires network access and fails
+closed on drift. Inspect every reported change, update the manifest and
+`docs/UPSTREAM-COMPATIBILITY.md` **with the date you checked**, then rerun real
+stable/preview compiler and share-link tests. Hash equality detects change; real
+Xray proves behavior.
 
 ## Commits
 

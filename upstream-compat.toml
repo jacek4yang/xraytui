@@ -1,0 +1,80 @@
+# Reviewed primary-source snapshots. `cargo xtask upstream-check` compares the
+# current GitHub releases and these exact source paths. A changed hash is a
+# mandatory review signal: update the importer, serializer, compiler, fixtures,
+# and this manifest together after establishing the new semantics.
+
+[core]
+repository = "XTLS/Xray-core"
+stable_tag = "v26.3.27"
+stable_commit = "d2758a023cd7f4174a5a5fa4ff66e487d4342ba0"
+preview_tag = "v26.7.28"
+preview_commit = "5ca6f4b7d4dc20a881d4330e498892697627ec0c"
+
+[core.stable_files]
+"infra/conf/freedom.go" = "f6d91aa70f5827e656db11121c495924320c3495f2f57240ab5be4177767d558"
+"infra/conf/transport_internet.go" = "c8e1b9ff4abe28183b1641f37f611955c6fcf228161c10e0f3a5e80d37bcbd4f"
+"infra/conf/vless.go" = "6a010b31bb7e681efa4dae2e93e3ba545bae95035b187f7e388c81f43b2a8070"
+"infra/conf/vmess.go" = "4ecce7e5e81acd7a739b8706083be7931b22a3566302f0dcc801312e16b54f14"
+"infra/conf/trojan.go" = "4bf88392feef89a8b7900f84ab3d9a020b8dbcb2693c0441bef29fc450db5e66"
+"infra/conf/shadowsocks.go" = "49e5e83a1eebde897e688a1f0ff8a50c0808a2a00306bda0bb978b30e93163f6"
+"infra/conf/socks.go" = "33a037b9fcc5bb066f5090944b6fc2051199290dbc00468345acc17855a0bb74"
+"infra/conf/hysteria.go" = "d9a6091a7c1e4dccfed98602e4a1d67dbad90eaaae50ca0bee1918b603dfa762"
+"proxy/vless/outbound/outbound.go" = "3f831738f85418273505058dc28dfd83bf2ae241579a5818bd1e11a3c88d6463"
+"proxy/wireguard/config.proto" = "d6f4061c0a9a1b4f3a4fcc6fdbb2d3531f60f19aadeda211f3b44a38a33b7d65"
+"proxy/hysteria/config.proto" = "2b724452cf8d54bc2f37bcc5d6fe9f2fb85036aebc0dce803d3a00bd8ff58550"
+"proxy/hysteria/account/config.proto" = "f3b64dfb54383f3674aec80cb4655a68a4528e24872bb5bb90d72de329604f1d"
+"proxy/freedom/config.proto" = "1a474005a4efeb8ee7a370f6b261ed7c3c0bc3ae1144c3125572df3a0f8e1df4"
+"proxy/freedom/freedom.go" = "2567b4fb24ee2239c10c759bc7daca35739bb8227742d4985d038af713fc9ec0"
+"transport/internet/reality/config.proto" = "0719b09372b3fbbf2b5b8e8b007ba6033d7f98d3a4b12df8d84f510fcfcc2aa0"
+"transport/internet/splithttp/config.proto" = "aeee5abff1431782bfbc14ea0450115e3b56ece6f21446eef17e852720aad9f7"
+
+[core.preview_files]
+"infra/conf/freedom.go" = "a56aca8c577b8d6d6cb1fdd0c91dcf178599853d183e0acc3ff11603dff860d2"
+"infra/conf/transport_finalmask.go" = "2d82e2cea9e6c621933590ff27b094cfc9d01571fb5b214db9fb2600b287e335"
+"infra/conf/transport_internet.go" = "b2f0b2285c794cdae97b1b508eccbe604321d4ea00c05e04cda35645c0ef56d1"
+"infra/conf/vless.go" = "d976701c650274d9c569312fd154d29c7341e1b9be18ca1f7d064b2211a1f16f"
+"infra/conf/vmess.go" = "64a95f1085c794407432f6e89e22b835f5ae5f747dcafa425f5b3aff7b3ee096"
+"infra/conf/trojan.go" = "9aa3c084b6e1eb8e0819c360c6ac316c5055fe31fde7b6879683aa277b5a4e50"
+"infra/conf/shadowsocks.go" = "a8a6a77c4a2d1f8cc372fb3fa4f824cfbe82c4b083b38af37bef98c163b9fca6"
+"infra/conf/socks.go" = "4762e918353d3b74e44e6d0b83ff4a07aaeaf37b64652a5b91617ad38d7ce57d"
+"infra/conf/hysteria.go" = "28627316ad7c5a68202aea51c489c1c7e33742b570113bde7a323cce45a7bc8b"
+"proxy/vless/outbound/outbound.go" = "da59f020b77e8c53f5815a5e55c48b921405f94ecd932d737ee8d69fc9624f1d"
+"proxy/wireguard/config.proto" = "03a08add1e61b6172028073c00ddefa5055dfe46880099cf7acf40667857126c"
+"proxy/hysteria/config.proto" = "fb3f4d30f4abbcba5a11858e919c0dac84d416065d6846fa739073aaf495ab3b"
+"proxy/hysteria/account/config.proto" = "f3b64dfb54383f3674aec80cb4655a68a4528e24872bb5bb90d72de329604f1d"
+"proxy/freedom/config.proto" = "6f8c8a43a702b6a92dd7ac029b534c62c373f9f4956471ea8cbc9d0751a2927a"
+"proxy/freedom/freedom.go" = "7284ae9a3e410d9447c3ac49f85afc919578777b08a63de7225bed236f14c9fc"
+"transport/internet/reality/config.proto" = "0719b09372b3fbbf2b5b8e8b007ba6033d7f98d3a4b12df8d84f510fcfcc2aa0"
+"transport/internet/splithttp/config.proto" = "f44b635fd57f3eec872c0aec70ae8aa25071d1ded2890778f3c16e64101015ef"
+
+[[ecosystem]]
+name = "v2rayN share serializers"
+repository = "2dust/v2rayN"
+reference = "master"
+snapshot_commit = "ebb4bd5daa45478e337a68f0be768fb7045520dc"
+
+[ecosystem.files]
+"v2rayN/ServiceLib/Handler/Fmt/BaseFmt.cs" = "c4424f273fcabbc0707cd74afc1ebb7ca6fec1d31381ad28e98e4745961bca66"
+"v2rayN/ServiceLib/Handler/Fmt/VLESSFmt.cs" = "db41efd8d68c975697053a0583e4841d91e8f191c6f15d3bebd5b4de5986f636"
+"v2rayN/ServiceLib/Handler/Fmt/VmessFmt.cs" = "58db7545ae2f6402f2ed9d83d2998b3a3b389de9d8a207af6bc0d3d0051618ad"
+"v2rayN/ServiceLib/Handler/Fmt/TrojanFmt.cs" = "6311e75fcc748f4e9b7b1bc881b591d8200a3a7f47513497973cee73e786eb71"
+"v2rayN/ServiceLib/Handler/Fmt/ShadowsocksFmt.cs" = "90232b814290821ddd8a88c48dbcbacc2c99caa54c18d4fda3d0cabcaa1565dd"
+"v2rayN/ServiceLib/Handler/Fmt/SocksFmt.cs" = "f855cd2e1e7c3c6b89bf7f7e19e6480b3a2a229611a48cbfe48c75627d9e8dc6"
+"v2rayN/ServiceLib/Handler/Fmt/WireguardFmt.cs" = "1d01fcf0a2a2d6ee4cfbf58dbffce072eb16f47a94b25b3c164f51c309b4710b"
+"v2rayN/ServiceLib/Handler/Fmt/Hysteria2Fmt.cs" = "d58ac019921b03c3aedf4e1e1205224c84c1dbabe40daf942407cd13942dd043"
+
+[[ecosystem]]
+name = "v2rayNG share serializers"
+repository = "2dust/v2rayNG"
+reference = "master"
+snapshot_commit = "63f557242bdd071214c4037c76c912b66da925c8"
+
+[ecosystem.files]
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/FmtBase.kt" = "ba13522d717bee1a668d839f9c6ac937b7c706a27fbb27c6b7010282951371cb"
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/VlessFmt.kt" = "7f66ec72acb8dd36226936552ad109525a30f240a099a1ae4d72fa8f0b1f4885"
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/VmessFmt.kt" = "b738eb27889eee03c983637ff9286041fb582a541384e22b818defbc1691f44b"
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/TrojanFmt.kt" = "4058cc4c8b1b662c034c86c5d78ef728a6ece2ee67fd370b61384532345e51d8"
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/ShadowsocksFmt.kt" = "23057dd29f8e1a44da51fbb61885f143a58225b692b02c531004e091b3c2737c"
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/SocksFmt.kt" = "e9d1031a54d31893837674120d032e4fef5ffb75e7561d88ce976314c3492862"
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/WireguardFmt.kt" = "c3fe753457c8b1e6887ad1592f94a5dce3b44634ad928b2919b3e591d9e3c3b3"
+"V2rayNG/app/src/main/java/com/v2ray/ang/fmt/Hysteria2Fmt.kt" = "f4934882416995a21eda65bd252f537a69e30f59a993308359b26473c3e0a240"

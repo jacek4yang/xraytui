@@ -13,6 +13,8 @@ unsafe_code = "forbid"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 toml = { workspace = true }

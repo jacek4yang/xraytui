@@ -9,11 +9,9 @@ use xraytui_domain::{
     TransportSecurity,
 };
 use xraytui_secrets::Secret;
-use xraytui_xray_model::{
-    FinalMask, Mask as XrayMask, MuxConfig, Outbound, SockOpt, StreamSettings,
-};
+use xraytui_xray_model::{MuxConfig, Outbound, SockOpt, StreamSettings};
 
-use crate::CompileError;
+use crate::{CompileError, MkcpFinalmaskDialect};
 
 /// Build the outbound object for a node under the given tag.
 ///
@@ -24,6 +22,20 @@ use crate::CompileError;
 /// # Errors
 /// Returns [`CompileError::UnsupportedNode`] when the node cannot be represented.
 pub fn build(node: &Node, tag: &str, dialer_proxy: Option<&str>) -> Result<Outbound, CompileError> {
+    build_with_dialect(node, tag, dialer_proxy, MkcpFinalmaskDialect::default())
+}
+
+/// Build an outbound using the final-mask dialect accepted by the selected
+/// Xray binary.
+///
+/// # Errors
+/// Returns [`CompileError::UnsupportedNode`] when the node cannot be represented.
+pub fn build_with_dialect(
+    node: &Node,
+    tag: &str,
+    dialer_proxy: Option<&str>,
+    mkcp_dialect: MkcpFinalmaskDialect,
+) -> Result<Outbound, CompileError> {
     if !node.is_compilable() {
         return Err(CompileError::UnsupportedNode {
             node: node.id.to_string(),
@@ -37,9 +49,9 @@ pub fn build(node: &Node, tag: &str, dialer_proxy: Option<&str>) -> Result<Outbo
 
     let settings = protocol_settings(node)?;
     let stream = if node.protocol.accepts_stream_settings() {
-        Some(stream_settings(node, dialer_proxy))
+        Some(stream_settings(node, dialer_proxy, mkcp_dialect)?)
     } else if dialer_proxy.is_some() {
-        // WireGuard and Hysteria carry their own transport, so there is nowhere
+        // WireGuard carries its own transport, so there is nowhere
         // to hang a dialerProxy. Refusing is better than emitting a config that
         // silently ignores the chain hop.
         return Err(CompileError::UnsupportedNode {
@@ -182,20 +194,8 @@ fn protocol_settings(node: &Node) -> Result<Value, CompileError> {
             Value::Object(settings)
         }
         ProtocolSettings::Hysteria(h) => {
-            let mut server = Map::new();
-            server.insert("address".into(), json!(address));
-            server.insert("port".into(), json!(port));
-            server.insert("auth".into(), json!(h.auth.expose()));
-            if let Some(obfs) = &h.obfs {
-                server.insert("obfs".into(), json!(obfs.expose()));
-            }
-            if let Some(up) = &h.up {
-                server.insert("up".into(), json!(up));
-            }
-            if let Some(down) = &h.down {
-                server.insert("down".into(), json!(down));
-            }
-            json!({ "servers": [Value::Object(server)] })
+            let _ = h;
+            json!({ "version": 2, "address": address, "port": port })
         }
     };
     Ok(value)
@@ -206,13 +206,25 @@ fn protocol_settings(node: &Node) -> Result<Value, CompileError> {
 /// Returns `None` for `none`, and for values the pinned release does not
 /// register, in which case only the mKCP mask itself is emitted.
 fn mkcp_header_mask(header: &str) -> Option<&'static str> {
-    match header {
+    match mkcp_legacy_header(header)? {
         "srtp" => Some("header-srtp"),
         "utp" => Some("header-utp"),
-        "wechat-video" | "wechat" => Some("header-wechat"),
+        "wechat" => Some("header-wechat"),
         "dtls" => Some("header-dtls"),
         "wireguard" => Some("header-wireguard"),
         "dns" => Some("header-dns"),
+        _ => None,
+    }
+}
+
+fn mkcp_legacy_header(header: &str) -> Option<&'static str> {
+    match header {
+        "srtp" => Some("srtp"),
+        "utp" => Some("utp"),
+        "wechat-video" | "wechat" => Some("wechat"),
+        "dtls" => Some("dtls"),
+        "wireguard" => Some("wireguard"),
+        "dns" => Some("dns"),
         _ => None,
     }
 }
@@ -221,109 +233,198 @@ fn expose_or_empty(secret: Option<&Secret>) -> &str {
     secret.map_or("", Secret::expose)
 }
 
-fn stream_settings(node: &Node, dialer_proxy: Option<&str>) -> StreamSettings {
+fn stream_settings(
+    node: &Node,
+    dialer_proxy: Option<&str>,
+    mkcp_dialect: MkcpFinalmaskDialect,
+) -> Result<StreamSettings, CompileError> {
+    let hysteria = match &node.protocol {
+        ProtocolSettings::Hysteria(settings) => Some(settings),
+        _ => None,
+    };
     let mut stream = StreamSettings {
-        network: Some(node.transport.xray_network().to_owned()),
+        network: Some(
+            if hysteria.is_some() {
+                "hysteria"
+            } else {
+                node.transport.xray_network()
+            }
+            .to_owned(),
+        ),
         security: Some(node.security.xray_security().to_owned()),
         ..Default::default()
     };
 
-    match &node.transport {
-        Transport::Raw(raw) => {
-            if raw.header_type.as_deref().is_some_and(|t| t != "none") {
-                let mut request = Map::new();
-                if let Some(path) = &raw.path {
-                    request.insert("path".into(), json!([path]));
-                }
-                if !raw.host.is_empty() {
-                    request.insert("headers".into(), json!({ "Host": raw.host }));
-                }
-                stream.raw_settings = Some(json!({
-                    "header": { "type": raw.header_type, "request": Value::Object(request) }
-                }));
-            }
-        }
-        Transport::Xhttp(x) => {
-            let mut settings = Map::new();
-            if let Some(host) = &x.host {
-                settings.insert("host".into(), json!(host));
-            }
-            if let Some(path) = &x.path {
-                settings.insert("path".into(), json!(path));
-            }
-            if let Some(mode) = &x.mode {
-                settings.insert("mode".into(), json!(mode));
-            }
-            if let Some(extra) = &x.extra {
-                settings.insert("extra".into(), extra.clone());
-            }
-            stream.xhttp_settings = Some(Value::Object(settings));
-        }
-        Transport::Grpc(g) => {
-            let mut settings = Map::new();
-            settings.insert("serviceName".into(), json!(g.service_name));
-            if g.multi_mode {
-                settings.insert("multiMode".into(), json!(true));
-            }
-            if let Some(authority) = &g.authority {
-                settings.insert("authority".into(), json!(authority));
-            }
-            stream.grpc_settings = Some(Value::Object(settings));
-        }
-        Transport::Websocket(w) => {
-            let mut settings = Map::new();
-            settings.insert("path".into(), json!(w.path));
-            if let Some(host) = &w.host {
-                settings.insert("host".into(), json!(host));
-            }
-            if !w.headers.is_empty() {
-                settings.insert("headers".into(), json!(w.headers));
-            }
-            stream.ws_settings = Some(Value::Object(settings));
-        }
-        Transport::HttpUpgrade(h) => {
-            let mut settings = Map::new();
-            settings.insert("path".into(), json!(h.path));
-            if let Some(host) = &h.host {
-                settings.insert("host".into(), json!(host));
-            }
-            stream.httpupgrade_settings = Some(Value::Object(settings));
-        }
-        Transport::Mkcp(m) => {
-            // The pinned Xray release removed `kcpSettings.header` and
-            // `kcpSettings.seed` and refuses any configuration that still sets
-            // them. Share links, however, still carry `headerType` and `seed`, so
-            // they are translated into the replacement `finalmask` masks here.
-            stream.kcp_settings = Some(Value::Object(Map::new()));
-            let mut masks: Vec<XrayMask> = Vec::new();
-            if let Some(header) = m.header_type.as_deref()
-                && let Some(mask_type) = mkcp_header_mask(header)
-            {
-                masks.push(XrayMask {
-                    mask_type: mask_type.to_owned(),
-                    settings: None,
-                });
-            }
-            masks.push(match &m.seed {
-                Some(seed) => XrayMask {
-                    mask_type: "mkcp-aes128gcm".to_owned(),
-                    settings: Some(json!({ "password": seed.expose() })),
-                },
-                None => XrayMask {
-                    mask_type: "mkcp-original".to_owned(),
-                    settings: None,
-                },
-            });
-            stream.finalmask = Some(FinalMask {
-                tcp: Vec::new(),
-                udp: masks,
+    if let Some(hysteria) = hysteria {
+        let transport_is_default = matches!(
+            &node.transport,
+            Transport::Raw(raw)
+                if raw.host.is_empty()
+                    && raw.path.is_none()
+                    && raw.header_type.as_deref().is_none_or(|header| header == "none")
+        );
+        if !transport_is_default {
+            return Err(CompileError::UnsupportedNode {
+                node: node.id.to_string(),
+                reason: "Xray-native Hysteria uses its own QUIC transport and cannot combine it with another stream transport".to_owned(),
             });
         }
+        if !matches!(node.security, TransportSecurity::Tls(_)) {
+            return Err(CompileError::UnsupportedNode {
+                node: node.id.to_string(),
+                reason: "Xray-native Hysteria requires TLS security settings".to_owned(),
+            });
+        }
+        let mut settings = Map::new();
+        settings.insert("version".into(), json!(2));
+        settings.insert("auth".into(), json!(hysteria.auth.expose()));
+        if let Some(up) = &hysteria.up {
+            settings.insert("up".into(), json!(up));
+        }
+        if let Some(down) = &hysteria.down {
+            settings.insert("down".into(), json!(down));
+        }
+        stream.hysteria_settings = Some(Value::Object(settings));
+        stream.finalmask = hysteria_finalmask(node, hysteria)?;
+    } else {
+        match &node.transport {
+            Transport::Raw(raw) => {
+                if raw.header_type.as_deref().is_some_and(|t| t != "none") {
+                    let mut request = Map::new();
+                    if let Some(path) = &raw.path {
+                        request.insert("path".into(), json!([path]));
+                    }
+                    if !raw.host.is_empty() {
+                        request.insert("headers".into(), json!({ "Host": raw.host }));
+                    }
+                    stream.raw_settings = Some(json!({
+                        "header": { "type": raw.header_type, "request": Value::Object(request) }
+                    }));
+                }
+            }
+            Transport::Xhttp(x) => {
+                let mut settings = Map::new();
+                if let Some(host) = &x.host {
+                    settings.insert("host".into(), json!(host));
+                }
+                if let Some(path) = &x.path {
+                    settings.insert("path".into(), json!(path));
+                }
+                if let Some(mode) = &x.mode {
+                    settings.insert("mode".into(), json!(mode));
+                }
+                if let Some(extra) = &x.extra {
+                    settings.insert("extra".into(), extra.clone());
+                }
+                stream.xhttp_settings = Some(Value::Object(settings));
+            }
+            Transport::Grpc(g) => {
+                let mut settings = Map::new();
+                settings.insert("serviceName".into(), json!(g.service_name));
+                if g.multi_mode {
+                    settings.insert("multiMode".into(), json!(true));
+                }
+                if let Some(authority) = &g.authority {
+                    settings.insert("authority".into(), json!(authority));
+                }
+                stream.grpc_settings = Some(Value::Object(settings));
+            }
+            Transport::Websocket(w) => {
+                let mut settings = Map::new();
+                settings.insert("path".into(), json!(w.path));
+                if let Some(host) = &w.host {
+                    settings.insert("host".into(), json!(host));
+                }
+                if !w.headers.is_empty() {
+                    settings.insert("headers".into(), json!(w.headers));
+                }
+                stream.ws_settings = Some(Value::Object(settings));
+            }
+            Transport::HttpUpgrade(h) => {
+                let mut settings = Map::new();
+                settings.insert("path".into(), json!(h.path));
+                if let Some(host) = &h.host {
+                    settings.insert("host".into(), json!(host));
+                }
+                stream.httpupgrade_settings = Some(Value::Object(settings));
+            }
+            Transport::Mkcp(m) => {
+                // The pinned Xray release removed `kcpSettings.header` and
+                // `kcpSettings.seed` and refuses any configuration that still sets
+                // them. Share links, however, still carry `headerType` and `seed`, so
+                // they are translated into the replacement `finalmask` masks here.
+                let mut settings = Map::new();
+                if let Some(mtu) = m.mtu {
+                    settings.insert("mtu".into(), json!(mtu));
+                }
+                if let Some(tti) = m.tti {
+                    if !(10..=5000).contains(&tti) {
+                        return Err(CompileError::UnsupportedNode {
+                            node: node.id.to_string(),
+                            reason: format!("mKCP tti {tti} is outside Xray's 10..=5000 ms range"),
+                        });
+                    }
+                    settings.insert("tti".into(), json!(tti));
+                }
+                stream.kcp_settings = Some(Value::Object(settings));
+                if node.finalmask.is_none() {
+                    let mut masks = Vec::new();
+                    if let Some(header) = m.header_type.as_deref() {
+                        match mkcp_dialect {
+                            MkcpFinalmaskDialect::Layered => {
+                                if let Some(mask_type) = mkcp_header_mask(header) {
+                                    masks.push(json!({ "type": mask_type }));
+                                }
+                            }
+                            MkcpFinalmaskDialect::UnifiedLegacy => {
+                                if let Some(header) = mkcp_legacy_header(header) {
+                                    masks.push(json!({
+                                        "type": "mkcp-legacy",
+                                        "settings": { "header": header }
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    masks.push(match (mkcp_dialect, &m.seed) {
+                        (MkcpFinalmaskDialect::Layered, Some(seed)) => json!({
+                            "type": "mkcp-aes128gcm",
+                            "settings": { "password": seed.expose() }
+                        }),
+                        (MkcpFinalmaskDialect::Layered, None) => {
+                            json!({ "type": "mkcp-original" })
+                        }
+                        (MkcpFinalmaskDialect::UnifiedLegacy, Some(seed)) => json!({
+                            "type": "mkcp-legacy",
+                            "settings": { "value": seed.expose() }
+                        }),
+                        (MkcpFinalmaskDialect::UnifiedLegacy, None) => {
+                            json!({ "type": "mkcp-legacy" })
+                        }
+                    });
+                    stream.finalmask = Some(json!({ "udp": masks }));
+                }
+            }
+        }
+    }
+
+    if hysteria.is_none()
+        && let Some(finalmask) = &node.finalmask
+    {
+        if !finalmask.is_object() {
+            return Err(CompileError::UnsupportedNode {
+                node: node.id.to_string(),
+                reason: "finalmask must be a JSON object".to_owned(),
+            });
+        }
+        stream.finalmask = Some(finalmask.clone());
     }
 
     match &node.security {
         TransportSecurity::None => {}
-        TransportSecurity::Tls(tls) => stream.tls_settings = Some(tls_json(tls, node)),
+        TransportSecurity::Tls(tls) => {
+            stream.tls_settings = Some(tls_json(tls, node)?);
+        }
         TransportSecurity::Reality(reality) => {
             stream.reality_settings = Some(reality_json(reality, node));
         }
@@ -333,10 +434,92 @@ fn stream_settings(node: &Node, dialer_proxy: Option<&str>) -> StreamSettings {
     if sockopt.is_some() {
         stream.sockopt = sockopt;
     }
-    stream
+    Ok(stream)
 }
 
-fn tls_json(tls: &TlsSettings, node: &Node) -> Value {
+fn hysteria_finalmask(
+    node: &Node,
+    hysteria: &xraytui_domain::HysteriaSettings,
+) -> Result<Option<Value>, CompileError> {
+    let mut root = match &node.finalmask {
+        Some(Value::Object(object)) => object.clone(),
+        Some(_) => {
+            return Err(CompileError::UnsupportedNode {
+                node: node.id.to_string(),
+                reason: "finalmask must be a JSON object".to_owned(),
+            });
+        }
+        None => Map::new(),
+    };
+
+    if let Some(obfs) = &hysteria.obfs {
+        let udp = root.entry("udp".to_owned()).or_insert_with(|| json!([]));
+        let Some(masks) = udp.as_array_mut() else {
+            return Err(CompileError::UnsupportedNode {
+                node: node.id.to_string(),
+                reason: "Hysteria obfuscation requires finalmask.udp to be an array".to_owned(),
+            });
+        };
+        let salamander = masks
+            .iter()
+            .filter(|mask| mask.get("type").and_then(Value::as_str) == Some("salamander"))
+            .collect::<Vec<_>>();
+        if salamander.iter().any(|mask| {
+            mask.pointer("/settings/password").and_then(Value::as_str) != Some(obfs.expose())
+        }) {
+            return Err(CompileError::UnsupportedNode {
+                node: node.id.to_string(),
+                reason:
+                    "Hysteria has conflicting salamander passwords in typed settings and finalmask"
+                        .to_owned(),
+            });
+        }
+        if salamander.is_empty() {
+            masks.push(json!({
+                "type": "salamander",
+                "settings": { "password": obfs.expose() }
+            }));
+        }
+    }
+
+    if let Some(ports) = &hysteria.port_hopping {
+        let quic = root
+            .entry("quicParams".to_owned())
+            .or_insert_with(|| json!({}));
+        let Some(quic) = quic.as_object_mut() else {
+            return Err(CompileError::UnsupportedNode {
+                node: node.id.to_string(),
+                reason: "Hysteria port hopping requires finalmask.quicParams to be an object"
+                    .to_owned(),
+            });
+        };
+        let requested = ports.replace(':', "-");
+        if let Some(existing) = quic
+            .get("udpHop")
+            .and_then(Value::as_object)
+            .and_then(|hop| hop.get("ports"))
+        {
+            if existing.as_str() != Some(requested.as_str()) {
+                return Err(CompileError::UnsupportedNode {
+                    node: node.id.to_string(),
+                    reason: "Hysteria has conflicting port-hopping settings".to_owned(),
+                });
+            }
+        } else {
+            quic.insert("udpHop".to_owned(), json!({ "ports": requested }));
+        }
+    }
+
+    Ok((!root.is_empty()).then_some(Value::Object(root)))
+}
+
+fn tls_json(tls: &TlsSettings, node: &Node) -> Result<Value, CompileError> {
+    if tls.allow_insecure {
+        return Err(CompileError::UnsupportedNode {
+            node: node.id.to_string(),
+            reason: "TLS allowInsecure was removed by Xray-core after 2026-06-01; configure pinnedPeerCertSha256 and/or verifyPeerCertByName instead".to_owned(),
+        });
+    }
     let mut settings = Map::new();
     let sni = tls
         .server_name
@@ -349,12 +532,22 @@ fn tls_json(tls: &TlsSettings, node: &Node) -> Value {
     if let Some(fingerprint) = &tls.fingerprint {
         settings.insert("fingerprint".into(), json!(fingerprint));
     }
-    if tls.allow_insecure {
-        // Only ever set through an explicit, visible user action; the importers
-        // never produce it. See docs/THREAT-MODEL.md.
-        settings.insert("allowInsecure".into(), json!(true));
+    if let Some(ech) = &tls.ech_config_list {
+        settings.insert("echConfigList".into(), json!(ech));
     }
-    Value::Object(settings)
+    if let Some(force) = &tls.ech_force_query {
+        settings.insert("echForceQuery".into(), json!(force));
+    }
+    if let Some(pins) = &tls.pinned_peer_cert_sha256 {
+        settings.insert("pinnedPeerCertSha256".into(), json!(pins));
+    }
+    if let Some(names) = &tls.verify_peer_cert_by_name {
+        settings.insert("verifyPeerCertByName".into(), json!(names));
+    }
+    if let Some(suites) = &tls.cipher_suites {
+        settings.insert("cipherSuites".into(), json!(suites));
+    }
+    Ok(Value::Object(settings))
 }
 
 fn reality_json(reality: &RealitySettings, node: &Node) -> Value {
@@ -484,6 +677,33 @@ mod tests {
     }
 
     #[test]
+    fn mkcp_legacy_dialect_preserves_header_and_seed_as_two_layers() {
+        let mut node = vless_node();
+        node.transport = Transport::Mkcp(xraytui_domain::MkcpTransport {
+            header_type: Some("dtls".into()),
+            seed: Some(Secret::new("synthetic-seed")),
+            mtu: None,
+            tti: None,
+        });
+        let outbound =
+            build_with_dialect(&node, "node/x", None, MkcpFinalmaskDialect::UnifiedLegacy)
+                .expect("build");
+        let json = serde_json::to_value(outbound).expect("JSON");
+        assert_eq!(
+            json.pointer("/streamSettings/finalmask/udp/0/type"),
+            Some(&json!("mkcp-legacy"))
+        );
+        assert_eq!(
+            json.pointer("/streamSettings/finalmask/udp/0/settings/header"),
+            Some(&json!("dtls"))
+        );
+        assert_eq!(
+            json.pointer("/streamSettings/finalmask/udp/1/settings/value"),
+            Some(&json!("synthetic-seed"))
+        );
+    }
+
+    #[test]
     fn websocket_transport_is_emitted() {
         let mut node = vless_node();
         node.transport = Transport::Websocket(WebsocketTransport {
@@ -574,5 +794,93 @@ mod tests {
             matches!(err, CompileError::UnsupportedNode { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn hysteria_uses_xrays_protocol_and_stream_split() {
+        let mut node = Node::new(
+            NodeId::new("hy").expect("valid"),
+            "HY",
+            NodeSource::Manual,
+            Endpoint::new("hy.example", 443),
+            ProtocolSettings::Hysteria(xraytui_domain::HysteriaSettings {
+                auth: Secret::new("synthetic-auth"),
+                obfs: Some(Secret::new("synthetic-obfs")),
+                up: None,
+                down: None,
+                port_hopping: Some("20000-30000,40000".to_owned()),
+            }),
+        );
+        node.security = TransportSecurity::Tls(TlsSettings {
+            server_name: Some("edge.example".to_owned()),
+            ..Default::default()
+        });
+
+        let outbound = build(&node, "node/hy/out", Some("node/bootstrap/out")).expect("build");
+        assert_eq!(
+            outbound
+                .settings
+                .as_ref()
+                .and_then(|value| value.get("version")),
+            Some(&json!(2))
+        );
+        assert_eq!(
+            outbound
+                .settings
+                .as_ref()
+                .and_then(|value| value.get("address")),
+            Some(&json!("hy.example"))
+        );
+        let stream = outbound.stream_settings.expect("Hysteria stream settings");
+        assert_eq!(stream.network.as_deref(), Some("hysteria"));
+        assert_eq!(stream.security.as_deref(), Some("tls"));
+        assert_eq!(
+            stream
+                .hysteria_settings
+                .as_ref()
+                .and_then(|value| value.get("auth")),
+            Some(&json!("synthetic-auth"))
+        );
+        let finalmask = stream.finalmask.expect("Hysteria finalmask");
+        assert_eq!(
+            finalmask.pointer("/udp/0/type").and_then(Value::as_str),
+            Some("salamander")
+        );
+        assert_eq!(
+            finalmask
+                .pointer("/quicParams/udpHop/ports")
+                .and_then(Value::as_str),
+            Some("20000-30000,40000")
+        );
+        assert_eq!(
+            stream.sockopt.and_then(|sockopt| sockopt.dialer_proxy),
+            Some("node/bootstrap/out".to_owned())
+        );
+    }
+
+    #[test]
+    fn hysteria_rejects_any_duplicate_salamander_with_a_different_password() {
+        let mut node = Node::new(
+            NodeId::new("hy-conflict").expect("valid"),
+            "HY conflict",
+            NodeSource::Manual,
+            Endpoint::new("hy.example", 443),
+            ProtocolSettings::Hysteria(xraytui_domain::HysteriaSettings {
+                auth: Secret::new("synthetic-auth"),
+                obfs: Some(Secret::new("right")),
+                up: None,
+                down: None,
+                port_hopping: None,
+            }),
+        );
+        node.security = TransportSecurity::Tls(TlsSettings::default());
+        node.finalmask = Some(json!({
+            "udp": [
+                {"type": "salamander", "settings": {"password": "right"}},
+                {"type": "salamander", "settings": {"password": "wrong"}}
+            ]
+        }));
+        let error = build(&node, "node/hy-conflict/out", None).expect_err("must reject conflict");
+        assert!(error.to_string().contains("conflicting salamander"));
     }
 }

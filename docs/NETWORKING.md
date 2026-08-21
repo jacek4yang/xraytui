@@ -358,6 +358,17 @@ no window in which the application runs unclassified; see `DECISIONS.md` D-019.
 | Everything a named program does, system-wide, including children you did not launch | 1 (process matcher, with the caveats above) |
 | A program that ignores proxy environment variables | 1 or 3 |
 
+## Sharing does not send traffic
+
+`node share`, terminal QR rendering, PNG export and portable subscription export
+are local serialization operations. They do not start Xray, resolve the node
+hostname, contact the endpoint, alter TUN state or select a control-plane route.
+This separation matters when a user shares a curated node while the active
+profile is offline: export either succeeds from stored typed state or refuses a
+fidelity loss; it never attempts a direct fallback. The live REALITY acceptance
+test uses loopback fixtures only and is testing the exported configuration, not
+an implicit network action in the share command.
+
 ## What is never done
 
 - No packet capture. The routing event stream subscribes to metadata field

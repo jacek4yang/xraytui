@@ -21,6 +21,19 @@ fn have_xray() -> bool {
             .any(|dir| !dir.is_empty() && Path::new(dir).join("xray").is_file())
 }
 
+fn xray_search_path() -> std::ffi::OsString {
+    let mut paths = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if let Some(parent) = std::env::var_os("XRAYTUI_TEST_XRAY")
+        .map(PathBuf::from)
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+    {
+        paths.insert(0, parent);
+    }
+    std::env::join_paths(paths).unwrap_or_default()
+}
+
 macro_rules! require_xray {
     ($name:literal) => {
         if !have_xray() {
@@ -47,7 +60,7 @@ fn binary(name: &str) -> PathBuf {
     binary
 }
 
-/// A daemon running against a temporary root, killed on drop.
+/// A daemon running against a temporary root, stopped on drop.
 struct Daemon {
     child: Child,
     root: tempfile::TempDir,
@@ -61,6 +74,7 @@ impl Daemon {
             .arg(root.path())
             .arg("--no-start")
             .env("XRAYTUI_LOG", "warn")
+            .env("PATH", xray_search_path())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -89,10 +103,31 @@ impl Daemon {
     }
 }
 
+fn terminate_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_some() {
+        return;
+    }
+
+    // Give xraytuid its normal shutdown path so that the Xray process it
+    // supervises is reaped as well. A direct Child::kill would SIGKILL the
+    // daemon and leave that grandchild running after the test exits.
+    let pid = child.id().to_string();
+    let _ = Command::new("kill").args(["-TERM", &pid]).status();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        terminate_child(&mut self.child);
     }
 }
 
@@ -336,7 +371,9 @@ fn importing_a_link_and_switching_a_profile_works_end_to_end() {
     };
 
     let link = "vless://11111111-2222-3333-4444-555555555555@127.0.0.1:443\
-                ?type=tcp&security=none#Imported%20Node";
+                ?type=tcp&security=none&future_token=OPAQUE-FUTURE-SECRET\
+                &fm=%7B%22udp%22%3A%5B%7B%22type%22%3A%22future-mask%22%2C%22settings%22%3A%7B%22password%22%3A%22FINALMASK-SECRET%22%7D%7D%5D%7D\
+                #Imported%20Node";
     let output = daemon.cli(&["node", "import", link]);
     assert!(
         output.status.success(),
@@ -365,6 +402,10 @@ fn importing_a_link_and_switching_a_profile_works_end_to_end() {
         "credential leaked: {shown}"
     );
     assert!(shown.contains("<redacted>"), "{shown}");
+    assert!(shown.contains("future_token"), "{shown}");
+    assert!(shown.contains("preserved finalmask"), "{shown}");
+    assert!(!shown.contains("OPAQUE-FUTURE-SECRET"), "{shown}");
+    assert!(!shown.contains("FINALMASK-SECRET"), "{shown}");
 
     // A share link round-trips back out.
     let output = daemon.cli(&["node", "share", id]);
@@ -372,7 +413,189 @@ fn importing_a_link_and_switching_a_profile_works_end_to_end() {
     let link_out = String::from_utf8_lossy(&output.stdout);
     assert!(link_out.starts_with("vless://"), "{link_out}");
     let warning = String::from_utf8_lossy(&output.stderr);
-    assert!(warning.contains("grants access to the proxy"), "{warning}");
+    assert!(warning.contains("contains proxy credentials"), "{warning}");
+    assert!(!warning.contains("This QR code"), "{warning}");
+    assert!(
+        !link_out.contains("warning:"),
+        "stdout must contain only the serialized link: {link_out}"
+    );
+
+    // A bare relative output name is the normal shell workflow. It must be
+    // synced through `.` successfully and must not inherit a permissive umask.
+    let relative_export = Command::new(binary("xraytui"))
+        .current_dir(daemon.root.path())
+        .arg("--root")
+        .arg(daemon.root.path())
+        .args(["node", "share", id, "--output", "node.txt"])
+        .output()
+        .expect("relative share export");
+    assert!(
+        relative_export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&relative_export.stderr)
+    );
+    assert!(relative_export.stdout.is_empty());
+    let relative_path = daemon.root.path().join("node.txt");
+    assert_eq!(
+        std::fs::read_to_string(&relative_path).expect("relative export"),
+        link_out.trim()
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&relative_path)
+                .expect("relative export metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    // QR-to-PNG is the same simple command shape, and the written credential is
+    // independently decoded before the test trusts it.
+    let qr_path = daemon.root.path().join("shared-node.png");
+    let output = Command::new(binary("xraytui"))
+        .arg("--root")
+        .arg(daemon.root.path())
+        .args(["node", "share", id, "--qr", "--output"])
+        .arg(&qr_path)
+        .output()
+        .expect("QR export");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "file export contaminated stdout");
+    let decoded = xraytui_import::qr::decode_png(&qr_path).expect("independent QR decode");
+    assert_eq!(decoded.first().map(String::as_str), Some(link_out.trim()));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&qr_path)
+                .expect("QR metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    // Portable Base64 subscription output independently decodes to the same
+    // standard-link payload and imports again.
+    let output = daemon.cli(&["node", "share", id, "--as", "base64"]);
+    assert!(output.status.success());
+    let decoded_subscription =
+        xraytui_import::decode_base64_utf8(String::from_utf8_lossy(&output.stdout).trim())
+            .expect("decode portable subscription");
+    assert_eq!(decoded_subscription, link_out.trim());
+    let batch =
+        xraytui_import::parse_many(&decoded_subscription, xraytui_domain::NodeSource::Manual);
+    assert_eq!(batch.nodes.len(), 1);
+
+    let output = daemon.cli(&["node", "share", id, "--as", "xray-json"]);
+    assert!(output.status.success());
+    let xray_export: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Xray JSON export");
+    assert_eq!(xray_export["outbounds"][0]["protocol"], "vless");
+
+    // Xray JSON follows the selected binary's capability-probed final-mask
+    // dialect. Stable and preview currently accept different spellings for the
+    // same de-facto mKCP share fields, so validating this export catches a
+    // client-side compiler that accidentally fell back to the stable default.
+    let mkcp_link = "vless://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee@127.0.0.1:8443\
+                     ?type=kcp&headerType=dtls&seed=synthetic-seed&security=none#Mkcp";
+    assert!(daemon.cli(&["node", "import", mkcp_link]).status.success());
+    let mkcp_listing = daemon.cli(&["node", "list", "--format", "json"]);
+    let mkcp_id = serde_json::from_slice::<serde_json::Value>(&mkcp_listing.stdout)
+        .expect("node JSON")
+        .as_array()
+        .and_then(|nodes| {
+            nodes.iter().find_map(|node| {
+                (node["name"] == "Mkcp")
+                    .then(|| node["id"].as_str().map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .expect("mKCP node id");
+    let mkcp_export = daemon.cli(&["node", "share", &mkcp_id, "--as", "xray-json"]);
+    assert!(
+        mkcp_export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&mkcp_export.stderr)
+    );
+    let mkcp_path = daemon.root.path().join("mkcp-export.json");
+    xraytui_import::write_private_atomic(&mkcp_path, &mkcp_export.stdout)
+        .expect("write mKCP export");
+    let xray = std::env::var("XRAYTUI_TEST_XRAY").unwrap_or_else(|_| "xray".into());
+    let validation = Command::new(xray)
+        .args(["run", "-test", "-config"])
+        .arg(&mkcp_path)
+        .output()
+        .expect("validate mKCP export");
+    assert!(
+        validation.status.success(),
+        "mKCP Xray JSON export was rejected: {}{}",
+        String::from_utf8_lossy(&validation.stdout),
+        String::from_utf8_lossy(&validation.stderr)
+    );
+
+    // Multiple nodes become one conventional Base64 subscription and the
+    // imported connection-semantic set is unchanged.
+    let second_link = "trojan://synthetic-password@127.0.0.2:8443\
+                       ?type=ws&path=%2Ftrojan&security=tls&sni=edge.example#Second";
+    assert!(
+        daemon
+            .cli(&["node", "import", second_link])
+            .status
+            .success()
+    );
+    let listing = daemon.cli(&["node", "list", "--format", "json"]);
+    let listed: serde_json::Value =
+        serde_json::from_slice(&listing.stdout).expect("node JSON listing");
+    let listed_text = String::from_utf8_lossy(&listing.stdout);
+    assert!(!listed_text.contains("11111111-2222-3333-4444-555555555555"));
+    assert!(!listed_text.contains("synthetic-password"));
+    let second_id = listed
+        .as_array()
+        .and_then(|nodes| {
+            nodes.iter().find_map(|node| {
+                (node["name"] == "Second")
+                    .then(|| node["id"].as_str().map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .expect("second node id");
+    let output = daemon.cli(&["node", "share", id, &second_id, "--as", "base64"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let portable =
+        xraytui_import::decode_base64_utf8(String::from_utf8_lossy(&output.stdout).trim())
+            .expect("decode multi-node subscription");
+    let imported = xraytui_import::parse_many(&portable, xraytui_domain::NodeSource::Manual);
+    assert_eq!(imported.nodes.len(), 2);
+    let mut actual = imported
+        .nodes
+        .iter()
+        .map(xraytui_domain::Node::canonical_identity)
+        .collect::<Vec<_>>();
+    let mut expected = [link, second_link]
+        .into_iter()
+        .map(|link| {
+            xraytui_import::parse_uri(link)
+                .expect("fixture import")
+                .into_node()
+                .expect("fixture supported")
+                .canonical_identity()
+        })
+        .collect::<Vec<_>>();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
 
     // Targets list the imported node, in dmenu form.
     let output = daemon.cli(&["target", "list", "--format", "dmenu"]);
@@ -652,6 +875,61 @@ fn every_ordinary_configuration_action_works_without_editing_a_file() {
             .success(),
         "chain add"
     );
+    let exported_chain = daemon.cli(&["chain", "export", "relay"]);
+    assert!(
+        exported_chain.status.success(),
+        "chain export: {}",
+        String::from_utf8_lossy(&exported_chain.stderr)
+    );
+    let chain_json: serde_json::Value =
+        serde_json::from_slice(&exported_chain.stdout).expect("chain export JSON");
+    let chain_outbounds = chain_json["outbounds"].as_array().expect("outbounds");
+    assert_eq!(chain_outbounds.len(), 2);
+    assert_eq!(chain_outbounds[0]["tag"], "chain/relay/hop0");
+    assert_eq!(chain_outbounds[1]["tag"], "chain/relay/terminal");
+    assert_eq!(
+        chain_outbounds[1]["streamSettings"]["sockopt"]["dialerProxy"],
+        "chain/relay/hop0"
+    );
+    assert!(String::from_utf8_lossy(&exported_chain.stderr).contains("not a portable single-node"));
+    let chain_path = daemon.root.path().join("relay-chain.json");
+    let exported_chain_file = Command::new(binary("xraytui"))
+        .arg("--root")
+        .arg(daemon.root.path())
+        .args(["chain", "export", "relay", "--output"])
+        .arg(&chain_path)
+        .output()
+        .expect("chain file export");
+    assert!(
+        exported_chain_file.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported_chain_file.stderr)
+    );
+    assert!(exported_chain_file.stdout.is_empty());
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&chain_path)
+                .expect("chain export metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    if let Ok(xray) = std::env::var("XRAYTUI_TEST_XRAY") {
+        let validation = Command::new(xray)
+            .args(["run", "-test", "-config"])
+            .arg(&chain_path)
+            .output()
+            .expect("validate exported chain");
+        assert!(
+            validation.status.success(),
+            "exported chain was rejected: {}{}",
+            String::from_utf8_lossy(&validation.stdout),
+            String::from_utf8_lossy(&validation.stderr)
+        );
+    }
     let targets = String::from_utf8_lossy(&daemon.cli(&["target", "list"]).stdout).into_owned();
     assert!(targets.contains("group:fast"), "{targets}");
     assert!(targets.contains("chain:relay"), "{targets}");
@@ -788,6 +1066,7 @@ fn spawn_with_core(root: &Path) -> Option<Child> {
         .arg("--root")
         .arg(root)
         .env("XRAYTUI_LOG", "info")
+        .env("PATH", xray_search_path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -877,6 +1156,7 @@ fn a_socket_left_by_a_killed_daemon_does_not_block_the_next_one() {
         .arg("--root")
         .arg(root.path())
         .arg("--no-start")
+        .env("PATH", xray_search_path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -961,8 +1241,7 @@ fn mode_targets_and_health_survive_a_daemon_restart() {
     let before = String::from_utf8_lossy(&daemon.cli(&["profile", "list"]).stdout).into_owned();
 
     // Restart the way a package upgrade does.
-    let _ = daemon.child.kill();
-    let _ = daemon.child.wait();
+    terminate_child(&mut daemon.child);
     let _ = std::fs::remove_file(daemon.root.path().join("run/control.sock"));
     daemon.child = spawn_with_core(daemon.root.path()).expect("restart");
     let deadline = Instant::now() + Duration::from_secs(30);

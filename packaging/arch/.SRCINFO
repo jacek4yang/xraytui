@@ -1,6 +1,6 @@
 pkgbase = xraytui
 	pkgdesc = Terminal client for Xray-core with multiple concurrent egress profiles
-	pkgver = 1.0.0
+	pkgver = 1.1.0
 	pkgrel = 1
 	url = https://github.com/jacek4yang/xraytui
 	install = xraytui.install
@@ -21,7 +21,7 @@ pkgbase = xraytui
 	optdepends = openresolv: alternative DNS management through resolvconf
 	options = !debug
 	options = !lto
-	source = xraytui-1.0.0.tar.gz::https://github.com/jacek4yang/xraytui/releases/download/v1.0.0/xraytui-1.0.0.tar.gz
-	sha256sums = 96cdcc7802e36e9d43498686c7e17bbf26db9cc277d971f8e0cbfa91fe37a1a9
+	source = xraytui-1.1.0.tar.gz::https://github.com/jacek4yang/xraytui/releases/download/v1.1.0/xraytui-1.1.0.tar.gz
+	sha256sums = 96cb495f885bffb106033b6b3684646e61b2e1d3a9512183368f5eea2f0c1f3b
 
 pkgname = xraytui

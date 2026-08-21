@@ -1,74 +1,70 @@
-# xraytui 1.0.0
+# xraytui 1.1.0
 
-The first daily-use release of a terminal client for Xray-core that runs several
-independent egress profiles through one supervised core on Linux.
+xraytui 1.1 makes node sharing a first-class terminal workflow while preserving
+the project's Linux-only, terminal-only and official-Xray-only runtime boundary.
 
 ## Highlights
 
-* Several profiles can expose their own loopback SOCKS5 and HTTP listeners at
-  the same time. Switching one profile uses Xray's gRPC API and does not restart
-  the core or disturb another profile.
-* `xraytui exec` offers an unprivileged proxy-environment backend and an exact
-  cgroup/pidfd transparent backend. Classification is verified before the
-  requested program starts; failure is fail-closed.
-* Nodes, groups, two-hop chains, subscriptions, application routing rules and
-  listeners are editable from both the CLI and the 80x24-capable TUI.
-* The per-user daemon persists desired and observed state in SQLite, supervises
-  Xray-core, restarts it after unexpected exit, and rolls back failed runtime
-  changes to the last known-good generation.
-* The narrowly privileged `xraytui-netd` helper owns TUN, routes, policy rules,
-  nftables, cgroups and DNS through a closed typed operation set. It never
-  accepts a command line or shell fragment from the client.
-* The Arch PKGBUILD verifies an immutable release asset, builds and tests with a
-  frozen lockfile, and installs the binaries, hardened systemd units,
-  completions, man pages and documentation through the same manifest exercised
-  by the release smoke test.
+* `xraytui node share NODE` writes one clean standard share link to stdout.
+  Repeated node IDs, `--subscription` and `--all` export newline-separated links,
+  conventional Base64 subscriptions, normalized JSON or Xray outbound JSON.
+* VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP proxy, WireGuard and Xray-native
+  Hysteria representations round-trip through the typed model. Modern VLESS
+  carries Vision, REALITY, XHTTP, gRPC, WS, HTTPUpgrade, raw and mKCP semantics,
+  including ECH, pins, verified names, `finalmask`, `pqv` and SpiderX where the
+  ecosystem link format defines them.
+* Link fidelity is explicit. Lossless and compatible output proceeds; lossy
+  output is refused unless `--allow-lossy` is an explicit user decision. Xray
+  JSON remains available when a common single-node URI is not faithful.
+* `--qr` renders a terminal QR; `--qr --output FILE` and `--png FILE` create a
+  private PNG. Both light-terminal and dark-TUI block captures, plus PNG files,
+  are decoded by the independent `quircs` scanner in acceptance tests.
+* The Nodes TUI has one `Q` share menu for QR, complete link, private PNG/link
+  files and Xray JSON. Secret overlays are explicit and zeroized on close.
+* `chain export` writes the complete Xray composition, retaining every hop and
+  `dialerProxy` edge. A chain is never flattened into a misleading node link.
 
-## Important fixes since 1.0.0-rc1
+## Interoperability and Xray compatibility
 
-* Corrected the release repository URL and replaced the PKGBUILD's unchecked
-  local source with a versioned GitHub release asset and SHA-256 verification.
-* Limited the Arch package to the actually verified `x86_64` architecture,
-  completed its runtime/build dependency declarations, and made `check()` run
-  the ordinary workspace integration tests as well as library tests.
-* Fixed native dependency linking under Arch's makepkg flags by using the
-  distribution SQLite and disabling incompatible global GCC LTO while keeping
-  the project's Rust thin LTO.
-* Removed an invalid cross-manager dependency: the per-user systemd service no
-  longer tries to start the optional system-level network helper.
-* Added repeatable GitHub quality, dependency-policy and clean Arch package
-  checks for pull requests and the main branch.
-* Updated installation and status documentation that still described already
-  implemented TUN, state and editing features as scaffolding.
-* Updated `h2` to 0.4.16 after the final audit detected the newly published
-  RUSTSEC-2026-0258 advisory in rc1's lockfile.
+The sanitized corpus comes from the current v2rayN and v2rayNG serializer
+families. Import → export → re-import compares canonical connection semantics,
+and exported configurations are checked by real stable v26.3.27 and preview
+v26.7.28 binaries. A loopback VLESS REALITY Vision case additionally carries an
+actual connection after link export, independent QR decode and re-import.
 
-The candidate itself fixed several more serious correctness gaps: a killed
-Xray process had not been supervised by the shipping daemon; `app assign` had
-printed TOML instead of mutating policy; narrow changes could bypass validation;
-`init` could overwrite policy it could not parse; and a closed output pipe could
-panic instead of ending normally.
+Preview Xray changed the JSON representation of legacy mKCP share fields. The
+daemon now capability-probes the selected binary: stable uses layered masks and
+preview uses repeated `mkcp-legacy` masks. Runtime config, node Xray JSON and
+chain JSON therefore follow observed core behavior instead of version guesses.
 
-## Support boundary
-
-Linux `x86_64`; current Arch Linux is tier one. systemd, nftables, cgroup v2 and
-an external Xray-core are required for the complete feature set. The intended
-deployment is one trusted interactive user on a laptop or workstation.
-
-IPv4 is the fully exercised path. IPv6 is implemented, disabled by default,
-fail-closed and experimental until its runtime path receives equivalent
-coverage. Shared machines with mutually untrusted local users are out of scope:
-Xray's commander is loopback TCP without authentication, so a random local port
-is not a security boundary.
+`cargo xtask upstream-check` now verifies the live stable/preview releases and
+tag commits, 33 reviewed Xray source/schema snapshots, the eight vendored
+protobuf files and the current v2rayN/v2rayNG serializer paths.
 
 ## Security and privacy
 
-There is no telemetry, crash upload, automatic issue submission, packet capture
-or TLS interception. Share links, subscription URLs, QR codes and generated
-Xray JSON contain credentials and should be handled as secrets. The release
-installs no setuid files; only `xraytui-netd` runs as root, under a restricted
-systemd unit and a closed protocol.
+Share links, portable subscriptions, normalized/Xray JSON and QR codes are
+credentials. Ordinary lists and inspection redact typed and opaque fields;
+clipboard helpers receive data over stdin; file exports are atomic siblings
+created and forced to mode 0600. No generated link is logged or placed in
+SQLite history.
 
-See `STATUS.md` for the evidence-backed test matrix, `SECURITY.md` for the
-dependency review and residual risks, and `docs/INSTALLATION.md` for package and
-first-run instructions.
+QR import no longer uses the advisory-affected `rqrr`/`lru` path. The release
+uses `quircs`, bounds image dimensions and decoder allocation, upgrades ratatui
+and `lru`, and carries no RustSec advisory ignore. The final candidate audit
+used a fresh 1,225-advisory database and found no vulnerability in 436 locked
+dependencies.
+
+## Support boundary
+
+Linux `x86_64`; current Arch Linux is tier one. The complete data plane remains
+the official external Xray-core—no Clash, Mihomo, sing-box or other core is
+executed. IPv4 is the fully exercised path. IPv6 remains implemented,
+fail-closed, disabled by default and experimental pending equivalent runtime
+coverage. Shared machines with mutually untrusted local users remain outside
+scope because Xray's commander is unauthenticated loopback TCP. Automatic
+diagnostic-bundle export is not implemented; use `doctor`, `status` and manually
+reviewed log excerpts.
+
+See `docs/SHARING.md` for interchange behavior, `STATUS.md` for exact evidence,
+and `SECURITY.md` for the threat model and dependency record.

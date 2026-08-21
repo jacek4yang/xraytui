@@ -185,3 +185,17 @@ fn listener_ports_round_trip() {
     assert_eq!(form.value("http"), "");
     assert!(matches!(form.kind, FormKind::Listeners { .. }));
 }
+
+#[test]
+fn sharing_forms_use_safe_conventional_filenames() {
+    for (kind, suffix) in [
+        (ShareFileKind::QrPng, ".png"),
+        (ShareFileKind::ShareLink, ".txt"),
+        (ShareFileKind::XrayJson, ".json"),
+    ] {
+        let form = Form::share_export("hk-01", kind);
+        assert!(form.value("path").ends_with(suffix));
+        assert!(form.fields[0].help.contains("0600"));
+        assert!(matches!(form.kind, FormKind::ShareExport { .. }));
+    }
+}

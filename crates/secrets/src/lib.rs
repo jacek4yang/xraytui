@@ -18,6 +18,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Placeholder substituted for any redacted value.
@@ -62,19 +63,17 @@ impl Secret {
         self.0.len()
     }
 
-    /// A stable, non-reversible fingerprint suitable for diffing two
-    /// configurations without revealing either value.
+    /// A stable cryptographic digest suitable for diffing two configurations
+    /// without embedding either value in the result.
     ///
-    /// This is FNV-1a, not a cryptographic hash: it exists to answer "did this
-    /// field change?", never to authenticate anything.
+    /// SHA-256 supplies collision resistance; it does not add entropy. A digest
+    /// of a guessable password remains guessable, so callers must treat the
+    /// result as sensitive identity material and must not log it casually. The
+    /// digest is an identity token, never an authenticator.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in self.0.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        format!("{hash:016x}")
+        let digest = Sha256::digest(self.0.as_bytes());
+        format!("sha256:{}", hex_lower(&digest))
     }
 
     /// Consume the wrapper, returning a value that zeroizes when it goes out of
@@ -83,6 +82,16 @@ impl Secret {
     pub fn into_zeroizing(self) -> Zeroizing<String> {
         Zeroizing::new(self.0.clone())
     }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 impl Drop for Secret {
@@ -362,9 +371,10 @@ mod tests {
         // is that the output is a fixed-width digest rather than the value.
         for secret in ["a", "", "hunter2", &"x".repeat(4096), "香港-01"] {
             let fingerprint = Secret::new(secret).fingerprint();
-            assert_eq!(fingerprint.len(), 16, "{secret:?} -> {fingerprint}");
+            assert_eq!(fingerprint.len(), 71, "{secret:?} -> {fingerprint}");
+            assert!(fingerprint.starts_with("sha256:"), "{fingerprint}");
             assert!(
-                fingerprint.chars().all(|c| c.is_ascii_hexdigit()),
+                fingerprint[7..].chars().all(|c| c.is_ascii_hexdigit()),
                 "{fingerprint}"
             );
             assert_ne!(fingerprint, secret);

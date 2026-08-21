@@ -6,12 +6,13 @@ not from memory.
 
 | Field | Value |
 |---|---|
-| Date upstream behaviour was checked | **2026-08-12** |
+| Date upstream behaviour was checked | **2026-08-21** |
 | Default supported Xray stable release | **v26.3.27** (published 2026-03-27, `prerelease: false`) |
 | Commit the release was built from | `d2758a023cd7f4174a5a5fa4ff66e487d4342ba0` |
 | Protobuf source tag | `v26.3.27` (same commit) |
-| Optional preview channel | none selected; `release_channel = "preview"` opts in to GitHub prereleases and is never used implicitly |
+| Latest explicit preview tested | **v26.7.28**, commit `5ca6f4b7d4dc20a881d4330e498892697627ec0c`; never selected implicitly |
 | Verified release artifact | `Xray-linux-64.zip`, SHA2-256 `23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae`, matching the official `.dgst` file |
+| Verified preview artifact | `Xray-linux-64.zip`, SHA2-256 `8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40`, matching the official `.dgst` file |
 | Minimum Xray version accepted | `1.8.0` (below this the routing `ruleTag` / `RemoveRule` API surface is missing) |
 
 Release selection rule: the managed installer reads
@@ -115,6 +116,81 @@ intact. For `Local -> A -> B -> C -> Internet`, C carries
 `dialerProxy = B`, B carries `dialerProxy = A`, and the chain terminal that
 routing points at is **C**. (The deprecated `proxySettings.tag` form is not used.)
 
+### Share/export-relevant connection fields
+
+The official Xray share-link proposal (XTLS/Xray-core discussion 716) and the
+actual v2rayN/v2rayNG serializers were checked together. The reviewed client
+snapshots are v2rayN commit `ebb4bd5daa45478e337a68f0be768fb7045520dc`
+and v2rayNG commit `63f557242bdd071214c4037c76c912b66da925c8`.
+`upstream-compat.toml` watches the exact serializer files on their active master
+branches, so a relevant change fails the compatibility review even when Xray's
+own tag did not move.
+
+Verified modern mappings include:
+
+* raw transport is written as `type=tcp`; IPv6 authorities are bracketed;
+* VLESS carries `encryption`, `flow`, transport parameters and `fm`;
+* XHTTP carries `host`, `path`, `mode` and JSON `extra`;
+* TLS uses `sni`, `alpn`, `fp`, `ech`, `pcs` and `vcn` where ecosystem clients
+  implement them;
+* REALITY uses `pbk`, `sid`, `spx` and `pqv` in addition to SNI/fingerprint;
+* current v2rayN/v2rayNG implement de-facto `wireguard://` and
+  `hysteria2://` forms, including Hysteria `pinSHA256`, ECH, salamander and
+  `mport`.
+
+The URI proposal is not assumed to be an infallible standard. Serializer output
+is gated by explicit fidelity, and fields absent from the mature-client dialect
+cause refusal or explicit lossy output. `docs/SHARING.md` records the exact
+contract.
+
+### Xray-native Hysteria v2
+
+The outbound is split across two layers in current Xray source:
+
+* protocol `settings`: `{ "version": 2, "address": ..., "port": ... }`;
+* stream: `network: "hysteria"`, TLS, and `hysteriaSettings` containing
+  version/auth (plus deprecated bandwidth hints when supplied).
+
+Salamander obfuscation is a `finalmask.udp` mask. Port hopping is
+`finalmask.quicParams.udpHop.ports`. Putting address/auth wholly inside protocol
+settings or treating Hysteria as a foreign standalone core is incorrect. The
+generated shape has been accepted by real stable and preview binaries.
+
+### mKCP legacy fields and final-mask dialects
+
+Stable v26.3.27 translates de-facto share-link `headerType` and `seed` fields to
+separate `header-*`, `mkcp-original`, and `mkcp-aes128gcm` UDP masks. Preview
+v26.7.28 removes those JSON registry names and replaces them with repeated
+`mkcp-legacy` masks whose settings carry `header` or `value`. The underlying
+header and AES mask implementations remain present; only their configuration
+registry changed.
+
+xraytui probes the selected binary with synthetic, credential-free
+configurations and supplies the accepted dialect explicitly to its pure
+compiler. It does not infer this capability from a channel label or silently
+drop either the header or seed. `upstream-compat.toml` watches preview's split
+`infra/conf/transport_finalmask.go` as well as both channels' stream-settings
+sources so a later registry change becomes a mandatory review failure.
+
+### Time-based TLS removal
+
+The stable v26.3.27 source contains a scheduled removal that became active after
+2026-06-01: `allowInsecure` now makes `xray run -test` fail. xraytui preserves
+links that request it, classifies them unavailable for the installed core, and
+does not silently turn verification back on or discard the field. Lossless Xray
+execution requires certificate pins and/or verified certificate names supported
+by current core semantics.
+
+### Preview private-destination default
+
+Preview v26.7.28 adds a default Freedom final rule for traffic arriving through
+VLESS, VMess, Trojan, Hysteria, WireGuard and Shadowsocks server inbounds: private
+IP targets are blackholed unless an earlier explicit `finalRules` allow matches.
+This was first observed as a live REALITY test that completed its handshake but
+carried no payload, then confirmed in `proxy/freedom/freedom.go`. The loopback
+acceptance server has a fixture-only allow rule; xraytui does not weaken the
+upstream default in generated client configurations.
+
 ### TUN inbound (`proxy/tun`, `infra/conf/tun.go`)
 
 Settings are only `{name, MTU, userLevel}`. `port`/`listen` are ignored. Verified
@@ -134,6 +210,14 @@ Consequences that shaped this project:
    `tun_android.go` and `tun_darwin.go`. See *Fallback implementations* below.
 3. Xray's TUN has **no ICMP support** and reports connect success optimistically,
    so health checks must be L4/L7 through an outbound, never ICMP ping.
+
+`xray run -test` is not side-effect-free for this inbound. In both tested
+channels, `main/run.go` calls `startXray()` before it checks the `-test` flag;
+constructing `proxy/tun` immediately opens `/dev/net/tun`, issues `TUNSETIFF`,
+and configures the link. Consequently the real TUN configuration acceptance
+test is explicitly ignored in the unprivileged Rust suite and is executed
+separately with `CAP_NET_ADMIN`. An unprivileged `operation not permitted` is
+not treated as evidence that the generated JSON is invalid.
 
 ### DNS
 
@@ -238,11 +322,26 @@ live core, and the results are cached per Xray binary hash in the state store.
 |---|---|---|
 | `< 1.8.0` | no `ruleTag`, no `RemoveRule`, no `ListRule` | refuse to start, explain in `xraytui doctor` |
 | `< 1.8.6` | `dialerProxy` did not reliably preserve terminal TLS settings for all transports | chains disabled, warning surfaced |
+| stable/preview after 2026-06-01 | `allowInsecure` is removed at validation time | preserve but mark unavailable; require pins/verified names rather than silently changing security |
+| preview v26.7.28 | legacy mKCP mask JSON names consolidated as `mkcp-legacy` | capability-probe the selected binary and compile both header and seed in its accepted dialect |
+| preview v26.7.28 | protocol-server Freedom defaults block private destinations | retain upstream fail-closed behavior; local server fixtures use an explicit allow |
 | any release marked `prerelease` | may change JSON fields between builds | requires explicit `release_channel = "preview"` |
 
 ## Re-checking procedure
 
-`cargo xtask upstream-check` re-runs the checks that produced this file: it fetches
-the release list, filters prereleases, compares the pinned tag, verifies the
-vendored protobuf closure hash against the upstream tag, and prints a diff of the
-routing/tun/balancer JSON schema field lists. It never writes to the system.
+`cargo xtask upstream-check` performs live, read-only primary-source checks:
+
+1. fetch the GitHub release list, separate draft/stable/preview, compare numeric
+   latest tags and resolve each tag to its exact commit;
+2. compare SHA-256 for 33 reviewed stable/preview source files covering stream
+   settings, protocols, REALITY, XHTTP, Hysteria, WireGuard and Freedom routing;
+3. byte-compare all eight vendored command-API protobuf files with the stable
+   commit;
+4. resolve the active v2rayN/v2rayNG branches and hash the sixteen watched
+   importer/serializer files.
+
+The expected values and commits are reviewable in `upstream-compat.toml`. Any
+mismatch fails with the exact path and expected/observed hash and instructs the
+maintainer to update the typed model, import/export, compiler, fixtures and this
+document together. It downloads source text only, writes no system state, and
+never promotes preview to stable.

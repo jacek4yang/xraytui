@@ -8,10 +8,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use xraytui_domain::{
-    Endpoint, GrpcTransport, HttpProxySettings, HttpUpgradeTransport, MkcpTransport, Node,
-    NodeSource, ProtocolSettings, RawTransport, RealitySettings, ShadowsocksSettings,
-    SocksSettings, TlsSettings, Transport, TransportSecurity, TrojanSettings, UnsupportedNode,
-    UnsupportedReason, VlessSettings, VmessSettings, WebsocketTransport, XhttpTransport,
+    Endpoint, GrpcTransport, HttpProxySettings, HttpUpgradeTransport, HysteriaSettings,
+    MkcpTransport, Node, NodeSource, ProtocolSettings, RawTransport, RealitySettings,
+    ShadowsocksSettings, SocksSettings, TlsSettings, Transport, TransportSecurity, TrojanSettings,
+    UnsupportedNode, UnsupportedReason, VlessSettings, VmessSettings, WebsocketTransport,
+    XhttpTransport,
 };
 use xraytui_secrets::Secret;
 
@@ -143,9 +144,10 @@ pub fn parse_xray_outbound(
                 None,
             ));
         }
-        "wireguard" | "hysteria" => {
-            // Modelled by the domain but not reconstructible from JSON here
-            // without duplicating the whole peer structure; preserved instead.
+        "wireguard" => {
+            // Modelled by the domain but not yet reconstructed from Xray JSON;
+            // preserving the complete object is safer than dropping a peer or
+            // device-only field while pretending the result is executable.
             return Ok(make_unsupported(
                 UnsupportedReason::Malformed {
                     detail: format!(
@@ -262,6 +264,69 @@ pub fn parse_xray_outbound(
                 ProtocolSettings::Http(HttpProxySettings { username, password }),
             )
         }
+        "hysteria" => {
+            if settings.get("version").and_then(Value::as_i64) != Some(2) {
+                return Err(ImportError::InvalidField {
+                    scheme: "xray",
+                    field: "version",
+                });
+            }
+            let stream = stream.ok_or(ImportError::MissingField {
+                scheme: "xray",
+                field: "streamSettings",
+            })?;
+            if stream.get("network").and_then(Value::as_str) != Some("hysteria") {
+                return Err(ImportError::InvalidField {
+                    scheme: "xray",
+                    field: "streamSettings.network",
+                });
+            }
+            let hysteria = stream
+                .get("hysteriaSettings")
+                .and_then(Value::as_object)
+                .ok_or(ImportError::MissingField {
+                    scheme: "xray",
+                    field: "hysteriaSettings",
+                })?;
+            if hysteria.get("version").and_then(Value::as_i64) != Some(2) {
+                return Err(ImportError::InvalidField {
+                    scheme: "xray",
+                    field: "hysteriaSettings.version",
+                });
+            }
+            let finalmask = stream.get("finalmask");
+            let obfs = finalmask
+                .and_then(|mask| mask.pointer("/udp"))
+                .and_then(Value::as_array)
+                .and_then(|masks| {
+                    masks
+                        .iter()
+                        .find(|mask| mask.get("type").and_then(Value::as_str) == Some("salamander"))
+                })
+                .and_then(|mask| mask.pointer("/settings/password"))
+                .and_then(Value::as_str)
+                .map(Secret::new);
+            let port_hopping = finalmask
+                .and_then(|mask| mask.pointer("/quicParams/udpHop/ports"))
+                .and_then(Value::as_str)
+                .map(|ports| ports.replace(':', "-"));
+            (
+                endpoint_of(settings)?,
+                ProtocolSettings::Hysteria(HysteriaSettings {
+                    auth: Secret::new(string_field(hysteria, "auth")?),
+                    obfs,
+                    up: hysteria
+                        .get("up")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    down: hysteria
+                        .get("down")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    port_hopping,
+                }),
+            )
+        }
         other => {
             return Ok(make_unsupported(
                 UnsupportedReason::UnknownScheme {
@@ -282,6 +347,7 @@ pub fn parse_xray_outbound(
     if let Some(stream) = stream {
         node.transport = transport_from_stream(stream);
         node.security = security_from_stream(stream, &node.endpoint.address);
+        node.finalmask = stream.get("finalmask").cloned();
     }
     Ok(ImportedEntry::Supported(node))
 }
@@ -431,6 +497,14 @@ fn transport_from_stream(stream: &Object) -> Transport {
                     .and_then(Value::as_str)
                     .map(str::to_owned),
                 seed: text(kcp, "seed").map(Secret::new),
+                mtu: kcp
+                    .and_then(|o| o.get("mtu"))
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok()),
+                tti: kcp
+                    .and_then(|o| o.get("tti"))
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok()),
             })
         }
         _ => {
@@ -450,6 +524,12 @@ fn transport_from_stream(stream: &Object) -> Transport {
 }
 
 fn security_from_stream(stream: &Object, address: &str) -> TransportSecurity {
+    let text = |object: Option<&Object>, key: &str| {
+        object
+            .and_then(|o| o.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
     match stream
         .get("security")
         .and_then(Value::as_str)
@@ -484,6 +564,11 @@ fn security_from_stream(stream: &Object, address: &str) -> TransportSecurity {
                     .and_then(|o| o.get("allowInsecure"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                ech_config_list: text(tls, "echConfigList"),
+                ech_force_query: text(tls, "echForceQuery"),
+                pinned_peer_cert_sha256: text(tls, "pinnedPeerCertSha256"),
+                verify_peer_cert_by_name: text(tls, "verifyPeerCertByName"),
+                cipher_suites: text(tls, "cipherSuites"),
             })
         }
         "reality" => {
@@ -631,5 +716,52 @@ mod tests {
         assert_eq!(unsupported.detected_protocol, "brand-new");
         assert!(unsupported.original.expose().contains("brand-new"));
         assert!(!unsupported.redacted_original.contains("settings"));
+    }
+
+    #[test]
+    fn xray_native_hysteria_is_reconstructed_from_protocol_stream_and_finalmask() {
+        let outbound = serde_json::json!({
+            "tag": "hy", "protocol": "hysteria",
+            "settings": {"version": 2, "address": "hy.example", "port": 443},
+            "streamSettings": {
+                "network": "hysteria", "security": "tls",
+                "hysteriaSettings": {"version": 2, "auth": "synthetic-auth"},
+                "tlsSettings": {"serverName": "edge.example"},
+                "finalmask": {
+                    "udp": [{"type": "salamander", "settings": {"password": "synthetic-obfs"}}],
+                    "quicParams": {"udpHop": {"ports": "20000-30000,40000"}}
+                }
+            }
+        });
+        let node = parse_xray_outbound(&outbound, NodeSource::XrayJson)
+            .expect("parse")
+            .into_node()
+            .expect("supported");
+        let ProtocolSettings::Hysteria(hysteria) = &node.protocol else {
+            panic!("expected Hysteria");
+        };
+        assert_eq!(hysteria.auth.expose(), "synthetic-auth");
+        assert_eq!(
+            hysteria.obfs.as_ref().map(Secret::expose),
+            Some("synthetic-obfs")
+        );
+        assert_eq!(hysteria.port_hopping.as_deref(), Some("20000-30000,40000"));
+        assert!(matches!(node.security, TransportSecurity::Tls(_)));
+        assert_eq!(
+            node.finalmask
+                .as_ref()
+                .and_then(|mask| mask.pointer("/quicParams/udpHop/ports"))
+                .and_then(Value::as_str),
+            Some("20000-30000,40000")
+        );
+
+        let export = crate::export_share_link(&node, crate::ShareOptions::default())
+            .expect("typed finalmask features fit the Hysteria2 link");
+        assert_eq!(export.fidelity, crate::ExportFidelity::Lossless);
+        let reimported = crate::parse_uri(export.link.expose())
+            .expect("re-import Hysteria2 link")
+            .into_node()
+            .expect("supported Hysteria2 link");
+        assert_eq!(node.canonical_identity(), reimported.canonical_identity());
     }
 }

@@ -830,6 +830,7 @@ fn build_engine_config(paths: &Paths, config: &ConfigFile, state: &DesiredState)
             log_level: config.core.log_level.clone(),
             access_log: None,
             error_log: None,
+            mkcp_finalmask_dialect: Default::default(),
             tun,
             dns: DnsOptions {
                 enabled: config.dns.enabled,

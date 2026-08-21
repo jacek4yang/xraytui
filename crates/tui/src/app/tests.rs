@@ -721,10 +721,80 @@ fn a_qr_overlay_closes_on_any_of_the_obvious_keys() {
     let mut app = app();
     for key in [Key::Escape, Key::Enter, Key::Char('q')] {
         app.overlay = Overlay::Qr {
-            art: "▀▀".to_owned(),
+            art: xraytui_secrets::Secret::new("▀▀"),
             node: "hk-01".to_owned(),
         };
         app.on_key(key);
         assert_eq!(app.overlay, Overlay::None, "{key:?} must close the QR view");
+    }
+}
+
+#[test]
+fn shift_q_opens_the_complete_share_menu_for_the_selected_node() {
+    let mut app = app();
+    app.view = View::Nodes;
+    assert_eq!(app.on_key(Key::Char('Q')), Action::None);
+    assert_eq!(
+        app.overlay,
+        Overlay::ShareMenu {
+            node: "alpha".to_owned(),
+            selected: 0,
+        }
+    );
+
+    assert_eq!(
+        app.on_key(Key::Char('2')),
+        Action::ShowShareLink {
+            id: "alpha".to_owned()
+        }
+    );
+}
+
+#[test]
+fn every_file_choice_in_the_share_menu_opens_a_private_export_form() {
+    for (key, expected_kind, suffix) in [
+        ('3', ShareFileKind::QrPng, ".png"),
+        ('4', ShareFileKind::ShareLink, ".txt"),
+        ('5', ShareFileKind::XrayJson, ".json"),
+    ] {
+        let mut app = app();
+        app.view = View::Nodes;
+        app.on_key(Key::Char('Q'));
+        assert_eq!(app.on_key(Key::Char(key)), Action::None);
+        let Overlay::Form(form) = &app.overlay else {
+            panic!("choice {key} did not open an export form");
+        };
+        assert_eq!(
+            form.kind,
+            crate::edit::FormKind::ShareExport {
+                id: "alpha".to_owned(),
+                kind: expected_kind,
+            }
+        );
+        assert!(form.value("path").ends_with(suffix), "{:?}", form.fields);
+
+        let action = app.on_key(Key::Enter);
+        assert_eq!(
+            action,
+            Action::ExportNode {
+                id: "alpha".to_owned(),
+                path: format!("alpha{suffix}"),
+                kind: expected_kind,
+            }
+        );
+    }
+}
+
+#[test]
+fn credential_overlays_close_without_leaking_the_key_to_the_view() {
+    let mut app = app();
+    for key in [Key::Escape, Key::Enter, Key::Char('q')] {
+        app.overlay = Overlay::SecretText {
+            title: "Share link".to_owned(),
+            content: xraytui_secrets::Secret::new("vless://credential"),
+        };
+        assert_eq!(app.on_key(key), Action::None);
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.should_quit);
     }
 }

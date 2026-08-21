@@ -22,6 +22,9 @@ If networking is already broken and xraytui is not running, go straight to
 | DNS not restored | Backend failed, or the daemon died before teardown | `resolvectl status`, then `doctor --repair` |
 | Stale nftables or routes after a crash | Lease expired with `failure_policy = "block"`, or netd was also killed | `xraytui-netd --recover` |
 | `address already in use` | Another process, or a previous run, holds the listener port | Find the holder before changing the port |
+| Node share says `lossy` or `unsupported` | A standard single-node link cannot preserve required semantics | Export Xray JSON, or inspect with `--allow-lossy` before explicitly accepting loss |
+| QR does not fit the terminal | The encoded link is long or the terminal is narrow | Enlarge the terminal or use `--qr --output node.png` |
+| QR image is rejected | No readable QR, unsupported image, or dimension/allocation limit | Re-export as PNG; input images are intentionally capped at 8192×8192 and 128 MiB decode allocation |
 
 ---
 
@@ -98,8 +101,8 @@ a live core through the API rather than by compilation.
    that is genuinely meant to match everything belongs at the end and is better
    expressed by setting the system mode's default profile than by an empty rule.
 3. If it is `rule/system/mode-fallback`, the catch-all pass did not run; that is
-   a compiler defect worth reporting with the redacted bundle from
-   `xraytui diag export`.
+   a compiler defect worth reporting with `xraytui doctor`, `xraytui status` and
+   a manually reviewed excerpt that contains no generated JSON or policy files.
 
 Validation also warns before this ever reaches the core: a catch-all rule that is
 not last produces `routing-rule.shadowing`, naming every later rule it hides.
@@ -325,13 +328,27 @@ the code rather than the prose. Errors block compilation; warnings do not.
 | `routing-rule.shadowing` | A catch-all rule appears before other rules and hides them |
 | `app-rule.no-matchers`, `app-rule.bad-matcher`, `routing-rule.bad-matcher` | A rule has no matchers, or a matcher that is syntactically unusable |
 
+## Share/export failures
+
+`xraytui node share` writes only the serialized payload to stdout. Secret
+warnings and status go to stderr, so redirecting stdout cannot contaminate a
+subscription. If more than one node is selected, QR output is refused because a
+QR represents one credential payload; choose `--as links`, `--as base64` or
+`--as json` instead.
+
+Lossy output is never implicit. The diagnostic names the fields a standard link
+cannot carry and recommends normalized Xray JSON. `--allow-lossy` is an explicit
+acknowledgement for interoperability testing, not a repair. A chain has no honest
+single-node URI: share members individually or use `chain export` for complete
+Xray JSON. Export files are written atomically with mode 0600; if the containing
+directory is not writable, the error names the temporary-create, flush or rename
+operation that failed.
+
 ## Collecting information for a bug report
 
-```sh
-xraytui diag export
-```
-
-That produces a redacted bundle. Do **not** attach
-`generated-xray.json`, `last-good-xray.json`, `secrets.toml` or
-`subscriptions.toml`: the first two contain node credentials in cleartext, and
-subscription URLs usually embed a bearer token.
+There is not yet an automatic diagnostic-bundle exporter. Capture `xraytui
+doctor`, `xraytui status` and only the minimum manually reviewed runtime-log
+excerpt. Do **not** attach `generated-xray.json`, `last-good-xray.json`,
+`secrets.toml` or `subscriptions.toml`, any share-link export, or any QR image:
+all can contain node credentials, and subscription URLs usually embed a bearer
+token.

@@ -161,7 +161,7 @@ Workspace members under `crates/`:
 | `domain` | The vocabulary: identifiers, nodes, protocols, transports, groups, chains, profiles, rules, subscriptions, desired state, runtime state, validation. Knows nothing about Xray JSON, terminals, clap, tonic or Linux. |
 | `secrets` | `Secret` wrapper with redacting `Debug` and zeroising `Drop`, plus the log/diagnostic redaction layer. |
 | `config` | Versioned TOML (`schema_version`), the XDG layout, private directory creation, atomic 0600 writes, migrations with mandatory backup. |
-| `import` | Share-link, QR and Xray JSON import and export. Parses attacker-influenced bytes, so it forbids `unsafe` and denies indexing/slicing. |
+| `import` | Standard/de-facto share-link parsing and fidelity-aware serialization, independent terminal/PNG QR handling, private atomic exports and Xray JSON import. Parses attacker-influenced bytes, so production code forbids `unsafe` and denies indexing/slicing/panic shortcuts. |
 | `subscription` | Transactional subscription fetching, normalisation and diffing against the existing node set. |
 | `xray-model` | Typed model of the Xray JSON document — inbounds, outbounds, routing rules, balancers, DNS, observatory, policy — with the exact upstream field names and omission rules. |
 | `xray-compiler` | Pure `DesiredState` to `XrayConfig` compilation: the tag namespace, outbound construction, rule ordering, balancer construction, prefix-safety checking. |
@@ -186,6 +186,35 @@ Binaries under `bins/`:
 
 `xtask/` holds build, install and maintenance tasks, invoked through the
 `cargo xtask` alias defined in `.cargo/config.toml`.
+
+## Sharing boundary
+
+Sharing is not part of the Xray data plane and never crosses the privileged
+helper boundary:
+
+```text
+DesiredState::Node
+       |
+       +-- connection-semantic canonical identity
+       |
+       +-- fidelity analysis -- refusal if meaningful fields do not fit
+       |                              |
+       |                              +-- explicit --allow-lossy only
+       v
+ecosystem serializer -> Secret(link/subscription/JSON)
+       |
+       +-- stdout (payload only)
+       +-- explicit TUI secret overlay
+       +-- clipboard helper stdin
+       +-- atomic mode-0600 file
+       +-- terminal or PNG QR
+```
+
+The link is never sent through daemon mutation IPC, netd, SQLite history, logs,
+or diagnostics. The CLI requests the already-private desired state from the
+per-user daemon and serializes locally after an explicit `node share`; the TUI
+does the same only after the share menu action. `docs/SHARING.md` specifies the
+dialects and fidelity rules.
 
 ## Dependency direction
 

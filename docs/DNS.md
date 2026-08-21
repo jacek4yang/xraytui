@@ -129,6 +129,12 @@ A DNS leak here means a query that left the machine by a path you did not intend
 plaintext to the ISP's resolver while everything else is proxied, or resolved
 locally when the answer needed to come from the exit.
 
+Generating a share link or QR performs no DNS query at all. Endpoint hostnames
+remain hostnames in the portable representation; an IPv6 literal is bracketed
+according to URI syntax. Consequently sharing cannot bypass the configured DNS
+route, and a share operation cannot be used as a reachability or leak test. Use
+the profile/node health and exit-IP operations for those questions.
+
 What to check, in order:
 
 ```sh

@@ -15,15 +15,19 @@
 //!
 //! Skipped, loudly, when no Xray binary is present.
 
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use xraytui_controller::{
-    ApplyOutcome, ChangePlan, Engine, EngineConfig, discover_binary, probe_binary,
+    ApplyOutcome, ChangePlan, Engine, EngineConfig, discover_binary, probe_binary, validate_config,
 };
 use xraytui_domain::{
-    Chain, ChainId, CoreStatus, DesiredState, EgressProfile, ListenerSpec, NodeId, ProfileId,
-    Target,
+    Chain, ChainId, CoreStatus, DesiredState, EgressProfile, Endpoint, ListenerSpec, MkcpTransport,
+    Node, NodeId, NodeSource, ProfileId, ProtocolSettings, Target, Transport, VlessSettings,
 };
+use xraytui_secrets::Secret;
 use xraytui_test_support::{MockEgress, fixtures, free_port, probe_through_socks5};
 use xraytui_xray_api::ApiEndpoint;
 
@@ -81,6 +85,106 @@ async fn egress_reached(port: u16) -> String {
     probe_through_socks5(address, "probe.invalid", 80)
         .await
         .unwrap_or_else(|error| panic!("probe through 127.0.0.1:{port} failed: {error}"))
+}
+
+/// A second real Xray process used as a deterministic loopback protocol peer.
+struct FixtureCore {
+    child: Child,
+    log: PathBuf,
+}
+
+impl FixtureCore {
+    fn start(binary: &Path, config: &Path, log: PathBuf) -> Self {
+        let stdout = std::fs::File::create(&log).expect("create fixture Xray log");
+        let stderr = stdout.try_clone().expect("clone fixture Xray log");
+        let child = Command::new(binary)
+            .args(["run", "-config"])
+            .arg(config)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .expect("start fixture Xray");
+        Self { child, log }
+    }
+
+    fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_else(|error| format!("<log error: {error}>"))
+    }
+}
+
+impl Drop for FixtureCore {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+async fn wait_for_fixture_listener(core: &mut FixtureCore, address: SocketAddr) {
+    for _ in 0..100 {
+        if let Some(status) = core.child.try_wait().expect("inspect fixture Xray") {
+            panic!(
+                "fixture Xray exited with {status} before listening on {address}:\n{}",
+                core.log_text()
+            );
+        }
+        if tokio::net::TcpStream::connect(address).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "fixture Xray never listened on {address}:\n{}",
+        core.log_text()
+    );
+}
+
+fn write_fixture_json(path: &Path, value: &serde_json::Value) {
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(value).expect("serialize fixture Xray config"),
+    )
+    .expect("write fixture Xray config");
+}
+
+#[tokio::test]
+async fn probed_mkcp_dialect_is_accepted_by_the_selected_core() {
+    let binary = require_xray!("mKCP final-mask capability probe");
+    let info = probe_binary(&binary, None).await.expect("probe Xray");
+    let mut node = Node::new(
+        NodeId::new("mkcp-probe").expect("valid"),
+        "mKCP probe",
+        NodeSource::Manual,
+        Endpoint::new("127.0.0.1", 9),
+        ProtocolSettings::Vless(VlessSettings {
+            id: Secret::new("11111111-2222-3333-4444-555555555555"),
+            flow: String::new(),
+            encryption: "none".into(),
+            level: None,
+        }),
+    );
+    node.transport = Transport::Mkcp(MkcpTransport {
+        header_type: Some("dtls".into()),
+        seed: Some(Secret::new("synthetic-seed")),
+        mtu: None,
+        tti: None,
+    });
+    let outbound = xraytui_xray_compiler::outbound::build_with_dialect(
+        &node,
+        "node/mkcp-probe/out",
+        None,
+        info.mkcp_finalmask_dialect,
+    )
+    .expect("compile probe node");
+    let json = serde_json::to_string_pretty(&serde_json::json!({
+        "log": { "loglevel": "none" },
+        "outbounds": [outbound],
+    }))
+    .expect("JSON");
+    let directory = tempfile::tempdir().expect("tempdir");
+    validate_config(&info, &json, &directory.path().join("config.json"))
+        .await
+        .expect("the probed dialect must validate");
 }
 
 // ---------------------------------------------------------------- Scenario A
@@ -365,6 +469,171 @@ async fn scenario_e_a_two_hop_chain_reaches_the_exit_through_the_first_hop() {
     );
 
     engine.stop_core().await;
+}
+
+// ------------------------------------------------------- Share interoperability
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exported_vless_reality_vision_reimports_and_carries_a_real_connection() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let binary = require_xray!("VLESS REALITY share-link connection");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target_port = free_port().expect("target port");
+    let server_port = free_port().expect("server port");
+    let client_port = free_port().expect("client port");
+    let egress = MockEgress::start("reality-share")
+        .await
+        .expect("start local egress");
+
+    // REALITY mirrors a normal TLS target during its handshake. This synthetic
+    // certificate and key are test-only, committed openly, and valid for the
+    // loopback name `reality.test` until 2036.
+    let certificate = dir.path().join("target-cert.pem");
+    let private_key = dir.path().join("target-key.pem");
+    std::fs::write(
+        &certificate,
+        include_bytes!("fixtures/reality-target-cert.pem"),
+    )
+    .expect("write target certificate");
+    std::fs::write(
+        &private_key,
+        include_bytes!("fixtures/reality-target-key.pem"),
+    )
+    .expect("write target key");
+    std::fs::set_permissions(&private_key, std::fs::Permissions::from_mode(0o600))
+        .expect("make target key private");
+
+    let target_config = dir.path().join("target.json");
+    write_fixture_json(
+        &target_config,
+        &serde_json::json!({
+            "log": {"loglevel": "warning"},
+            "inbounds": [{
+                "listen": "127.0.0.1",
+                "port": target_port,
+                "protocol": "dokodemo-door",
+                "settings": {
+                    "address": egress.identity_addr().ip().to_string(),
+                    "port": egress.identity_addr().port(),
+                    "network": "tcp"
+                },
+                "streamSettings": {
+                    "network": "raw",
+                    "security": "tls",
+                    "tlsSettings": {"certificates": [{
+                        "certificateFile": certificate,
+                        "keyFile": private_key
+                    }]}
+                }
+            }],
+            "outbounds": [{"protocol": "freedom"}]
+        }),
+    );
+    let mut target =
+        FixtureCore::start(&binary, &target_config, dir.path().join("target-xray.log"));
+    wait_for_fixture_listener(&mut target, SocketAddr::from(([127, 0, 0, 1], target_port))).await;
+
+    // The pair came from `xray x25519`. It is deliberately synthetic and is
+    // useful only inside this test.
+    const PRIVATE_KEY: &str = "gHwLz-GumMhmgJ6lpOVPv7Kt7rDUJ-hy8S-2sc_8C00";
+    const PUBLIC_KEY: &str = "0_0JQu2RfxY_tjAtwexl85D4OlSJzCbYh7Nx76pRKHQ";
+    const UUID: &str = "11111111-2222-3333-4444-555555555555";
+    const SHORT_ID: &str = "0123456789abcdef";
+
+    let server_config = dir.path().join("server.json");
+    write_fixture_json(
+        &server_config,
+        &serde_json::json!({
+            "log": {"loglevel": "warning"},
+            "inbounds": [{
+                "listen": "127.0.0.1",
+                "port": server_port,
+                "protocol": "vless",
+                "settings": {
+                    "clients": [{"id": UUID, "flow": "xtls-rprx-vision"}],
+                    "decryption": "none"
+                },
+                "streamSettings": {
+                    "network": "raw",
+                    "security": "reality",
+                    "realitySettings": {
+                        "target": format!("127.0.0.1:{target_port}"),
+                        "xver": 0,
+                        "serverNames": ["reality.test"],
+                        "privateKey": PRIVATE_KEY,
+                        "shortIds": [SHORT_ID]
+                    }
+                }
+            }],
+            // Preview v26.7.28 makes protocol-server inbounds default-deny
+            // private destinations. This explicit fixture-only rule permits
+            // the loopback oracle; stable v26.3.27 ignores the new field.
+            "outbounds": [{
+                "protocol": "freedom",
+                "settings": {"finalRules": [{"action": "allow"}]}
+            }]
+        }),
+    );
+    let mut server =
+        FixtureCore::start(&binary, &server_config, dir.path().join("server-xray.log"));
+    wait_for_fixture_listener(&mut server, SocketAddr::from(([127, 0, 0, 1], server_port))).await;
+
+    // Import -> export -> independently decode PNG QR -> re-import. The node
+    // used by the real client is the last value, not the original fixture.
+    let original_link = format!(
+        "vless://{UUID}@127.0.0.1:{server_port}?encryption=none&flow=xtls-rprx-vision\
+         &security=reality&sni=reality.test&fp=chrome&pbk={PUBLIC_KEY}&sid={SHORT_ID}\
+         &spx=%2F&type=tcp#REALITY%20Vision"
+    );
+    let original = xraytui_import::parse_uri(&original_link)
+        .expect("import original REALITY link")
+        .into_node()
+        .expect("REALITY is executable");
+    let export =
+        xraytui_import::export_share_link(&original, xraytui_import::ShareOptions::default())
+            .expect("lossless REALITY share export");
+    assert_eq!(export.fidelity, xraytui_import::ExportFidelity::Lossless);
+    let qr_path = dir.path().join("reality-share.png");
+    xraytui_import::qr::render_png(export.link.expose(), &qr_path, 8).expect("render REALITY QR");
+    let decoded = xraytui_import::qr::decode_png(&qr_path).expect("independent QR decode");
+    assert_eq!(decoded.as_slice(), &[export.link.expose().to_owned()]);
+    let shared = xraytui_import::parse_uri(&decoded[0])
+        .expect("re-import decoded share link")
+        .into_node()
+        .expect("decoded REALITY link remains executable");
+    assert_eq!(original.canonical_identity(), shared.canonical_identity());
+
+    let node_id = shared.id.clone();
+    let mut state = DesiredState::default();
+    fixtures::add_node(&mut state, shared);
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks("shared", Target::Node { id: node_id }, client_port),
+    );
+    let mut client = engine_for(state, dir.path()).await;
+    client
+        .rebuild_and_start()
+        .await
+        .expect("start compiled REALITY client");
+
+    let answer = probe_through_socks5(
+        SocketAddr::from(([127, 0, 0, 1], client_port)),
+        &egress.identity_addr().ip().to_string(),
+        egress.identity_addr().port(),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "REALITY connection failed: {error}\nserver log:\n{}",
+            server.log_text()
+        )
+    });
+    assert!(
+        answer.contains("EGRESS reality-share"),
+        "exported share did not reach the loopback egress: {answer:?}"
+    );
+    client.stop_core().await;
 }
 
 // ---------------------------------------------------------------- Scenario I

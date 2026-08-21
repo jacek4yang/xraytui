@@ -10,6 +10,21 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{ChainId, GenerationId, GroupId, NodeId, ProfileId};
 use crate::policy::{SystemMode, Target};
 
+/// Xray's accepted representation of de-facto mKCP share-link fields.
+///
+/// The daemon capability-probes this rather than inferring it from a version or
+/// release channel, then exposes the result so Xray JSON exports use the same
+/// dialect as the running core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MkcpFinalmaskDialect {
+    /// Separate `header-*`, `mkcp-original`, and `mkcp-aes128gcm` masks.
+    #[default]
+    Layered,
+    /// Repeated consolidated `mkcp-legacy` masks.
+    UnifiedLegacy,
+}
+
 /// Lifecycle of the supervised Xray process.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
@@ -419,6 +434,9 @@ pub struct RuntimeState {
     /// Core lifecycle.
     #[serde(default)]
     pub core: CoreStatus,
+    /// Capability-probed mKCP representation used by the selected core.
+    #[serde(default)]
+    pub mkcp_finalmask_dialect: MkcpFinalmaskDialect,
     /// TUN state.
     #[serde(default)]
     pub tun: TunStatus,

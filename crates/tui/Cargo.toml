@@ -15,6 +15,7 @@ xraytui-domain = { workspace = true }
 xraytui-secrets = { workspace = true }
 xraytui-ipc = { workspace = true }
 xraytui-import = { workspace = true }
+xraytui-xray-compiler = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 thiserror = { workspace = true }
@@ -26,6 +27,7 @@ unicode-width = { workspace = true }
 time = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

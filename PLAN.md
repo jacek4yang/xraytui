@@ -57,7 +57,7 @@ Every row is either *automated*, *manual-privileged*, or *blocked* with a reason
 | E  | Two-hop chain reaches terminal exit through hop 1         | `tests/integration/`                      |
 | F  | Import valid/malformed/unsupported node representations   | unit + proptest                           |
 | G  | Subscription add/change/remove with diff and rollback     | integration, local HTTP fixture server    |
-| H  | Terminal + PNG QR round-trip decode                       | unit (`rqrr`)                             |
+| H  | Terminal + PNG QR round-trip decode                       | unit (`quircs`, independent from encoder) |
 | I  | Kill Xray in restore mode                                 | integration                               |
 | J  | Kill `xraytuid` while TUN active, lease expiry cleanup    | `tests/netns/`                            |
 | K  | Repeated TUN enable/disable leaves no residue             | `tests/netns/`                            |

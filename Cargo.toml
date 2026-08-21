@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.90"
 license = "GPL-3.0-or-later"
@@ -33,22 +33,22 @@ authors = ["xraytui contributors"]
 
 [workspace.dependencies]
 # --- internal ---
-xraytui-domain = { path = "crates/domain", version = "=1.0.0" }
-xraytui-secrets = { path = "crates/secrets", version = "=1.0.0" }
-xraytui-config = { path = "crates/config", version = "=1.0.0" }
-xraytui-import = { path = "crates/import", version = "=1.0.0" }
-xraytui-subscription = { path = "crates/subscription", version = "=1.0.0" }
-xraytui-xray-model = { path = "crates/xray-model", version = "=1.0.0" }
-xraytui-xray-compiler = { path = "crates/xray-compiler", version = "=1.0.0" }
-xraytui-xray-api = { path = "crates/xray-api", version = "=1.0.0" }
-xraytui-state-store = { path = "crates/state-store", version = "=1.0.0" }
-xraytui-ipc = { path = "crates/daemon-ipc", version = "=1.0.0" }
-xraytui-netd-protocol = { path = "crates/netd-protocol", version = "=1.0.0" }
-xraytui-linux-net = { path = "crates/linux-net", version = "=1.0.0" }
-xraytui-controller = { path = "crates/controller", version = "=1.0.0" }
-xraytui-tui = { path = "crates/tui", version = "=1.0.0" }
-xraytui-cli = { path = "crates/cli", version = "=1.0.0" }
-xraytui-test-support = { path = "crates/test-support", version = "=1.0.0" }
+xraytui-domain = { path = "crates/domain", version = "=1.1.0" }
+xraytui-secrets = { path = "crates/secrets", version = "=1.1.0" }
+xraytui-config = { path = "crates/config", version = "=1.1.0" }
+xraytui-import = { path = "crates/import", version = "=1.1.0" }
+xraytui-subscription = { path = "crates/subscription", version = "=1.1.0" }
+xraytui-xray-model = { path = "crates/xray-model", version = "=1.1.0" }
+xraytui-xray-compiler = { path = "crates/xray-compiler", version = "=1.1.0" }
+xraytui-xray-api = { path = "crates/xray-api", version = "=1.1.0" }
+xraytui-state-store = { path = "crates/state-store", version = "=1.1.0" }
+xraytui-ipc = { path = "crates/daemon-ipc", version = "=1.1.0" }
+xraytui-netd-protocol = { path = "crates/netd-protocol", version = "=1.1.0" }
+xraytui-linux-net = { path = "crates/linux-net", version = "=1.1.0" }
+xraytui-controller = { path = "crates/controller", version = "=1.1.0" }
+xraytui-tui = { path = "crates/tui", version = "=1.1.0" }
+xraytui-cli = { path = "crates/cli", version = "=1.1.0" }
+xraytui-test-support = { path = "crates/test-support", version = "=1.1.0" }
 
 # --- async / runtime ---
 tokio = { version = "1.47", default-features = false }
@@ -91,8 +91,11 @@ nix = { version = "0.30", default-features = false }
 socket2 = "0.6"
 
 # --- ui / cli ---
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = { version = "0.30.2", default-features = false, features = [
+    "crossterm",
+    "underline-color",
+] }
+crossterm = "0.29"
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "4.5"
 clap_mangen = "0.2"
@@ -128,7 +131,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 # --- qr ---
 qrcode = { version = "0.14", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
-rqrr = "0.9"
+quircs = "0.10.3"
 
 # --- dev / test ---
 proptest = "1.5"

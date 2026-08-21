@@ -13,11 +13,14 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask", about = "xraytui build and install tasks")]
@@ -410,26 +413,282 @@ fn ci() -> Result<()> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct UpstreamManifest {
+    core: CoreSnapshot,
+    #[serde(default)]
+    ecosystem: Vec<EcosystemSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoreSnapshot {
+    repository: String,
+    stable_tag: String,
+    stable_commit: String,
+    preview_tag: String,
+    preview_commit: String,
+    stable_files: BTreeMap<String, String>,
+    preview_files: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EcosystemSnapshot {
+    name: String,
+    repository: String,
+    reference: String,
+    snapshot_commit: String,
+    files: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubCommit {
+    sha: String,
+}
+
 fn upstream_check() -> Result<()> {
     let root = workspace_root()?;
+    let manifest_path = root.join("upstream-compat.toml");
+    let manifest: UpstreamManifest = toml::from_str(
+        &std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let mut failures = Vec::new();
+
+    println!("Xray release channels");
+    let release_url = format!(
+        "https://api.github.com/repos/{}/releases?per_page=30",
+        manifest.core.repository
+    );
+    let releases: Vec<GithubRelease> = fetch_json(&release_url)?;
+    let latest_stable = latest_release(&releases, false).context("no stable Xray release found")?;
+    let latest_preview =
+        latest_release(&releases, true).context("no preview Xray release found")?;
+    compare(
+        "latest stable release",
+        &manifest.core.stable_tag,
+        &latest_stable.tag_name,
+        &mut failures,
+    );
+    compare(
+        "latest preview release",
+        &manifest.core.preview_tag,
+        &latest_preview.tag_name,
+        &mut failures,
+    );
+
+    let stable_commit = github_commit(&manifest.core.repository, &manifest.core.stable_tag)?;
+    compare(
+        "stable tag commit",
+        &manifest.core.stable_commit,
+        &stable_commit,
+        &mut failures,
+    );
+    let preview_commit = github_commit(&manifest.core.repository, &manifest.core.preview_tag)?;
+    compare(
+        "preview tag commit",
+        &manifest.core.preview_commit,
+        &preview_commit,
+        &mut failures,
+    );
+
+    println!("\nXray connection-schema watch");
+    check_remote_files(
+        "stable",
+        &manifest.core.repository,
+        &stable_commit,
+        &manifest.core.stable_files,
+        &mut failures,
+    )?;
+    check_remote_files(
+        "preview",
+        &manifest.core.repository,
+        &preview_commit,
+        &manifest.core.preview_files,
+        &mut failures,
+    )?;
+
+    println!("\nVendored protobuf closure");
     let vendor = root.join("vendor/xray-proto");
-    println!("Pinned protobuf files:");
-    let mut count = 0;
+    let mut proto_count = 0usize;
     for entry in walk(&vendor)? {
-        if entry.extension().is_some_and(|e| e == "proto") {
-            let relative = entry.strip_prefix(&vendor).unwrap_or(&entry);
-            println!("  {}", relative.display());
-            count += 1;
+        if entry
+            .extension()
+            .is_none_or(|extension| extension != "proto")
+        {
+            continue;
+        }
+        let relative = entry.strip_prefix(&vendor).unwrap_or(&entry);
+        let path = relative.to_string_lossy();
+        let upstream = fetch_bytes(&raw_url(&manifest.core.repository, &stable_commit, &path))?;
+        let local = std::fs::read(&entry)
+            .with_context(|| format!("reading vendored {}", relative.display()))?;
+        if local == upstream {
+            println!("  PASS {}", relative.display());
+        } else {
+            let message = format!(
+                "vendored {} differs from {}",
+                relative.display(),
+                manifest.core.stable_tag
+            );
+            println!("  FAIL {message}");
+            failures.push(message);
+        }
+        proto_count += 1;
+    }
+    if proto_count == 0 {
+        failures.push("vendored protobuf closure is empty".to_owned());
+    }
+
+    println!("\nEcosystem share-serializer watch");
+    for ecosystem in &manifest.ecosystem {
+        let head = github_commit(&ecosystem.repository, &ecosystem.reference)?;
+        if head == ecosystem.snapshot_commit {
+            println!("  INFO {} remains at {}", ecosystem.name, short_sha(&head));
+        } else {
+            println!(
+                "  INFO {} advanced {} -> {}; checking watched paths",
+                ecosystem.name,
+                short_sha(&ecosystem.snapshot_commit),
+                short_sha(&head)
+            );
+        }
+        check_remote_files(
+            &ecosystem.name,
+            &ecosystem.repository,
+            &head,
+            &ecosystem.files,
+            &mut failures,
+        )?;
+    }
+
+    if failures.is_empty() {
+        println!(
+            "\nPASS: releases, tag commits, {} Xray schema snapshots, {proto_count} protobuf files, and {} ecosystem serializer sets match the reviewed manifest",
+            manifest.core.stable_files.len() + manifest.core.preview_files.len(),
+            manifest.ecosystem.len()
+        );
+        Ok(())
+    } else {
+        eprintln!(
+            "\nUpstream compatibility review required. Inspect primary-source changes, update the typed model/import/export/compiler and round-trip fixtures as needed, then update upstream-compat.toml and docs/UPSTREAM-COMPATIBILITY.md."
+        );
+        for failure in &failures {
+            eprintln!("  - {failure}");
+        }
+        bail!("{} upstream compatibility check(s) failed", failures.len())
+    }
+}
+
+fn latest_release(releases: &[GithubRelease], prerelease: bool) -> Option<&GithubRelease> {
+    releases
+        .iter()
+        .filter(|release| !release.draft && release.prerelease == prerelease)
+        .filter_map(|release| version_key(&release.tag_name).map(|key| (key, release)))
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, release)| release)
+}
+
+fn version_key(tag: &str) -> Option<Vec<u64>> {
+    let numbers = tag
+        .trim_start_matches(['v', 'V'])
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .map(str::parse)
+        .collect::<Result<Vec<u64>, _>>()
+        .ok()?;
+    (!numbers.is_empty()).then_some(numbers)
+}
+
+fn github_commit(repository: &str, reference: &str) -> Result<String> {
+    let url = format!("https://api.github.com/repos/{repository}/commits/{reference}");
+    let commit: GithubCommit = fetch_json(&url)?;
+    Ok(commit.sha)
+}
+
+fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
+    serde_json::from_slice(&fetch_bytes(url)?).with_context(|| format!("parsing {url}"))
+}
+
+fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
+    const MAX_RESPONSE: usize = 8 * 1024 * 1024;
+    let output = Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--max-time",
+            "30",
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--header",
+            "X-GitHub-Api-Version: 2022-11-28",
+            "--user-agent",
+            "xraytui-upstream-check",
+            url,
+        ])
+        .output()
+        .with_context(|| format!("running curl for {url}"))?;
+    if !output.status.success() {
+        bail!(
+            "fetching {url} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if output.stdout.len() > MAX_RESPONSE {
+        bail!("response from {url} exceeds {MAX_RESPONSE} bytes");
+    }
+    Ok(output.stdout)
+}
+
+fn raw_url(repository: &str, reference: &str, path: &str) -> String {
+    format!("https://raw.githubusercontent.com/{repository}/{reference}/{path}")
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn check_remote_files(
+    label: &str,
+    repository: &str,
+    reference: &str,
+    files: &BTreeMap<String, String>,
+    failures: &mut Vec<String>,
+) -> Result<()> {
+    for (path, expected) in files {
+        let actual = sha256(&fetch_bytes(&raw_url(repository, reference, path))?);
+        if &actual == expected {
+            println!("  PASS {label}: {path}");
+        } else {
+            let message =
+                format!("{label}: {path} changed (expected {expected}, observed {actual})");
+            println!("  FAIL {message}");
+            failures.push(message);
         }
     }
-    println!("{count} file(s)");
-    println!();
-    println!(
-        "Compare against https://github.com/XTLS/Xray-core/releases and update\n\
-         docs/UPSTREAM-COMPATIBILITY.md if the pinned tag has moved.\n\
-         This task performs no network I/O."
-    );
     Ok(())
+}
+
+fn compare(label: &str, expected: &str, actual: &str, failures: &mut Vec<String>) {
+    if expected == actual {
+        println!("  PASS {label}: {actual}");
+    } else {
+        println!("  FAIL {label}: expected {expected}, observed {actual}");
+        failures.push(format!("{label}: expected {expected}, observed {actual}"));
+    }
+}
+
+fn short_sha(value: &str) -> &str {
+    value.get(..12).unwrap_or(value)
 }
 
 fn walk(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -1146,3 +1405,48 @@ pkill -f 'xraytuid --root /tmp'
 pkill -f smoke-fixtures.py
 ```
 "#;
+
+#[cfg(test)]
+mod upstream_tests {
+    use super::*;
+
+    #[test]
+    fn release_selection_is_numeric_and_keeps_channels_separate() {
+        let releases = vec![
+            GithubRelease {
+                tag_name: "v26.3.9".into(),
+                draft: false,
+                prerelease: false,
+            },
+            GithubRelease {
+                tag_name: "v26.3.27".into(),
+                draft: false,
+                prerelease: false,
+            },
+            GithubRelease {
+                tag_name: "v26.7.28".into(),
+                draft: false,
+                prerelease: true,
+            },
+            GithubRelease {
+                tag_name: "v99.0.0".into(),
+                draft: true,
+                prerelease: false,
+            },
+        ];
+        assert_eq!(
+            latest_release(&releases, false).map(|release| release.tag_name.as_str()),
+            Some("v26.3.27")
+        );
+        assert_eq!(
+            latest_release(&releases, true).map(|release| release.tag_name.as_str()),
+            Some("v26.7.28")
+        );
+    }
+
+    #[test]
+    fn version_keys_do_not_sort_27_below_9_lexically() {
+        assert!(version_key("v26.3.27") > version_key("v26.3.9"));
+        assert_eq!(version_key("not-a-version"), None);
+    }
+}

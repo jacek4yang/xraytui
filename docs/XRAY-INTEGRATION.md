@@ -267,10 +267,41 @@ Chain validation (`DesiredState::validate_chain`) rejects, before compilation:
 | `UnusableHop` | a hop is disabled, or its protocol cannot be compiled |
 
 Separately, `outbound::build` refuses to attach a `dialerProxy` to a protocol
-that does not accept stream settings. WireGuard and Hysteria carry their own
-transport and have nowhere to hang one, so they can only appear as the first hop
-of a chain; using one later returns `CompileError::UnsupportedNode` rather than
-emitting a configuration that silently ignores the hop.
+that does not accept stream settings. WireGuard carries all transport state in
+its protocol settings and has nowhere to hang one, so it cannot be used where a
+chain edge would be discarded. Xray-native Hysteria is different: the current
+core represents it as protocol settings (`version`, address, port) plus
+`streamSettings.network = "hysteria"`, `hysteriaSettings` and TLS; its sockopt
+therefore carries `dialerProxy`. The generated Hysteria shape is validated on
+stable and preview Xray. A real multi-hop Hysteria network-path test has not yet
+been executed, so documentation does not promote that combination beyond
+config-compatibility evidence.
+
+## Share-link fields and compiled Xray fields
+
+The normalized node model is shared by import, export, identity and compilation;
+there is no second reduced "share model." Important mappings include:
+
+| Ecosystem field | Typed model | Xray JSON |
+|---|---|---|
+| `type=xhttp`, `host`, `path`, `mode`, `extra` | `Transport::Xhttp` | `streamSettings.xhttpSettings` |
+| `security=reality`, `sni`, `fp`, `pbk`, `sid`, `spx`, `pqv` | `RealitySettings` | `realitySettings.serverName`, `fingerprint`, `publicKey`, `shortId`, `spiderX`, `mldsa65Verify` |
+| `ech`, `pcs`, `vcn`, ALPN | `TlsSettings` | `echConfigList`, `pinnedPeerCertSha256`, `verifyPeerCertByName`, `alpn` |
+| `fm` | `Node.finalmask` | `streamSettings.finalmask` |
+| mKCP `headerType`, `seed`, `mtu`, `tti` | `MkcpTransport` | current `finalmask.udp` masks plus `kcpSettings.mtu/tti` |
+| Hysteria `obfs-password`, `mport` | `HysteriaSettings` | salamander UDP mask and `finalmask.quicParams.udpHop` |
+
+Export is permitted only if every connection-critical modeled field has a common
+dialect representation, unless the user explicitly chooses a lossy export.
+Compiler support alone is not treated as evidence that a URI field exists. See
+`docs/SHARING.md` for the full matrix.
+
+The `exported_vless_reality_vision_reimports_and_carries_a_real_connection`
+acceptance test starts a synthetic TLS camouflage target, a VLESS REALITY server,
+and the compiled client as separate official Xray processes. It uses the
+QR-decoded re-imported node and observes a loopback egress banner. This has been
+run with stable v26.3.27 and preview v26.7.28; it is stronger than JSON
+validation alone.
 
 ## Upstream constraints the compiler works around
 
@@ -345,9 +376,9 @@ of truth; nothing reads the generated JSON back as policy.
 | `$XDG_RUNTIME_DIR/xraytui/generated-xray.json` | The generation currently applied, mode 0600. |
 | `$XDG_RUNTIME_DIR/xraytui/last-good-xray.json` | The last generation that started, probed and accepted its overrides. |
 
-Both contain node credentials in cleartext. Never attach either to a bug report;
-use `xraytui diag export`, which produces a redacted bundle and is diff-tested
-against a corpus of secrets.
+Both contain node credentials in cleartext. Never attach either to a bug report.
+There is not yet an automatic diagnostic-bundle exporter; use `xraytui doctor`,
+`xraytui status` and only manually reviewed runtime-log excerpts.
 
 ```sh
 CFG="$XDG_RUNTIME_DIR/xraytui/generated-xray.json"

@@ -4,7 +4,7 @@ Linux only. The tier-one target is current Arch Linux with systemd, nftables and
 cgroup v2; Debian stable, Ubuntu LTS and current Fedora are secondary targets.
 
 Read `STATUS.md` for the tested feature matrix. IPv4 is the supported path in
-1.0.0; IPv6 is experimental, disabled by default and fail-closed.
+1.1.0; IPv6 is experimental, disabled by default and fail-closed.
 
 ## Prerequisites
 
@@ -101,6 +101,11 @@ Configuration is migrated automatically, after a timestamped backup of the whole
 configuration directory beside it. A file written by a *newer* xraytui is a hard
 error rather than a best-effort parse, so a downgrade cannot silently mangle
 policy.
+
+Share-link, QR and chain JSON exports are intentionally outside the configuration
+tree. They are credential-bearing transfer artifacts, not backups, and are not
+migrated during an upgrade. Remove or protect old exports yourself after the
+recipient imports them.
 
 ## Uninstalling
 

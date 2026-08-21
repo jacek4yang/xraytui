@@ -51,8 +51,8 @@ pub use policy::{
     RoutingRule, RuleAction, SystemMode, Target, TargetParseError,
 };
 pub use runtime::{
-    ConnectionRecord, CoreStatus, DnsStatus, HealthRecord, HealthState, ProbeKind, ProbeOutcome,
-    ProbeResult, ProfileRuntime, RuntimeState, TrafficCounters, TunStatus,
+    ConnectionRecord, CoreStatus, DnsStatus, HealthRecord, HealthState, MkcpFinalmaskDialect,
+    ProbeKind, ProbeOutcome, ProbeResult, ProfileRuntime, RuntimeState, TrafficCounters, TunStatus,
 };
 pub use state::regex::{Error as PatternError, Regex as Pattern};
 pub use state::{DesiredState, Diagnostic, Severity};

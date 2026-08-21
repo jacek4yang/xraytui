@@ -16,6 +16,7 @@
 //! loop can wait on a keystroke and a log line at the same time and redraw for
 //! whichever arrives.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -26,7 +27,7 @@ use ratatui::backend::CrosstermBackend;
 use xraytui_domain::Target;
 use xraytui_ipc::{Client, Request, Response, SubscriptionFilter};
 
-use crate::app::{Action, App, Key};
+use crate::app::{Action, App, Key, ShareFileKind};
 use crate::terminal::{TerminalError, TerminalGuard};
 
 /// How long the key thread waits before checking whether it should stop.
@@ -310,15 +311,87 @@ pub async fn run(socket: std::path::PathBuf) -> Result<(), RunError> {
             Action::ShowQr { id } => {
                 let node_id = xraytui_domain::NodeId::from_text(&id);
                 match app.desired.nodes.get(&node_id) {
-                    Some(node) => match xraytui_import::to_share_link(node)
-                        .map_err(|error| error.to_string())
-                        .and_then(|link| {
-                            xraytui_import::qr::render_terminal(link.expose())
-                                .map_err(|error| error.to_string())
-                        }) {
-                        Ok(art) => app.overlay = crate::app::Overlay::Qr { art, node: id },
+                    Some(node) => match xraytui_import::export_share_link(
+                        node,
+                        xraytui_import::ShareOptions::default(),
+                    ) {
+                        Ok(export) => {
+                            let dimensions =
+                                xraytui_import::qr::terminal_dimensions(export.link.expose());
+                            match (dimensions, crossterm::terminal::size()) {
+                                (Ok((width, height)), Ok((columns, rows)))
+                                    if width.saturating_add(4) > usize::from(columns)
+                                        || height.saturating_add(4) > usize::from(rows) =>
+                                {
+                                    app.status = format!(
+                                        "QR needs {}x{} cells; enlarge the terminal or choose Export PNG QR",
+                                        width.saturating_add(4),
+                                        height.saturating_add(4)
+                                    );
+                                }
+                                (Ok(_), _) => {
+                                    // The TUI uses the terminal's dark default
+                                    // background, so foreground blocks form the
+                                    // light quiet zone and spaces form dark QR
+                                    // modules. This palette is independently
+                                    // decode-tested in the import crate.
+                                    match xraytui_import::qr::render_terminal_inverted(
+                                        export.link.expose(),
+                                    ) {
+                                        Ok(art) => {
+                                            app.overlay = crate::app::Overlay::Qr {
+                                                art: xraytui_secrets::Secret::new(art),
+                                                node: id,
+                                            };
+                                        }
+                                        Err(error) => {
+                                            app.status = format!("cannot render QR: {error}");
+                                        }
+                                    }
+                                }
+                                (Err(error), _) => {
+                                    app.status = format!("cannot render QR: {error}");
+                                }
+                            }
+                        }
                         Err(error) => app.status = format!("cannot share: {error}"),
                     },
+                    None => app.status = format!("no node '{id}'"),
+                }
+            }
+            Action::ShowShareLink { id } => {
+                let node_id = xraytui_domain::NodeId::from_text(&id);
+                match app.desired.nodes.get(&node_id) {
+                    Some(node) => match xraytui_import::export_share_link(
+                        node,
+                        xraytui_import::ShareOptions::default(),
+                    ) {
+                        Ok(export) => {
+                            app.overlay = crate::app::Overlay::SecretText {
+                                title: format!("Share link for {id}"),
+                                content: export.link,
+                            };
+                        }
+                        Err(error) => app.status = format!("cannot share: {error}"),
+                    },
+                    None => app.status = format!("no node '{id}'"),
+                }
+            }
+            Action::ExportNode { id, path, kind } => {
+                let node_id = xraytui_domain::NodeId::from_text(&id);
+                match app.desired.nodes.get(&node_id) {
+                    Some(node) => {
+                        let result = export_node_file(
+                            node,
+                            Path::new(&path),
+                            kind,
+                            app.runtime.mkcp_finalmask_dialect,
+                        );
+                        match result {
+                            Ok(()) => app.status = format!("wrote private export {path}"),
+                            Err(error) => app.status = format!("cannot export: {error}"),
+                        }
+                    }
                     None => app.status = format!("no node '{id}'"),
                 }
             }
@@ -331,6 +404,46 @@ pub async fn run(socket: std::path::PathBuf) -> Result<(), RunError> {
     let _ = reader.join();
     drop(guard);
     outcome
+}
+
+fn export_node_file(
+    node: &xraytui_domain::Node,
+    path: &Path,
+    kind: ShareFileKind,
+    mkcp_dialect: xraytui_domain::MkcpFinalmaskDialect,
+) -> Result<(), String> {
+    match kind {
+        ShareFileKind::QrPng => {
+            let export =
+                xraytui_import::export_share_link(node, xraytui_import::ShareOptions::default())
+                    .map_err(|error| error.to_string())?;
+            xraytui_import::qr::render_png(export.link.expose(), path, 8)
+                .map_err(|error| error.to_string())
+        }
+        ShareFileKind::ShareLink => {
+            let export =
+                xraytui_import::export_share_link(node, xraytui_import::ShareOptions::default())
+                    .map_err(|error| error.to_string())?;
+            xraytui_import::write_private_atomic(path, export.link.expose().as_bytes())
+                .map_err(|error| error.to_string())
+        }
+        ShareFileKind::XrayJson => {
+            let mut exportable = node.clone();
+            exportable.enabled = true;
+            let outbound = xraytui_xray_compiler::outbound::build_with_dialect(
+                &exportable,
+                &format!("export/{}", node.id),
+                None,
+                mkcp_dialect,
+            )
+            .map_err(|error| error.to_string())?;
+            let rendered = serde_json::to_vec_pretty(&serde_json::json!({
+                "outbounds": [outbound]
+            }))
+            .map_err(|error| error.to_string())?;
+            xraytui_import::write_private_atomic(path, &rendered).map_err(|error| error.to_string())
+        }
+    }
 }
 
 /// Wait for the next event, or never when there is no stream.

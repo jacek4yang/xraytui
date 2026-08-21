@@ -48,6 +48,7 @@ decisions:
 | `u` / `d` | start / stop the core |
 | `t` | probe the selected node |
 | `r` | refresh from the daemon |
+| `Q` | share the selected node: show QR/link or export PNG/link/Xray JSON |
 
 The table above is generated from the same constant the help overlay is, and a
 test presses every key in it and fails if one is documented but does nothing.
@@ -104,7 +105,8 @@ The interesting parts are pure, which is what makes them testable at all:
 | `terminal` | asserting the escape sequences written on restore |
 | `run` | the end-to-end suite, which asserts it refuses a pipe and says why |
 
-Sixty-five tests, including: every documented key does something; an
+Ninety tests, including: every documented key does something; an
 undocumented key does nothing; no line ever exceeds the terminal width, counted
 in display columns so CJK names do not overflow; overlays stay inside a terminal
-too small to hold them; and a subscription's URL never reaches the screen.
+too small to hold them; a subscription's URL never reaches the screen; the Share
+menu fits at 80x24; and credentials appear only in an explicit secret overlay.

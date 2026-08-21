@@ -163,6 +163,40 @@ fn a_confirmation_shows_its_question_and_the_two_answers() {
 }
 
 #[test]
+fn the_share_menu_is_complete_and_fits_at_eighty_by_twenty_four() {
+    let mut app = app();
+    app.overlay = Overlay::ShareMenu {
+        node: "hk-01".to_owned(),
+        selected: 0,
+    };
+    let text = screen(&app, 80, 24).join("\n");
+    for choice in [
+        "Show QR",
+        "Show share link",
+        "Export PNG QR",
+        "Export share link",
+        "Export Xray JSON",
+    ] {
+        assert!(text.contains(choice), "missing {choice:?}: {text}");
+    }
+    assert!(text.contains("Share hk-01"), "{text}");
+}
+
+#[test]
+fn a_share_link_is_only_rendered_in_the_explicit_secret_overlay() {
+    let credential = "vless://11111111-2222-3333-4444-555555555555@example.test:443";
+    let mut app = app();
+    assert!(!screen(&app, 80, 24).join("\n").contains(credential));
+    app.overlay = Overlay::SecretText {
+        title: "Share link for hk-01".to_owned(),
+        content: xraytui_secrets::Secret::new(credential),
+    };
+    let text = screen(&app, 80, 24).join("\n");
+    assert!(text.contains("credential visible"), "{text}");
+    assert!(text.contains("vless://11111111"), "{text}");
+}
+
+#[test]
 fn a_terminal_smaller_than_the_design_still_draws_something_useful() {
     // Nothing overlaps, nothing panics, and the list survives even when the
     // decoration does not.

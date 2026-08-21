@@ -14,7 +14,7 @@
 #     stops rather than reconfigures it.
 #
 # Usage:
-#   sudo ./scripts/netns-test.sh [extra cargo-test arguments]
+#   ./scripts/netns-test.sh [extra test-binary arguments]
 #
 # Nothing outside the namespace is modified. When the last process in the
 # namespace exits, the kernel destroys it along with every interface, route,
@@ -24,6 +24,10 @@ set -eu
 
 if [ "${XRAYTUI_NETNS_INNER:-}" = "1" ]; then
     # --- inside the namespace ---------------------------------------------
+    if [ "$(id -u)" != "0" ]; then
+        echo "netns-test: inner namespace must run as root" >&2
+        exit 1
+    fi
     # nftables resolves a `socket cgroupv2` path against /sys/fs/cgroup and
     # nowhere else, so the private hierarchy has to go there. The mount is
     # confined to this mount namespace with --propagation private, so the host's
@@ -55,10 +59,6 @@ if [ "${XRAYTUI_NETNS_INNER:-}" = "1" ]; then
 fi
 
 # --- outside the namespace -------------------------------------------------
-if [ "$(id -u)" != "0" ]; then
-    echo "netns-test: must be run as root (it creates namespaces)" >&2
-    exit 1
-fi
 
 cd "$(dirname "$0")/.."
 
@@ -95,4 +95,17 @@ export XRAYTUI_NETNS_INNER
 # --mount-proc matters: without it /proc still belongs to the host's PID
 # namespace, so a pidfd's `Pid:` field and a child's own pid disagree and
 # cgroup classification writes a pid that does not exist here.
-exec unshare --net --mount --pid --fork --mount-proc --propagation private -- "$0" "$@"
+if [ "$(id -u)" = "0" ]; then
+    exec unshare --net --mount --pid --fork --mount-proc --propagation private -- "$0" "$@"
+fi
+
+# Compile as the ordinary user, then elevate only the namespace creation and
+# execution of the already-resolved binaries. Explicit variables avoid passing
+# the caller's full environment across the privilege boundary.
+exec sudo env \
+    XRAYTUI_NETNS_INNER="$XRAYTUI_NETNS_INNER" \
+    XRAYTUI_TEST_BINARIES="$XRAYTUI_TEST_BINARIES" \
+    XRAYTUI_TEST_BIN_DIR="$XRAYTUI_TEST_BIN_DIR" \
+    XRAYTUI_TEST_XRAY="${XRAYTUI_TEST_XRAY:-}" \
+    XRAY_LOCATION_ASSET="${XRAY_LOCATION_ASSET:-}" \
+    unshare --net --mount --pid --fork --mount-proc --propagation private -- "$0" "$@"

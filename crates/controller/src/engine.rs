@@ -139,13 +139,18 @@ impl Engine {
     /// # Errors
     /// Returns [`ControllerError::CoreTooOld`] when the binary predates the
     /// routing API xraytui depends on.
-    pub fn new(config: EngineConfig, info: CoreInfo) -> Result<Self, ControllerError> {
+    pub fn new(mut config: EngineConfig, info: CoreInfo) -> Result<Self, ControllerError> {
         if !info.is_supported() {
             return Err(ControllerError::CoreTooOld {
                 found: info.version,
                 minimum: core::MINIMUM_XRAY_VERSION,
             });
         }
+        config.compile.mkcp_finalmask_dialect = info.mkcp_finalmask_dialect;
+        let runtime = RuntimeState {
+            mkcp_finalmask_dialect: info.mkcp_finalmask_dialect,
+            ..RuntimeState::default()
+        };
         Ok(Self {
             config,
             info,
@@ -153,7 +158,7 @@ impl Engine {
             compiled: None,
             running: None,
             client: None,
-            runtime: RuntimeState::default(),
+            runtime,
             generation: GenerationId::ZERO,
             last_good: None,
             consecutive_failures: 0,
@@ -791,6 +796,7 @@ mod tests {
             banner: "Xray 26.3.27".into(),
             asset_dir: None,
             has_geodata: false,
+            mkcp_finalmask_dialect: xraytui_xray_compiler::MkcpFinalmaskDialect::Layered,
         }
     }
 
