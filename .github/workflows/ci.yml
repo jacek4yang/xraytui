@@ -59,6 +59,8 @@ jobs:
       - name: Install clean build dependencies
         run: pacman -Syu --noconfirm git rust protobuf
       - uses: actions/checkout@v5
+      - name: Trust the runner-mounted worktree
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Build deterministic source archive
         run: sh scripts/source-dist.sh
       - name: Build and test with makepkg as an unprivileged user
