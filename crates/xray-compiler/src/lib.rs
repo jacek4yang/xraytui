@@ -91,6 +91,8 @@ pub enum CompileError {
     Serialize(String),
 }
 
+pub use xraytui_domain::MkcpFinalmaskDialect;
+
 /// Knobs the daemon supplies that are not part of the user's policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileOptions {
@@ -102,6 +104,8 @@ pub struct CompileOptions {
     pub access_log: Option<String>,
     /// Error log path.
     pub error_log: Option<String>,
+    /// Runtime-probed mKCP final-mask representation.
+    pub mkcp_finalmask_dialect: MkcpFinalmaskDialect,
     /// TUN interface name, when a TUN inbound should be emitted.
     pub tun: Option<TunOptions>,
     /// DNS settings.
@@ -179,6 +183,7 @@ impl Default for CompileOptions {
             log_level: "warning".into(),
             access_log: None,
             error_log: None,
+            mkcp_finalmask_dialect: MkcpFinalmaskDialect::default(),
             tun: None,
             dns: DnsOptions::default(),
             bypass_private_networks: true,
@@ -398,7 +403,12 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let tag = tags::node(id);
-            let built = outbound::build(node, &tag, None)?;
+            let built = outbound::build_with_dialect(
+                node,
+                &tag,
+                None,
+                self.options.mkcp_finalmask_dialect,
+            )?;
             self.own(&tag);
             self.selectable_tags.insert(tag);
             self.outbounds.push(built);
@@ -436,7 +446,12 @@ impl<'a> Builder<'a> {
                 } else {
                     tags::chain_hop(id, index)
                 };
-                let built = outbound::build(node, &tag, previous.as_deref())?;
+                let built = outbound::build_with_dialect(
+                    node,
+                    &tag,
+                    previous.as_deref(),
+                    self.options.mkcp_finalmask_dialect,
+                )?;
                 self.own(&tag);
                 if is_terminal {
                     self.selectable_tags.insert(tag.clone());

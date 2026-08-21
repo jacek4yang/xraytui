@@ -182,6 +182,31 @@ pub enum Action {
         /// Which node.
         id: String,
     },
+    /// Reveal the selected node's complete standard share link.
+    ShowShareLink {
+        /// Which node.
+        id: String,
+    },
+    /// Write an explicitly requested credential-bearing export.
+    ExportNode {
+        /// Which node.
+        id: String,
+        /// Destination path.
+        path: String,
+        /// Representation to write.
+        kind: ShareFileKind,
+    },
+}
+
+/// File representations offered by the node sharing menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareFileKind {
+    /// PNG QR image.
+    QrPng,
+    /// Plain standard share link.
+    ShareLink,
+    /// One Xray outbound document.
+    XrayJson,
 }
 
 /// Which overlay, if any, is on top.
@@ -210,10 +235,24 @@ pub enum Overlay {
     Form(Box<crate::edit::Form>),
     /// A QR code and its warning.
     Qr {
-        /// Pre-rendered block art.
-        art: String,
+        /// Pre-rendered credential-bearing block art, zeroized on close.
+        art: xraytui_secrets::Secret,
         /// Which node it encodes.
         node: String,
+    },
+    /// Explicit node sharing choices.
+    ShareMenu {
+        /// Which node.
+        node: String,
+        /// Highlighted choice.
+        selected: usize,
+    },
+    /// A credential-bearing text value revealed by explicit action.
+    SecretText {
+        /// Popup title.
+        title: String,
+        /// Full credential-bearing value, zeroized on close.
+        content: xraytui_secrets::Secret,
     },
     /// A question that needs y or n.
     Confirm {
@@ -477,6 +516,13 @@ impl App {
                 }
                 Action::None
             }
+            Overlay::SecretText { title, content } => {
+                if !matches!(key, Key::Escape | Key::Char('q') | Key::Enter) {
+                    self.overlay = Overlay::SecretText { title, content };
+                }
+                Action::None
+            }
+            Overlay::ShareMenu { node, selected } => self.on_key_in_share_menu(key, node, selected),
             Overlay::TargetPicker {
                 profile,
                 candidates,
@@ -635,9 +681,15 @@ impl App {
             },
             Key::Char(' ') => self.toggle_selected_rule(),
             Key::Char('Q') => match (self.view, self.selected()) {
-                (View::Nodes, Some(row)) => Action::ShowQr { id: row.id },
+                (View::Nodes, Some(row)) => {
+                    self.overlay = Overlay::ShareMenu {
+                        node: row.id,
+                        selected: 0,
+                    };
+                    Action::None
+                }
                 (View::Nodes, None) => Action::Notice("no node selected".to_owned()),
-                _ => Action::Notice("Q shows a QR code; switch to the Nodes pane".to_owned()),
+                _ => Action::Notice("Q shares a node; switch to the Nodes pane".to_owned()),
             },
             Key::Char('D') => match (self.view, self.selected()) {
                 (View::Nodes, Some(row)) => {
@@ -652,6 +704,66 @@ impl App {
                 _ => Action::Notice("D removes a node; switch to the Nodes pane".to_owned()),
             },
             _ => Action::None,
+        }
+    }
+
+    fn on_key_in_share_menu(&mut self, key: Key, node: String, selected: usize) -> Action {
+        const CHOICES: usize = 5;
+        match key {
+            Key::Escape | Key::Char('q') => Action::None,
+            Key::Char('j') | Key::Down => {
+                self.overlay = Overlay::ShareMenu {
+                    node,
+                    selected: (selected + 1).min(CHOICES - 1),
+                };
+                Action::None
+            }
+            Key::Char('k') | Key::Up => {
+                self.overlay = Overlay::ShareMenu {
+                    node,
+                    selected: selected.saturating_sub(1),
+                };
+                Action::None
+            }
+            Key::Enter => match selected {
+                0 => Action::ShowQr { id: node },
+                1 => Action::ShowShareLink { id: node },
+                2 => {
+                    self.overlay = Overlay::Form(Box::new(crate::edit::Form::share_export(
+                        &node,
+                        ShareFileKind::QrPng,
+                    )));
+                    Action::None
+                }
+                3 => {
+                    self.overlay = Overlay::Form(Box::new(crate::edit::Form::share_export(
+                        &node,
+                        ShareFileKind::ShareLink,
+                    )));
+                    Action::None
+                }
+                _ => {
+                    self.overlay = Overlay::Form(Box::new(crate::edit::Form::share_export(
+                        &node,
+                        ShareFileKind::XrayJson,
+                    )));
+                    Action::None
+                }
+            },
+            Key::Char(character @ '1'..='5') => {
+                let choice = match character {
+                    '1' => 0,
+                    '2' => 1,
+                    '3' => 2,
+                    '4' => 3,
+                    _ => 4,
+                };
+                self.on_key_in_share_menu(Key::Enter, node, choice)
+            }
+            _ => {
+                self.overlay = Overlay::ShareMenu { node, selected };
+                Action::None
+            }
         }
     }
 
@@ -841,6 +953,17 @@ impl App {
                     return Action::None;
                 }
                 Action::AssignApp { profile, matcher }
+            }
+            FormKind::ShareExport { id, kind } => {
+                let path = form.value("path").to_owned();
+                if path.is_empty() {
+                    self.overlay = Overlay::Form(Box::new(reject(
+                        form,
+                        "a destination path is required".to_owned(),
+                    )));
+                    return Action::None;
+                }
+                Action::ExportNode { id, path, kind }
             }
         }
     }
@@ -1088,7 +1211,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("l", "edit the selected profile's listeners"),
     ("A", "route a program through the selected profile"),
     ("Space", "enable or disable the selected rule"),
-    ("Q", "show the selected node as a QR code"),
+    ("Q", "share the selected node"),
     ("D", "remove the selected node, after confirming"),
 ];
 

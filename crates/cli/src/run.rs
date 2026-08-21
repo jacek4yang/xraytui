@@ -1,6 +1,8 @@
 //! Command dispatch.
 
-use std::io::{Read as _, Write as _};
+use std::collections::BTreeSet;
+use std::io::{IsTerminal as _, Read as _, Write as _};
+use std::process::{Command as ProcessCommand, Stdio};
 
 use xraytui_domain::Target;
 use xraytui_ipc::{Client, ImportOrigin, Request, Response, TestTarget};
@@ -885,11 +887,30 @@ async fn node(
                 })
                 .collect();
             match format {
-                Format::Json => println!(
-                    "{}",
-                    serde_json::to_string_pretty(&matching)
-                        .map_err(|error| CliError::Other(error.to_string()))?
-                ),
+                Format::Json => {
+                    let redacted = matching
+                        .iter()
+                        .map(|node| {
+                            serde_json::json!({
+                                "id": node.id,
+                                "name": node.name,
+                                "source": node.source,
+                                "protocol": node.protocol.xray_protocol(),
+                                "transport": node.transport.label(),
+                                "security": node.security.xray_security(),
+                                "endpoint": node.endpoint.authority(),
+                                "enabled": node.enabled,
+                                "compatibility": node.compatibility,
+                                "fingerprint": node.canonical_identity(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&redacted)
+                            .map_err(|error| CliError::Other(error.to_string()))?
+                    );
+                }
                 Format::Dmenu => {
                     for node in matching {
                         println!(
@@ -929,8 +950,20 @@ async fn node(
                 .nodes
                 .get(&id)
                 .ok_or_else(|| CliError::NotFound(format!("node '{node}' does not exist")))?;
-            // `Debug` on a node prints `Secret(<redacted>)` for credentials.
-            println!("{found:#?}");
+            // Typed credentials use `Secret` and therefore have a redacted
+            // `Debug`, but `finalmask` and future extension fields are opaque
+            // JSON. They can contain passwords too, so retain their shape/key
+            // names for inspection without ever printing their values.
+            let mut redacted = found.clone();
+            if redacted.finalmask.is_some() {
+                redacted.finalmask = Some(serde_json::Value::String(
+                    "<redacted: preserved finalmask>".to_owned(),
+                ));
+            }
+            for value in redacted.extra.values_mut() {
+                *value = serde_json::Value::String("<redacted: preserved value>".to_owned());
+            }
+            println!("{redacted:#?}");
             Ok(())
         }
 
@@ -1037,44 +1070,261 @@ async fn node(
             Ok(())
         }
 
-        NodeCommand::Share(args) => share(client, args).await,
+        NodeCommand::Share(args) => share(client, args, format).await,
     }
 }
 
-async fn share(client: &mut Client, args: crate::args::ShareArgs) -> Result<(), CliError> {
-    let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+async fn share(
+    client: &mut Client,
+    args: crate::args::ShareArgs,
+    output_format: Format,
+) -> Result<(), CliError> {
+    use crate::args::{ShareFormat, VmessFormat};
+
+    let Response::State { desired, runtime } = ask(client, Request::GetState).await? else {
         return Err(CliError::Other("unexpected response".into()));
     };
-    let id = parse_id::<xraytui_domain::NodeId>(&args.node, "node")?;
-    let node = desired
-        .nodes
-        .get(&id)
-        .ok_or_else(|| CliError::NotFound(format!("node '{}' does not exist", args.node)))?;
-    let link =
-        xraytui_import::to_share_link(node).map_err(|error| CliError::Other(error.to_string()))?;
+
+    if args.nodes.is_empty() && args.subscription.is_none() && !args.all {
+        return Err(CliError::Usage(
+            "choose at least one node, `--subscription ID`, or `--all`".into(),
+        ));
+    }
+    if args.clipboard && (args.output.is_some() || args.png.is_some() || args.qr) {
+        return Err(CliError::Usage(
+            "--clipboard cannot be combined with QR or file output".into(),
+        ));
+    }
+
+    let mut selected_ids = BTreeSet::new();
+    for token in &args.nodes {
+        let id = parse_id::<xraytui_domain::NodeId>(token, "node")?;
+        if !desired.nodes.contains_key(&id) {
+            return Err(CliError::NotFound(format!("node '{token}' does not exist")));
+        }
+        selected_ids.insert(id);
+    }
+    if let Some(token) = &args.subscription {
+        let subscription = parse_id::<xraytui_domain::SubscriptionId>(token, "subscription")?;
+        if !desired.subscriptions.contains_key(&subscription) {
+            return Err(CliError::NotFound(format!(
+                "subscription '{token}' does not exist"
+            )));
+        }
+        selected_ids.extend(
+            desired
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.source.subscription() == Some(&subscription))
+                .map(|(id, _)| id.clone()),
+        );
+    }
+    if args.all {
+        selected_ids.extend(desired.nodes.keys().cloned());
+    }
+    if selected_ids.is_empty() {
+        return Err(CliError::Other(
+            "the selector matched no exportable nodes".into(),
+        ));
+    }
+    let selected = selected_ids
+        .iter()
+        .filter_map(|id| desired.nodes.get(id).map(|node| (id, node)))
+        .collect::<Vec<_>>();
+
+    let qr_requested = args.qr || args.png.is_some();
+    if qr_requested && (selected.len() != 1 || args.export_format != ShareFormat::Links) {
+        return Err(CliError::Usage(
+            "QR export requires exactly one node and `--as links`".into(),
+        ));
+    }
+
+    let share_options = xraytui_import::ShareOptions {
+        allow_lossy: args.allow_lossy,
+        vmess_format: match args.vmess_format {
+            VmessFormat::Auto => xraytui_import::VmessShareFormat::Auto,
+            VmessFormat::Classic => xraytui_import::VmessShareFormat::Classic,
+            VmessFormat::Standard => xraytui_import::VmessShareFormat::Standard,
+        },
+    };
+
+    let mut link_exports = Vec::new();
+    if matches!(args.export_format, ShareFormat::Links | ShareFormat::Base64) {
+        for (id, node) in &selected {
+            let export = xraytui_import::export_share_link(node, share_options)
+                .map_err(|error| CliError::Other(format!("node '{id}': {error}")))?;
+            link_exports.push((id.to_string(), export));
+        }
+    }
+
+    let payload = match args.export_format {
+        ShareFormat::Links if output_format == Format::Json => serde_json::to_string_pretty(
+            &link_exports
+                .iter()
+                .map(|(id, export)| {
+                    serde_json::json!({
+                        "node": id,
+                        "fidelity": export.fidelity,
+                        "notes": export.notes,
+                        "link": export.link.expose(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| CliError::Other(error.to_string()))?,
+        ShareFormat::Links => link_exports
+            .iter()
+            .map(|(_, export)| export.link.expose())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ShareFormat::Base64 => {
+            let links = link_exports
+                .iter()
+                .map(|(_, export)| export.link.expose())
+                .collect::<Vec<_>>()
+                .join("\n");
+            xraytui_import::encode_standard(links.as_bytes())
+        }
+        ShareFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
+            "format": "xraytui-normalized-nodes",
+            "version": 1,
+            "nodes": selected.iter().map(|(_, node)| *node).collect::<Vec<_>>(),
+        }))
+        .map_err(|error| CliError::Other(error.to_string()))?,
+        ShareFormat::XrayJson => {
+            let outbounds = selected
+                .iter()
+                .map(|(id, node)| {
+                    let mut exportable = (*node).clone();
+                    exportable.enabled = true;
+                    xraytui_xray_compiler::outbound::build_with_dialect(
+                        &exportable,
+                        &format!("export/{id}"),
+                        None,
+                        runtime.mkcp_finalmask_dialect,
+                    )
+                    .map_err(|error| CliError::Other(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            serde_json::to_string_pretty(&serde_json::json!({ "outbounds": outbounds }))
+                .map_err(|error| CliError::Other(error.to_string()))?
+        }
+    };
 
     // A share link is a credential. Say so once, on stderr, so piping the link
     // into another command still works.
     eprintln!("warning: {}", xraytui_import::qr::SECRET_WARNING);
 
-    if let Some(path) = &args.png {
-        xraytui_import::qr::render_png(link.expose(), path, 8)
+    for (id, export) in &link_exports {
+        if export.fidelity != xraytui_import::ExportFidelity::Lossless {
+            eprintln!("node {id}: export fidelity is {:?}", export.fidelity);
+        }
+        for note in &export.notes {
+            eprintln!("node {id}: omitted {note}");
+        }
+    }
+
+    let qr_payload = link_exports
+        .first()
+        .map(|(_, export)| export.link.expose())
+        .unwrap_or(payload.as_str());
+    let qr_output = args
+        .png
+        .as_ref()
+        .or_else(|| args.qr.then_some(()).and(args.output.as_ref()));
+    if let Some(path) = qr_output {
+        xraytui_import::qr::render_png(qr_payload, path, 8)
             .map_err(|error| CliError::Other(error.to_string()))?;
-        println!("wrote {}", path.display());
+        eprintln!("wrote private QR image {}", path.display());
         return Ok(());
     }
     if args.qr {
+        if std::io::stdout().is_terminal()
+            && let Ok((columns, rows)) = crossterm::terminal::size()
+        {
+            let (needed_columns, needed_rows) = xraytui_import::qr::terminal_dimensions(qr_payload)
+                .map_err(|error| CliError::Other(error.to_string()))?;
+            if needed_columns > usize::from(columns) || needed_rows > usize::from(rows) {
+                return Err(CliError::Other(format!(
+                    "QR needs {needed_columns}x{needed_rows} terminal cells, but the terminal is {columns}x{rows}; enlarge it or use `--qr --output node.png`"
+                )));
+            }
+        }
         let rendered = if args.invert {
-            xraytui_import::qr::render_terminal_inverted(link.expose())
+            xraytui_import::qr::render_terminal_inverted(qr_payload)
         } else {
-            xraytui_import::qr::render_terminal(link.expose())
+            xraytui_import::qr::render_terminal(qr_payload)
         }
         .map_err(|error| CliError::Other(error.to_string()))?;
         print!("{rendered}");
         return Ok(());
     }
-    println!("{}", link.expose());
+    if let Some(path) = &args.output {
+        xraytui_import::write_private_atomic(path, payload.as_bytes())
+            .map_err(|error| CliError::Other(error.to_string()))?;
+        eprintln!("wrote private export {}", path.display());
+        return Ok(());
+    }
+    if args.clipboard {
+        copy_secret_to_clipboard(&payload)?;
+        eprintln!("copied credential-bearing export to the clipboard");
+        return Ok(());
+    }
+    println!("{payload}");
     Ok(())
+}
+
+fn copy_secret_to_clipboard(payload: &str) -> Result<(), CliError> {
+    let candidates: &[(&str, &[&str])] = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
+    } else {
+        &[("xclip", &["-selection", "clipboard"]), ("wl-copy", &[])]
+    };
+    let mut last_error = None;
+    for (program, arguments) in candidates {
+        let spawned = ProcessCommand::new(program)
+            .args(*arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                last_error = Some(error);
+                continue;
+            }
+            Err(error) => {
+                return Err(CliError::Io {
+                    context: format!("starting {program}"),
+                    source: error,
+                });
+            }
+        };
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            CliError::Other(format!(
+                "{program} did not provide a writable standard input"
+            ))
+        })?;
+        stdin
+            .write_all(payload.as_bytes())
+            .map_err(|source| CliError::Io {
+                context: format!("writing credential to {program} standard input"),
+                source,
+            })?;
+        drop(stdin);
+        let status = child.wait().map_err(|source| CliError::Io {
+            context: format!("waiting for {program}"),
+            source,
+        })?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    Err(CliError::Other(match last_error {
+        Some(_) => "no clipboard helper found; install wl-clipboard or xclip".into(),
+        None => "clipboard helper failed without exposing the credential".into(),
+    }))
 }
 
 async fn group(client: &mut Client, command: GroupCommand, format: Format) -> Result<(), CliError> {
@@ -1217,7 +1467,7 @@ async fn group(client: &mut Client, command: GroupCommand, format: Format) -> Re
 }
 
 async fn chain(client: &mut Client, command: ChainCommand, format: Format) -> Result<(), CliError> {
-    let Response::State { desired, .. } = ask(client, Request::GetState).await? else {
+    let Response::State { desired, runtime } = ask(client, Request::GetState).await? else {
         return Err(CliError::Other("unexpected response".into()));
     };
     match command {
@@ -1297,6 +1547,48 @@ async fn chain(client: &mut Client, command: ChainCommand, format: Format) -> Re
                 return Err(CliError::Other("unexpected response".into()));
             };
             println!("{chain}: {:?}", result.outcome);
+            Ok(())
+        }
+        ChainCommand::Export { chain, output } => {
+            let id = parse_id::<xraytui_domain::ChainId>(&chain, "chain")?;
+            let definition = desired
+                .chains
+                .get(&id)
+                .ok_or_else(|| CliError::NotFound(format!("chain '{chain}' does not exist")))?;
+            let options = xraytui_xray_compiler::CompileOptions {
+                mkcp_finalmask_dialect: runtime.mkcp_finalmask_dialect,
+                ..Default::default()
+            };
+            let compiled = xraytui_xray_compiler::compile(&desired, &options)
+                .map_err(|error| CliError::Other(error.to_string()))?;
+            let prefix = format!("chain/{id}/");
+            let outbounds = compiled
+                .config
+                .outbounds
+                .into_iter()
+                .filter(|outbound| outbound.tag.starts_with(&prefix))
+                .collect::<Vec<_>>();
+            if outbounds.len() != definition.hops.len() {
+                return Err(CliError::Other(format!(
+                    "chain '{chain}' compiled to {} outbounds for {} hops; refusing an incomplete export",
+                    outbounds.len(),
+                    definition.hops.len()
+                )));
+            }
+            let payload = serde_json::to_string_pretty(&serde_json::json!({
+                "outbounds": outbounds,
+            }))
+            .map_err(|error| CliError::Other(error.to_string()))?;
+            eprintln!(
+                "warning: chain export contains every hop's credentials; it is Xray JSON, not a portable single-node share link"
+            );
+            if let Some(path) = output {
+                xraytui_import::write_private_atomic(&path, payload.as_bytes())
+                    .map_err(|error| CliError::Other(error.to_string()))?;
+                eprintln!("wrote private chain export {}", path.display());
+            } else {
+                println!("{payload}");
+            }
             Ok(())
         }
     }
@@ -1612,7 +1904,10 @@ fn print_subscription_result(response: &Response) {
                 println!("up to date");
             }
         }
-        other => println!("{other:?}"),
+        // Never dump an unexpected protocol value: future response variants
+        // could contain opaque imported fields that are intentionally absent
+        // from ordinary output.
+        _ => eprintln!("xraytui: daemon returned an unexpected subscription response"),
     }
 }
 

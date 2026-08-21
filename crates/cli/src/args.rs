@@ -460,8 +460,17 @@ pub struct ImportArgs {
 /// `xraytui node share …`
 #[derive(Debug, Args)]
 pub struct ShareArgs {
-    /// Node identifier.
-    pub node: String,
+    /// Node identifier. Repeat positionally to export several nodes.
+    pub nodes: Vec<String>,
+    /// Export every node owned by this subscription.
+    #[arg(long, value_name = "ID")]
+    pub subscription: Option<String>,
+    /// Export every node.
+    #[arg(long)]
+    pub all: bool,
+    /// Portable output representation.
+    #[arg(long = "as", value_enum, default_value_t = ShareFormat::Links)]
+    pub export_format: ShareFormat,
     /// Render the link as a terminal QR code.
     #[arg(long)]
     pub qr: bool,
@@ -469,11 +478,46 @@ pub struct ShareArgs {
     #[arg(long, requires = "qr")]
     pub invert: bool,
     /// Write the QR code to a PNG file.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", conflicts_with = "qr")]
     pub png: Option<PathBuf>,
+    /// Write the link/subscription to a private file. With `--qr`, writes PNG.
+    #[arg(long, value_name = "FILE", conflicts_with = "png")]
+    pub output: Option<PathBuf>,
     /// Copy the link to the clipboard instead of printing it.
     #[arg(long)]
     pub clipboard: bool,
+    /// Explicitly permit omission of meaningful fields a standard link cannot carry.
+    #[arg(long)]
+    pub allow_lossy: bool,
+    /// VMess link dialect.
+    #[arg(long, value_enum, default_value_t = VmessFormat::Auto)]
+    pub vmess_format: VmessFormat,
+}
+
+/// Portable node export representation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum ShareFormat {
+    /// One standard share link per line.
+    #[default]
+    Links,
+    /// Base64 of the newline-separated standard links.
+    Base64,
+    /// Versioned normalized node JSON.
+    Json,
+    /// Xray outbound objects.
+    XrayJson,
+}
+
+/// VMess share-link dialect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum VmessFormat {
+    /// Classic v2rayN JSON unless modern fields require authority syntax.
+    #[default]
+    Auto,
+    /// Classic base64-encoded v2rayN JSON.
+    Classic,
+    /// Modern authority/query syntax.
+    Standard,
 }
 
 /// `xraytui group …`
@@ -539,6 +583,14 @@ pub enum ChainCommand {
     Test {
         /// Chain identifier.
         chain: String,
+    },
+    /// Export the complete multi-hop composition as Xray outbound JSON.
+    Export {
+        /// Chain identifier.
+        chain: String,
+        /// Write the credential-bearing JSON to a private file instead of stdout.
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
 }
 
@@ -718,6 +770,29 @@ mod tests {
             vec!["xraytui", "node", "share", "hk-01"],
             vec!["xraytui", "node", "share", "hk-01", "--qr"],
             vec!["xraytui", "node", "share", "hk-01", "--png", "/tmp/n.png"],
+            vec![
+                "xraytui", "node", "share", "hk-01", "jp-01", "--as", "base64",
+            ],
+            vec![
+                "xraytui",
+                "node",
+                "share",
+                "--subscription",
+                "provider",
+                "--as",
+                "json",
+                "--output",
+                "/tmp/nodes.json",
+            ],
+            vec![
+                "xraytui",
+                "node",
+                "share",
+                "hk-01",
+                "--qr",
+                "--output",
+                "/tmp/n.png",
+            ],
             vec!["xraytui", "group", "list"],
             vec!["xraytui", "group", "test", "auto-hk"],
             vec!["xraytui", "chain", "list"],
@@ -792,6 +867,33 @@ mod tests {
             "--invert without --qr must be refused"
         );
         assert!(Cli::try_parse_from(["xraytui", "node", "share", "n", "--qr", "--invert"]).is_ok());
+    }
+
+    #[test]
+    fn share_accepts_batch_and_portable_formats() {
+        let cli = Cli::try_parse_from([
+            "xraytui",
+            "node",
+            "share",
+            "hk",
+            "jp",
+            "--as",
+            "base64",
+            "--allow-lossy",
+            "--vmess-format",
+            "standard",
+        ])
+        .expect("parse");
+        let Some(Command::Node(command)) = cli.command else {
+            panic!("expected node command");
+        };
+        let NodeCommand::Share(args) = *command else {
+            panic!("expected share command");
+        };
+        assert_eq!(args.nodes, ["hk", "jp"]);
+        assert_eq!(args.export_format, ShareFormat::Base64);
+        assert!(args.allow_lossy);
+        assert_eq!(args.vmess_format, VmessFormat::Standard);
     }
 
     #[test]

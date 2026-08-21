@@ -191,6 +191,7 @@ impl NodeDraft {
             protocol: settings,
             transport,
             security,
+            finalmask: None,
             mux: MuxSettings::default(),
             sockopt: SocketSettings::default(),
             tags: self.tags.clone(),
@@ -548,6 +549,7 @@ impl NodeDraft {
                 // has to be a deliberate, visible act, not a side effect of
                 // filling in a form.
                 allow_insecure: false,
+                ..TlsSettings::default()
             }),
             "reality" => TransportSecurity::Reality(RealitySettings {
                 server_name: self.sni.clone().filter(|value| !value.is_empty()),

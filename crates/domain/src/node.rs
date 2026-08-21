@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use xraytui_secrets::Secret;
 
 use crate::ids::{NodeId, SubscriptionId};
@@ -139,10 +140,11 @@ impl ProtocolSettings {
 
     /// Whether the protocol accepts a stream transport (`streamSettings`).
     ///
-    /// WireGuard and Hysteria carry their own transport and must not be given one.
+    /// WireGuard carries its own transport and cannot accept `streamSettings`.
+    /// Xray-native Hysteria instead requires its QUIC configuration there.
     #[must_use]
     pub fn accepts_stream_settings(&self) -> bool {
-        !matches!(self, Self::Wireguard(_) | Self::Hysteria(_))
+        !matches!(self, Self::Wireguard(_))
     }
 }
 
@@ -288,6 +290,71 @@ pub struct HysteriaSettings {
     /// Download bandwidth hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub down: Option<String>,
+    /// UDP port hopping list, e.g. `20000-30000,40000`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_hopping: Option<String>,
+}
+
+impl HysteriaSettings {
+    /// Return only Finalmask fields that are not already represented by the
+    /// typed Hysteria obfuscation and port-hopping settings.
+    ///
+    /// Xray JSON places both features under `streamSettings.finalmask`, while
+    /// ecosystem links carry `obfs-password` and `mport`. Treating both copies
+    /// as independent would make an import/export round trip change node
+    /// identity even though the compiled connection is identical.
+    #[must_use]
+    pub fn unrepresented_finalmask(
+        &self,
+        finalmask: Option<&serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let finalmask = finalmask?;
+        let Some(mut root) = finalmask.as_object().cloned() else {
+            return Some(finalmask.clone());
+        };
+
+        if let Some(obfs) = &self.obfs
+            && let Some(masks) = root
+                .get_mut("udp")
+                .and_then(serde_json::Value::as_array_mut)
+        {
+            masks.retain(|mask| {
+                !(mask.get("type").and_then(serde_json::Value::as_str) == Some("salamander")
+                    && mask
+                        .pointer("/settings/password")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(obfs.expose()))
+            });
+            if masks.is_empty() {
+                root.remove("udp");
+            }
+        }
+
+        if let Some(ports) = &self.port_hopping
+            && let Some(quic) = root
+                .get_mut("quicParams")
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            let mut remove_hop = false;
+            if let Some(hop) = quic
+                .get_mut("udpHop")
+                .and_then(serde_json::Value::as_object_mut)
+                && hop.get("ports").and_then(serde_json::Value::as_str)
+                    == Some(ports.replace(':', "-").as_str())
+            {
+                hop.remove("ports");
+                remove_hop = hop.is_empty();
+            }
+            if remove_hop {
+                quic.remove("udpHop");
+            }
+            if quic.is_empty() {
+                root.remove("quicParams");
+            }
+        }
+
+        (!root.is_empty()).then_some(serde_json::Value::Object(root))
+    }
 }
 
 pub(crate) const fn default_true() -> bool {
@@ -425,6 +492,13 @@ pub struct MkcpTransport {
     /// Obfuscation seed. Treated as a credential.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<Secret>,
+    /// Maximum transmission unit. Omitted to use the core default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u32>,
+    /// Transmission time interval in milliseconds. Omitted to use the core
+    /// default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tti: Option<u32>,
 }
 
 /// Transport-layer security.
@@ -471,6 +545,22 @@ pub struct TlsSettings {
     /// action and is surfaced as a warning wherever the node is displayed.
     #[serde(default)]
     pub allow_insecure: bool,
+    /// ECH config list, as accepted by Xray's `echConfigList`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ech_config_list: Option<String>,
+    /// Xray's ECH enforcement mode (`none`, `half` or `full`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ech_force_query: Option<String>,
+    /// Comma-separated SHA-256 certificate pins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_peer_cert_sha256: Option<String>,
+    /// Comma-separated certificate names checked by Xray.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_peer_cert_by_name: Option<String>,
+    /// Explicit TLS cipher suites. There is not yet a settled standard share
+    /// parameter for this field, so standard-link export reports it as lossy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cipher_suites: Option<String>,
 }
 
 /// REALITY settings.
@@ -566,6 +656,11 @@ pub struct Node {
     /// Transport security.
     #[serde(default)]
     pub security: TransportSecurity,
+    /// Xray Finalmask configuration. It remains JSON-shaped because upstream
+    /// intentionally permits nested, extensible mask settings and the official
+    /// `fm` share field carries this object verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalmask: Option<serde_json::Value>,
     /// Multiplexing.
     #[serde(default)]
     pub mux: MuxSettings,
@@ -618,6 +713,7 @@ impl Node {
             protocol,
             transport: Transport::default(),
             security: TransportSecurity::default(),
+            finalmask: None,
             mux: MuxSettings::default(),
             sockopt: SocketSettings::default(),
             tags: Vec::new(),
@@ -634,93 +730,147 @@ impl Node {
     /// Two nodes that differ only in display name, tags or subscription are the
     /// same endpoint. The identity intentionally includes credentials — otherwise
     /// two accounts on the same server would collapse into one — but it is hashed
-    /// through [`Secret::fingerprint`] so the identity itself is not a secret and
-    /// can be logged.
+    /// through [`Secret::fingerprint`] and then hashed as a complete canonical
+    /// record, so it never embeds plaintext credentials. It remains sensitive
+    /// identity material because low-entropy passwords can be guessed offline;
+    /// prefer the node ID in ordinary logs.
     #[must_use]
     pub fn canonical_identity(&self) -> String {
-        let mut parts = vec![
-            self.protocol.xray_protocol().to_owned(),
-            self.endpoint.address.to_ascii_lowercase(),
-            self.endpoint.port.to_string(),
-            self.transport.xray_network().to_owned(),
-            self.security.xray_security().to_owned(),
-        ];
-        match &self.protocol {
-            ProtocolSettings::Vless(v) => {
-                parts.push(v.id.fingerprint());
-                parts.push(v.flow.clone());
-                parts.push(v.encryption.clone());
+        let protocol = match &self.protocol {
+            ProtocolSettings::Vless(v) => serde_json::json!({
+                "type": "vless", "id": v.id.fingerprint(), "flow": v.flow,
+                "encryption": v.encryption, "level": v.level,
+            }),
+            ProtocolSettings::Vmess(v) => serde_json::json!({
+                "type": "vmess", "id": v.id.fingerprint(), "security": v.security,
+                "alter_id": v.alter_id, "level": v.level,
+            }),
+            ProtocolSettings::Trojan(t) => serde_json::json!({
+                "type": "trojan", "password": t.password.fingerprint(), "flow": t.flow,
+            }),
+            ProtocolSettings::Shadowsocks(s) => serde_json::json!({
+                "type": "shadowsocks", "method": s.method,
+                "password": s.password.fingerprint(), "uot": s.uot,
+                "uot_version": s.uot_version,
+            }),
+            ProtocolSettings::Http(h) => serde_json::json!({
+                "type": "http", "username": h.username,
+                "password": h.password.as_ref().map(Secret::fingerprint),
+            }),
+            ProtocolSettings::Socks(s) => serde_json::json!({
+                "type": "socks", "username": s.username,
+                "password": s.password.as_ref().map(Secret::fingerprint), "udp": s.udp,
+            }),
+            ProtocolSettings::Wireguard(w) => serde_json::json!({
+                "type": "wireguard", "secret_key": w.secret_key.fingerprint(),
+                "address": w.address,
+                "peers": w.peers.iter().map(|peer| serde_json::json!({
+                    "public_key": peer.public_key,
+                    "pre_shared_key": peer.pre_shared_key.as_ref().map(Secret::fingerprint),
+                    "endpoint": peer.endpoint,
+                    "allowed_ips": if peer.allowed_ips.is_empty()
+                        || (peer.allowed_ips.len() == 2
+                            && peer.allowed_ips.iter().any(|ip| ip == "0.0.0.0/0")
+                            && peer.allowed_ips.iter().any(|ip| ip == "::0/0"))
+                    {
+                        vec!["0.0.0.0/0", "::0/0"]
+                    } else {
+                        peer.allowed_ips.iter().map(String::as_str).collect::<Vec<_>>()
+                    },
+                    "keep_alive": peer.keep_alive.unwrap_or(0),
+                })).collect::<Vec<_>>(),
+                "mtu": w.mtu, "reserved": w.reserved,
+                "domain_strategy": w.domain_strategy.as_deref().unwrap_or("forceip").to_ascii_lowercase(),
+            }),
+            ProtocolSettings::Hysteria(h) => serde_json::json!({
+                "type": "hysteria", "auth": h.auth.fingerprint(),
+                "obfs": h.obfs.as_ref().map(Secret::fingerprint),
+                "up": h.up, "down": h.down, "port_hopping": h.port_hopping,
+            }),
+        };
+        let transport = match &self.transport {
+            Transport::Raw(raw) => serde_json::json!({
+                "type": "raw", "header_type": raw.header_type, "host": raw.host,
+                "path": raw.path,
+            }),
+            Transport::Xhttp(xhttp) => serde_json::json!({
+                "type": "xhttp", "host": xhttp.host, "path": xhttp.path,
+                "mode": xhttp.mode, "extra": xhttp.extra,
+            }),
+            Transport::Grpc(grpc) => serde_json::json!({
+                "type": "grpc", "service_name": grpc.service_name,
+                "multi_mode": grpc.multi_mode, "authority": grpc.authority,
+            }),
+            Transport::Websocket(ws) => {
+                let header_host = ws
+                    .headers
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("host"))
+                    .map(|(_, value)| value);
+                let headers = ws
+                    .headers
+                    .iter()
+                    .filter(|(key, _)| !key.eq_ignore_ascii_case("host"))
+                    .collect::<BTreeMap<_, _>>();
+                serde_json::json!({
+                    "type": "websocket", "path": ws.path,
+                    "host": ws.host.as_ref().or(header_host), "headers": headers,
+                })
             }
-            ProtocolSettings::Vmess(v) => parts.push(v.id.fingerprint()),
-            ProtocolSettings::Trojan(t) => parts.push(t.password.fingerprint()),
-            ProtocolSettings::Shadowsocks(s) => {
-                parts.push(s.method.clone());
-                parts.push(s.password.fingerprint());
+            Transport::HttpUpgrade(hu) => serde_json::json!({
+                "type": "httpupgrade", "path": hu.path, "host": hu.host,
+            }),
+            Transport::Mkcp(kcp) => serde_json::json!({
+                "type": "mkcp", "header_type": kcp.header_type,
+                "seed": kcp.seed.as_ref().map(Secret::fingerprint),
+                "mtu": kcp.mtu, "tti": kcp.tti,
+            }),
+        };
+        let security = match &self.security {
+            TransportSecurity::None => serde_json::json!({"type": "none"}),
+            TransportSecurity::Tls(tls) => serde_json::json!({
+                "type": "tls", "server_name": tls.server_name, "alpn": tls.alpn,
+                "fingerprint": tls.fingerprint, "allow_insecure": tls.allow_insecure,
+                "ech_config_list": tls.ech_config_list,
+                "ech_force_query": tls.ech_force_query,
+                "pinned_peer_cert_sha256": tls.pinned_peer_cert_sha256,
+                "verify_peer_cert_by_name": tls.verify_peer_cert_by_name,
+                "cipher_suites": tls.cipher_suites,
+            }),
+            TransportSecurity::Reality(reality) => serde_json::json!({
+                "type": "reality", "server_name": reality.server_name,
+                "public_key": reality.public_key.fingerprint(),
+                "short_id": reality.short_id.as_ref().map(Secret::fingerprint),
+                "spider_x": reality.spider_x, "fingerprint": reality.fingerprint,
+                "mldsa65_verify": reality.mldsa65_verify.as_ref().map(Secret::fingerprint),
+            }),
+        };
+        let finalmask = match &self.protocol {
+            ProtocolSettings::Hysteria(hysteria) => {
+                hysteria.unrepresented_finalmask(self.finalmask.as_ref())
             }
-            ProtocolSettings::Http(h) => {
-                parts.push(h.username.clone().unwrap_or_default());
-                parts.push(
-                    h.password
-                        .as_ref()
-                        .map(Secret::fingerprint)
-                        .unwrap_or_default(),
-                );
-            }
-            ProtocolSettings::Socks(s) => {
-                parts.push(s.username.clone().unwrap_or_default());
-                parts.push(
-                    s.password
-                        .as_ref()
-                        .map(Secret::fingerprint)
-                        .unwrap_or_default(),
-                );
-            }
-            ProtocolSettings::Wireguard(w) => parts.push(w.secret_key.fingerprint()),
-            ProtocolSettings::Hysteria(h) => parts.push(h.auth.fingerprint()),
-        }
-        // Transport discriminators that change reachability.
-        match &self.transport {
-            Transport::Raw(r) => {
-                parts.push(r.header_type.clone().unwrap_or_default());
-                parts.push(r.path.clone().unwrap_or_default());
-            }
-            Transport::Xhttp(x) => {
-                parts.push(x.host.clone().unwrap_or_default());
-                parts.push(x.path.clone().unwrap_or_default());
-                parts.push(x.mode.clone().unwrap_or_default());
-            }
-            Transport::Grpc(g) => parts.push(g.service_name.clone()),
-            Transport::Websocket(w) => {
-                parts.push(w.path.clone());
-                parts.push(w.host.clone().unwrap_or_default());
-            }
-            Transport::HttpUpgrade(h) => {
-                parts.push(h.path.clone());
-                parts.push(h.host.clone().unwrap_or_default());
-            }
-            Transport::Mkcp(m) => {
-                parts.push(m.header_type.clone().unwrap_or_default());
-                parts.push(m.seed.as_ref().map(Secret::fingerprint).unwrap_or_default());
-            }
-        }
-        match &self.security {
-            TransportSecurity::None => {}
-            TransportSecurity::Tls(t) => {
-                parts.push(t.server_name.clone().unwrap_or_default());
-                parts.push(t.alpn.join(","));
-            }
-            TransportSecurity::Reality(r) => {
-                parts.push(r.server_name.clone().unwrap_or_default());
-                parts.push(r.public_key.fingerprint());
-                parts.push(
-                    r.short_id
-                        .as_ref()
-                        .map(Secret::fingerprint)
-                        .unwrap_or_default(),
-                );
-            }
-        }
-        parts.join("|")
+            _ => self.finalmask.clone(),
+        };
+        let canonical = serde_json::json!({
+            "protocol": protocol,
+            "endpoint": if matches!(self.protocol, ProtocolSettings::Wireguard(_)) {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({
+                    "address": self.endpoint.address.to_ascii_lowercase(),
+                    "port": self.endpoint.port,
+                })
+            },
+            "transport": transport,
+            "security": security,
+            "finalmask": finalmask,
+            "mux": self.mux,
+            "sockopt": self.sockopt,
+            "extra": self.extra,
+        });
+        let rendered = canonical.to_string();
+        let digest = Sha256::digest(rendered.as_bytes());
+        format!("sha256:{digest:x}")
     }
 
     /// Whether the node can be compiled into an Xray outbound.
@@ -863,7 +1013,60 @@ mod tests {
     }
 
     #[test]
-    fn canonical_identity_leaks_no_secret() {
+    fn canonical_identity_separates_every_connection_layer() {
+        let baseline = sample();
+
+        let mut endpoint = baseline.clone();
+        endpoint.endpoint.port = 8443;
+        assert_ne!(baseline.canonical_identity(), endpoint.canonical_identity());
+
+        let mut protocol = baseline.clone();
+        let ProtocolSettings::Vless(settings) = &mut protocol.protocol else {
+            panic!("sample is VLESS");
+        };
+        settings.flow.clear();
+        assert_ne!(baseline.canonical_identity(), protocol.canonical_identity());
+
+        let mut transport = baseline.clone();
+        transport.transport = Transport::Websocket(WebsocketTransport {
+            path: "/proxy".to_owned(),
+            host: Some("cdn.example.com".to_owned()),
+            headers: BTreeMap::new(),
+        });
+        assert_ne!(
+            baseline.canonical_identity(),
+            transport.canonical_identity()
+        );
+
+        let mut security = baseline.clone();
+        security.security = TransportSecurity::Tls(TlsSettings {
+            server_name: Some("server.example.com".to_owned()),
+            ..TlsSettings::default()
+        });
+        assert_ne!(baseline.canonical_identity(), security.canonical_identity());
+    }
+
+    #[test]
+    fn websocket_host_header_and_typed_host_have_the_same_identity() {
+        let mut typed = sample();
+        typed.transport = Transport::Websocket(WebsocketTransport {
+            path: "/proxy".to_owned(),
+            host: Some("cdn.example.com".to_owned()),
+            headers: BTreeMap::new(),
+        });
+        let mut header = typed.clone();
+        let Transport::Websocket(websocket) = &mut header.transport else {
+            panic!("expected WebSocket");
+        };
+        websocket.host = None;
+        websocket
+            .headers
+            .insert("Host".to_owned(), "cdn.example.com".to_owned());
+        assert_eq!(typed.canonical_identity(), header.canonical_identity());
+    }
+
+    #[test]
+    fn canonical_identity_contains_no_plaintext_credentials() {
         let node = sample();
         let identity = node.canonical_identity();
         assert!(!identity.contains("11111111"), "{identity}");

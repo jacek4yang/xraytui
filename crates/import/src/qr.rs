@@ -6,6 +6,7 @@
 //! themselves take a plain `&str` because the caller has already decided to
 //! reveal it.
 
+use std::io::Cursor;
 use std::path::Path;
 
 use qrcode::{EcLevel, QrCode};
@@ -59,9 +60,18 @@ pub enum QrError {
         path: String,
     },
     /// The requested scale was zero or absurd.
-    #[error("scale must be between 1 and 64")]
+    #[error("scale must be between 1 and 32")]
     BadScale,
 }
+
+/// Maximum accepted input-image side. A version-40 QR rendered at the largest
+/// supported export scale is below this limit, while hostile giant images are
+/// rejected before the decoder allocates their full pixel buffer.
+const MAX_INPUT_DIMENSION: u32 = 8_192;
+
+/// Maximum image-decoder working set. QR input never needs anywhere near the
+/// `image` crate's 512 MiB default.
+const MAX_INPUT_ALLOCATION: u64 = 128 * 1024 * 1024;
 
 fn encode(data: &str) -> Result<QrCode, QrError> {
     if data.is_empty() {
@@ -70,10 +80,30 @@ fn encode(data: &str) -> Result<QrCode, QrError> {
     if data.len() > MAX_QR_BYTES {
         return Err(QrError::TooLarge { size: data.len() });
     }
-    // Low error correction maximises capacity, which matters because REALITY
-    // links with a long public key and short id are close to the limit.
-    QrCode::with_error_correction_level(data.as_bytes(), EcLevel::L)
-        .map_err(|error| QrError::Encode(error.to_string()))
+    // Prefer resilience for short links, then reduce correction only as the
+    // payload requires more capacity. Long REALITY/XHTTP links can still reach
+    // version 40-L, while ordinary links normally get H or Q.
+    let mut last_error = None;
+    for level in [EcLevel::H, EcLevel::Q, EcLevel::M, EcLevel::L] {
+        match QrCode::with_error_correction_level(data.as_bytes(), level) {
+            Ok(code) => return Ok(code),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(QrError::Encode(
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "encoder rejected every error-correction level".to_owned()),
+    ))
+}
+
+/// Terminal cell dimensions required for the rendered QR code.
+///
+/// # Errors
+/// Returns [`QrError`] when the payload cannot be encoded.
+pub fn terminal_dimensions(data: &str) -> Result<(usize, usize), QrError> {
+    let width = encode(data)?.width() + QUIET_ZONE * 2;
+    Ok((width, width.div_ceil(2)))
 }
 
 /// Render a QR code for a terminal using Unicode half blocks.
@@ -157,7 +187,7 @@ fn render_blocks(data: &str, invert: bool) -> Result<String, QrError> {
 /// # Errors
 /// Returns [`QrError`] for bad payloads, bad scales, and I/O failures.
 pub fn render_png(data: &str, path: &Path, scale: u32) -> Result<(), QrError> {
-    if scale == 0 || scale > 64 {
+    if scale == 0 || scale > 32 {
         return Err(QrError::BadScale);
     }
     let code = encode(data)?;
@@ -193,27 +223,17 @@ pub fn render_png(data: &str, path: &Path, scale: u32) -> Result<(), QrError> {
         }
     }
 
-    create_private_file(path)?;
-    buffer.save(path).map_err(|error| QrError::Image {
-        path: path.display().to_string(),
-        reason: error.to_string(),
-    })
-}
-
-/// Create (or truncate) `path` with mode 0600 before the encoder writes to it.
-fn create_private_file(path: &Path) -> Result<(), QrError> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map(|_| ())
-        .map_err(|source| QrError::Io {
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(buffer)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .map_err(|error| QrError::Image {
             path: path.display().to_string(),
-            source,
-        })
+            reason: error.to_string(),
+        })?;
+    crate::write_private_atomic(path, encoded.get_ref()).map_err(|error| QrError::Io {
+        path: error.path,
+        source: error.source,
+    })
 }
 
 /// Decode every QR code found in a PNG (or any image the `image` crate reads).
@@ -221,19 +241,33 @@ fn create_private_file(path: &Path) -> Result<(), QrError> {
 /// # Errors
 /// Returns [`QrError::NoCode`] when the image holds no readable code.
 pub fn decode_png(path: &Path) -> Result<Vec<String>, QrError> {
-    let image = image::open(path).map_err(|error| QrError::Image {
+    let mut reader = image::ImageReader::open(path)
+        .map_err(|source| QrError::Io {
+            path: path.display().to_string(),
+            source,
+        })?
+        .with_guessed_format()
+        .map_err(|source| QrError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_INPUT_DIMENSION);
+    limits.max_image_height = Some(MAX_INPUT_DIMENSION);
+    limits.max_alloc = Some(MAX_INPUT_ALLOCATION);
+    reader.limits(limits);
+    let image = reader.decode().map_err(|error| QrError::Image {
         path: path.display().to_string(),
         reason: error.to_string(),
     })?;
     let luma = image.to_luma8();
-    let mut prepared = rqrr::PreparedImage::prepare(luma);
-    let grids = prepared.detect_grids();
-    let mut out = Vec::new();
-    for grid in grids {
-        if let Ok((_meta, content)) = grid.decode() {
-            out.push(content);
-        }
-    }
+    let mut decoder = quircs::Quirc::default();
+    let out = decoder
+        .identify(luma.width() as usize, luma.height() as usize, &luma)
+        .filter_map(Result::ok)
+        .filter_map(|code| code.decode().ok())
+        .filter_map(|decoded| String::from_utf8(decoded.payload).ok())
+        .collect::<Vec<_>>();
     if out.is_empty() {
         return Err(QrError::NoCode {
             path: path.display().to_string(),
@@ -248,6 +282,90 @@ mod tests {
 
     const LINK: &str = "vless://11111111-2222-3333-4444-555555555555@example.com:443\
                         ?type=ws&path=%2Fray&security=tls&sni=cdn.example.com#HK%2001";
+
+    fn export_link(link: &str) -> String {
+        let node = crate::parse_uri(link)
+            .expect("import node")
+            .into_node()
+            .expect("supported node");
+        crate::export_share_link(&node, crate::ShareOptions::default())
+            .expect("export node")
+            .link
+            .expose()
+            .to_owned()
+    }
+
+    fn decode_terminal_capture(rendered: &str) -> Vec<String> {
+        decode_terminal_capture_with_palette(rendered, true)
+    }
+
+    fn decode_terminal_capture_with_palette(
+        rendered: &str,
+        block_foreground_is_dark: bool,
+    ) -> Vec<String> {
+        const SCALE: u32 = 8;
+        let lines = rendered.lines().collect::<Vec<_>>();
+        let width = lines
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
+        let background = if block_foreground_is_dark {
+            255_u8
+        } else {
+            0_u8
+        };
+        let foreground = 255_u8.saturating_sub(background);
+        let mut image = image::GrayImage::from_pixel(
+            u32::try_from(width).unwrap_or(0).saturating_mul(SCALE),
+            u32::try_from(lines.len())
+                .unwrap_or(0)
+                .saturating_mul(SCALE)
+                .saturating_mul(2),
+            image::Luma([background]),
+        );
+        for (cell_y, line) in lines.iter().enumerate() {
+            for (cell_x, character) in line.chars().enumerate() {
+                let (top, bottom) = match character {
+                    '█' => (true, true),
+                    '▀' => (true, false),
+                    '▄' => (false, true),
+                    _ => (false, false),
+                };
+                for (half, foreground_cell) in [top, bottom].into_iter().enumerate() {
+                    let module_y = cell_y.saturating_mul(2).saturating_add(half);
+                    for dy in 0..SCALE {
+                        for dx in 0..SCALE {
+                            let x = u32::try_from(cell_x)
+                                .unwrap_or(0)
+                                .saturating_mul(SCALE)
+                                .saturating_add(dx);
+                            let y = u32::try_from(module_y)
+                                .unwrap_or(0)
+                                .saturating_mul(SCALE)
+                                .saturating_add(dy);
+                            image.put_pixel(
+                                x,
+                                y,
+                                image::Luma([if foreground_cell {
+                                    foreground
+                                } else {
+                                    background
+                                }]),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let mut decoder = quircs::Quirc::default();
+        decoder
+            .identify(image.width() as usize, image.height() as usize, &image)
+            .filter_map(|code| code.ok())
+            .filter_map(|code| code.decode().ok())
+            .filter_map(|decoded| String::from_utf8(decoded.payload).ok())
+            .collect()
+    }
 
     #[test]
     fn terminal_rendering_uses_only_block_characters() {
@@ -277,13 +395,26 @@ mod tests {
     }
 
     #[test]
-    fn inverted_rendering_differs_and_is_still_blocks_only() {
-        let normal = render_terminal(LINK).expect("render");
-        let inverted = render_terminal_inverted(LINK).expect("render");
+    fn captured_terminal_blocks_decode_with_the_independent_decoder() {
+        let link = export_link(LINK);
+        let rendered = render_terminal(&link).expect("render");
+        let decoded = decode_terminal_capture(&rendered);
+        assert_eq!(decoded, vec![link]);
+    }
+
+    #[test]
+    fn inverted_rendering_decodes_with_a_dark_terminal_palette() {
+        let link = export_link(LINK);
+        let normal = render_terminal(&link).expect("render");
+        let inverted = render_terminal_inverted(&link).expect("render");
         assert_ne!(normal, inverted);
         for ch in inverted.chars() {
             assert!(matches!(ch, '█' | '▀' | '▄' | ' ' | '\n'));
         }
+        assert_eq!(
+            decode_terminal_capture_with_palette(&inverted, false),
+            vec![link]
+        );
     }
 
     #[test]
@@ -300,10 +431,11 @@ mod tests {
     fn png_round_trips_through_the_decoder() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("node.png");
-        render_png(LINK, &path, 8).expect("render");
+        let link = export_link(LINK);
+        render_png(&link, &path, 8).expect("render");
         let decoded = decode_png(&path).expect("decode");
         assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded.first().map(String::as_str), Some(LINK));
+        assert_eq!(decoded.first().map(String::as_str), Some(link.as_str()));
     }
 
     #[test]
@@ -321,11 +453,30 @@ mod tests {
     }
 
     #[test]
+    fn png_replacement_does_not_keep_an_existing_public_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("node.png");
+        std::fs::write(&path, b"old").expect("seed");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        render_png(LINK, &path, 8).expect("replace");
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(decode_png(&path).expect("decode"), vec![LINK]);
+    }
+
+    #[test]
     fn bad_scale_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("node.png");
         assert!(matches!(render_png("x", &path, 0), Err(QrError::BadScale)));
-        assert!(matches!(render_png("x", &path, 65), Err(QrError::BadScale)));
+        assert!(matches!(render_png("x", &path, 33), Err(QrError::BadScale)));
     }
 
     #[test]
@@ -346,14 +497,31 @@ mod tests {
     }
 
     #[test]
-    fn a_long_reality_link_still_fits() {
-        let long = format!(
+    fn a_long_reality_xhttp_export_decodes_from_terminal_and_png() {
+        let extra = serde_json::json!({
+            "noSSEHeader": true,
+            "padding": "A".repeat(700),
+            "scMaxEachPostBytes": 1_000_000,
+        });
+        let imported = format!(
             "vless://11111111-2222-3333-4444-555555555555@some.rather.long.hostname.example.com:443\
-             ?security=reality&pbk={}&sid=0123456789abcdef&spx=%2F&fp=chrome&type=grpc\
-             &serviceName=AVeryLongGunServiceName#{}",
+             ?encryption=none&security=reality&pbk={}&sid=0123456789abcdef&spx=%2Fdocs\
+             &fp=chrome&type=xhttp&host=cdn.example.com&path=%2Fa%2Flong%2Fxhttp%2Fpath\
+             &mode=auto&extra={}#{}",
             "A".repeat(43),
-            "Node%20Name%20With%20Spaces"
+            percent_encoding::utf8_percent_encode(
+                &extra.to_string(),
+                percent_encoding::NON_ALPHANUMERIC,
+            ),
+            "Node%20Name%20With%20Spaces%20%E9%A6%99%E6%B8%AF"
         );
-        render_terminal(&long).expect("must fit");
+        let link = export_link(&imported);
+        let terminal = render_terminal(&link).expect("long terminal QR must fit");
+        assert_eq!(decode_terminal_capture(&terminal), vec![link.clone()]);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("long-reality-xhttp.png");
+        render_png(&link, &path, 6).expect("long PNG QR must render");
+        assert_eq!(decode_png(&path).expect("independent decode"), vec![link]);
     }
 }

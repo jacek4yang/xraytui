@@ -1,0 +1,11 @@
+# Synthetic, sanitized share links following the current serializers in
+# v2rayN ServiceLib/Handler/Fmt and v2rayNG app/fmt. No endpoint or credential
+# below is usable. Keep this file line-oriented: it is also a subscription fixture.
+vless://11111111-2222-3333-4444-555555555555@reality.example.test:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.test&fp=chrome&pbk=jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0&sid=0123456789abcdef&spx=%2F&type=xhttp&host=cdn.example.test&path=%2Fapi&mode=auto&extra=%7B%22noSSEHeader%22%3Atrue%7D#v2rayN%20REALITY%20XHTTP
+vless://11111111-2222-3333-4444-555555555556@tls.example.test:443?encryption=none&security=tls&sni=edge.example.test&alpn=h2%2Chttp%2F1.1&fp=chrome&type=ws&host=cdn.example.test&path=%2Fwebsocket#v2rayNG%20TLS%20WS
+vmess://eyJ2IjoiMiIsInBzIjoidjJyYXlOIFZNZXNzIFdTIiwiYWRkIjoidm1lc3MuZXhhbXBsZS50ZXN0IiwicG9ydCI6IjQ0MyIsImlkIjoiMjIyMjIyMjItMzMzMy00NDQ0LTU1NTUtNjY2NjY2NjY2NjY2IiwiYWlkIjoiMCIsInNjeSI6ImF1dG8iLCJuZXQiOiJ3cyIsInR5cGUiOiJub25lIiwiaG9zdCI6ImNkbi5leGFtcGxlLnRlc3QiLCJwYXRoIjoiL3ZtZXNzIiwidGxzIjoidGxzIiwic25pIjoiY2RuLmV4YW1wbGUudGVzdCIsImFscG4iOiJoMixodHRwLzEuMSIsImZwIjoiY2hyb21lIiwiaW5zZWN1cmUiOiIwIiwidmNuIjoiIiwicGNzIjoiIn0=
+trojan://synthetic-password@trojan.example.test:443?security=tls&sni=edge.example.test&alpn=h2&fp=chrome&type=grpc&serviceName=TunService&mode=gun#v2rayNG%20Trojan%20gRPC
+ss://YWVzLTI1Ni1nY206c3ludGhldGljLXNlY3JldA@ss.example.test:8388#SIP002%20SS
+wireguard://OIwdVIZLktg1m%2FbafI%2BTY7xZrGcG92HmtjVCsm3DlEA%3D@[2001:db8::1]:51820?publickey=xGMeyvFet3OAUT0cBnci2pj70GHL9W9h4QAn9ANwJ1g%3D&presharedkey=zdNdM5fJEtbmSg4pZjiPB0WQl9AcWEqkvTIcrSzpUqI%3D&reserved=1%2C2%2C3&address=172.16.0.2%2F32%2Cfd00%3A%3A2%2F128&mtu=1420#v2rayN%20WireGuard
+hysteria2://synthetic-auth@hy.example.test:443?security=tls&sni=edge.example.test&alpn=h3&obfs=salamander&obfs-password=synthetic-obfs&mport=20000-30000%2C40000&pinSHA256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef#Xray%20Hysteria2
+socks://c3ludGhldGljOnBhc3N3b3Jk@socks.example.test:1080#v2rayNG%20SOCKS

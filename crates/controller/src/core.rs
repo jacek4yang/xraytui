@@ -16,6 +16,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use xraytui_domain::GenerationId;
 use xraytui_xray_api::{ApiClient, ApiEndpoint, Capabilities};
+use xraytui_xray_compiler::MkcpFinalmaskDialect;
 
 use crate::ControllerError;
 
@@ -88,6 +89,8 @@ pub struct CoreInfo {
     pub asset_dir: Option<PathBuf>,
     /// Whether geodata files are present; `geosite:` rules fail without them.
     pub has_geodata: bool,
+    /// Capability-probed representation for legacy mKCP share-link fields.
+    pub mkcp_finalmask_dialect: MkcpFinalmaskDialect,
 }
 
 impl CoreInfo {
@@ -193,13 +196,116 @@ pub async fn probe_binary(
     let has_geodata = asset_dir
         .as_ref()
         .is_some_and(|dir| dir.join("geoip.dat").is_file() && dir.join("geosite.dat").is_file());
+    let mkcp_finalmask_dialect = probe_mkcp_finalmask_dialect(binary, asset_dir.as_deref()).await?;
     Ok(CoreInfo {
         binary: binary.to_path_buf(),
         version,
         banner: first_line,
         asset_dir,
         has_geodata,
+        mkcp_finalmask_dialect,
     })
+}
+
+async fn probe_mkcp_finalmask_dialect(
+    binary: &Path,
+    asset_dir: Option<&Path>,
+) -> Result<MkcpFinalmaskDialect, ControllerError> {
+    const UNIFIED: &str = r#"{
+        "log":{"loglevel":"none"},
+        "outbounds":[{
+            "tag":"probe",
+            "protocol":"freedom",
+            "streamSettings":{
+                "network":"mkcp",
+                "kcpSettings":{},
+                "finalmask":{"udp":[
+                    {"type":"mkcp-legacy","settings":{"header":"dtls"}},
+                    {"type":"mkcp-legacy","settings":{"value":"synthetic-seed"}}
+                ]}
+            }
+        }]
+    }"#;
+    const LAYERED: &str = r#"{
+        "log":{"loglevel":"none"},
+        "outbounds":[{
+            "tag":"probe",
+            "protocol":"freedom",
+            "streamSettings":{
+                "network":"mkcp",
+                "kcpSettings":{},
+                "finalmask":{"udp":[
+                    {"type":"header-dtls"},
+                    {"type":"mkcp-aes128gcm","settings":{"password":"synthetic-seed"}}
+                ]}
+            }
+        }]
+    }"#;
+
+    let unified = run_config_probe(binary, asset_dir, UNIFIED).await?;
+    if unified.status.success() {
+        return Ok(MkcpFinalmaskDialect::UnifiedLegacy);
+    }
+    let layered = run_config_probe(binary, asset_dir, LAYERED).await?;
+    if layered.status.success() {
+        return Ok(MkcpFinalmaskDialect::Layered);
+    }
+
+    let detail = [unified, layered]
+        .into_iter()
+        .flat_map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .chain(String::from_utf8_lossy(&output.stderr).lines())
+                .filter(|line| line.contains("Failed") || line.contains("unknown config"))
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(ControllerError::CoreUnusable {
+        detail: format!(
+            "the binary accepts neither supported mKCP final-mask representation{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ),
+    })
+}
+
+async fn run_config_probe(
+    binary: &Path,
+    asset_dir: Option<&Path>,
+    json: &str,
+) -> Result<std::process::Output, ControllerError> {
+    let directory = tempfile::tempdir().map_err(|error| ControllerError::CoreUnusable {
+        detail: format!("cannot create private capability-probe directory: {error}"),
+    })?;
+    let path = directory.path().join("config.json");
+    xraytui_config::write_private_atomic(&path, json.as_bytes())
+        .map_err(|source| ControllerError::Config(Box::new(source)))?;
+    let mut command = Command::new(binary);
+    command
+        .args(["run", "-test", "-config"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .env("HOME", std::env::var_os("HOME").unwrap_or_default());
+    if let Some(asset_dir) = asset_dir {
+        command.env("XRAY_LOCATION_ASSET", asset_dir);
+    }
+    command
+        .output()
+        .await
+        .map_err(|source| ControllerError::CoreSpawn {
+            binary: binary.display().to_string(),
+            source,
+        })
 }
 
 /// Validate a configuration with `xray run -test`.

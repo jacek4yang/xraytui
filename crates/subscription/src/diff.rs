@@ -143,6 +143,9 @@ pub fn differing_fields(current: &Node, incoming: &Node) -> Vec<String> {
     if current.security != incoming.security {
         fields.push("security".to_owned());
     }
+    if current.finalmask != incoming.finalmask {
+        fields.push("finalmask".to_owned());
+    }
     if current.mux != incoming.mux {
         fields.push("mux".to_owned());
     }

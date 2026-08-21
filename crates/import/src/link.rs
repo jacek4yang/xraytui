@@ -13,7 +13,8 @@ use xraytui_domain::{
     Compatibility, Endpoint, GrpcTransport, HttpProxySettings, HttpUpgradeTransport, MkcpTransport,
     Node, NodeId, NodeSource, ProtocolSettings, RawTransport, RealitySettings, ShadowsocksSettings,
     SocksSettings, TlsSettings, Transport, TransportSecurity, TrojanSettings, UnsupportedNode,
-    UnsupportedReason, VlessSettings, VmessSettings, WebsocketTransport, XhttpTransport, slugify,
+    UnsupportedReason, VlessSettings, VmessSettings, WebsocketTransport, WireguardPeer,
+    WireguardSettings, XhttpTransport, slugify,
 };
 use xraytui_secrets::Secret;
 
@@ -48,6 +49,8 @@ pub(crate) fn parse(input: &str, source: NodeSource) -> Result<ImportedEntry, Im
         "ss" => parse_shadowsocks(rest, trimmed, source),
         "socks" | "socks5" => parse_socks(trimmed, source),
         "http-proxy" | "https-proxy" => parse_http_proxy(trimmed, source),
+        "wireguard" => parse_wireguard(trimmed, source),
+        "hysteria2" | "hy2" => parse_hysteria2(trimmed, source),
         // Bare `http://`/`https://` is a subscription URL far more often than it
         // is a proxy share link, so it is not treated as one here.
         other => Ok(ImportedEntry::Unsupported(unsupported(
@@ -127,12 +130,6 @@ fn unsupported(scheme: &str, original: &str, source: NodeSource) -> UnsupportedN
 
 fn classify_foreign(scheme: &str) -> (UnsupportedReason, Option<String>) {
     match scheme {
-        "hysteria2" | "hy2" => (
-            UnsupportedReason::ForeignCore {
-                core: "hysteria2".into(),
-            },
-            Some("hysteria2 or sing-box".into()),
-        ),
         "tuic" => (
             UnsupportedReason::ForeignCore {
                 core: "tuic".into(),
@@ -252,9 +249,17 @@ const KNOWN_QUERY_KEYS: &[&str] = &[
     "encryption",
     "allowinsecure",
     "allowInsecure",
+    "insecure",
     "seed",
+    "mtu",
+    "tti",
     "mldsa65verify",
     "mldsa65Verify",
+    "pqv",
+    "ech",
+    "pcs",
+    "vcn",
+    "fm",
     "multimode",
     "multiMode",
     "extra",
@@ -279,13 +284,53 @@ fn get<'a>(query: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str
         .filter(|value| !value.is_empty())
 }
 
-fn build_transport(query: &BTreeMap<String, String>) -> Transport {
+fn any_true(query: &BTreeMap<String, String>, keys: &[&str]) -> bool {
+    keys.iter().any(|key| {
+        query
+            .get(*key)
+            .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true"))
+    })
+}
+
+fn optional_u32(
+    query: &BTreeMap<String, String>,
+    key: &'static str,
+) -> Result<Option<u32>, ImportError> {
+    get(query, &[key])
+        .map(|value| {
+            value.parse::<u32>().map_err(|_| ImportError::InvalidField {
+                scheme: "share-link",
+                field: key,
+            })
+        })
+        .transpose()
+}
+
+fn optional_i32(
+    query: &BTreeMap<String, String>,
+    key: &'static str,
+) -> Result<Option<i32>, ImportError> {
+    get(query, &[key])
+        .map(|value| {
+            value
+                .parse::<i32>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(ImportError::InvalidField {
+                    scheme: "wireguard",
+                    field: key,
+                })
+        })
+        .transpose()
+}
+
+fn build_transport(query: &BTreeMap<String, String>) -> Result<Transport, ImportError> {
     let kind = get(query, &["type", "net"])
         .unwrap_or("tcp")
         .to_ascii_lowercase();
     let host = get(query, &["host"]).map(str::to_owned);
     let path = get(query, &["path"]).map(str::to_owned);
-    match kind.as_str() {
+    let transport = match kind.as_str() {
         "ws" | "websocket" => Transport::Websocket(WebsocketTransport {
             path: path.unwrap_or_else(|| "/".to_owned()),
             host,
@@ -301,11 +346,18 @@ fn build_transport(query: &BTreeMap<String, String>) -> Transport {
             ),
             authority: get(query, &["authority"]).map(str::to_owned),
         }),
-        "xhttp" | "splithttp" | "http" | "h2" => Transport::Xhttp(XhttpTransport {
+        "xhttp" | "splithttp" => Transport::Xhttp(XhttpTransport {
             host,
             path,
             mode: get(query, &["mode"]).map(str::to_owned),
-            extra: get(query, &["extra"]).and_then(|raw| serde_json::from_str(raw).ok()),
+            extra: get(query, &["extra"])
+                .map(|raw| {
+                    serde_json::from_str(raw).map_err(|_| ImportError::InvalidField {
+                        scheme: "share-link",
+                        field: "extra",
+                    })
+                })
+                .transpose()?,
         }),
         "httpupgrade" => Transport::HttpUpgrade(HttpUpgradeTransport {
             path: path.unwrap_or_else(|| "/".to_owned()),
@@ -314,55 +366,148 @@ fn build_transport(query: &BTreeMap<String, String>) -> Transport {
         "kcp" | "mkcp" => Transport::Mkcp(MkcpTransport {
             header_type: get(query, &["headerType", "headertype"]).map(str::to_owned),
             seed: get(query, &["seed"]).map(Secret::new),
+            mtu: optional_u32(query, "mtu")?,
+            tti: optional_u32(query, "tti")?,
         }),
-        // "tcp" and "raw" and anything unrecognised fall back to RAW, which is
-        // what Xray itself defaults to.
-        _ => Transport::Raw(RawTransport {
+        "tcp" | "raw" => Transport::Raw(RawTransport {
             header_type: get(query, &["headerType", "headertype"]).map(str::to_owned),
-            host: host.into_iter().collect(),
+            host: host
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
             path,
         }),
-    }
+        _ => {
+            return Err(ImportError::InvalidField {
+                scheme: "share-link",
+                field: "type",
+            });
+        }
+    };
+    Ok(transport)
 }
 
-fn build_security(query: &BTreeMap<String, String>, host: &str) -> TransportSecurity {
+fn build_security(
+    query: &BTreeMap<String, String>,
+    host: &str,
+) -> Result<TransportSecurity, ImportError> {
     let kind = get(query, &["security"])
         .unwrap_or("none")
         .to_ascii_lowercase();
     let sni = get(query, &["sni", "peer"]).map(str::to_owned);
     let fingerprint = get(query, &["fp"]).map(str::to_owned);
-    match kind.as_str() {
+    let security = match kind.as_str() {
         "tls" | "xtls" => TransportSecurity::Tls(TlsSettings {
             server_name: sni.or_else(|| Some(host.to_owned())),
             alpn: get(query, &["alpn"])
                 .map(|value| value.split(',').map(|a| a.trim().to_owned()).collect())
                 .unwrap_or_default(),
             fingerprint,
-            // Never enabled by an importer. A hostile subscription must not be
-            // able to switch off certificate validation.
-            allow_insecure: false,
+            // Preserve the request, but `finish` makes it unavailable because
+            // current Xray rejects this removed field. It is never enabled by a
+            // silent fallback.
+            allow_insecure: any_true(query, &["insecure", "allowInsecure", "allowinsecure"]),
+            ech_config_list: get(query, &["ech"]).map(str::to_owned),
+            ech_force_query: None,
+            pinned_peer_cert_sha256: get(query, &["pcs"]).map(str::to_owned),
+            verify_peer_cert_by_name: get(query, &["vcn"]).map(str::to_owned),
+            cipher_suites: None,
         }),
         "reality" => TransportSecurity::Reality(RealitySettings {
             server_name: sni.or_else(|| Some(host.to_owned())),
-            public_key: Secret::new(get(query, &["pbk"]).unwrap_or_default()),
+            public_key: Secret::new(get(query, &["pbk"]).ok_or(ImportError::MissingField {
+                scheme: "share-link",
+                field: "pbk",
+            })?),
             short_id: get(query, &["sid"]).map(Secret::new),
             spider_x: get(query, &["spx"]).map(str::to_owned),
             fingerprint,
-            mldsa65_verify: get(query, &["mldsa65Verify", "mldsa65verify"]).map(Secret::new),
+            mldsa65_verify: get(query, &["pqv", "mldsa65Verify", "mldsa65verify"]).map(Secret::new),
         }),
-        _ => TransportSecurity::None,
-    }
+        "" | "none" => TransportSecurity::None,
+        _ => {
+            return Err(ImportError::InvalidField {
+                scheme: "share-link",
+                field: "security",
+            });
+        }
+    };
+    Ok(security)
 }
 
-fn finish(mut node: Node, query: &BTreeMap<String, String>, notes: Vec<String>) -> ImportedEntry {
-    node.transport = build_transport(query);
-    node.security = build_security(query, &node.endpoint.address);
+fn finish(
+    mut node: Node,
+    query: &BTreeMap<String, String>,
+    mut notes: Vec<String>,
+) -> Result<ImportedEntry, ImportError> {
+    node.transport = build_transport(query)?;
+    node.security = build_security(query, &node.endpoint.address)?;
+    node.finalmask = get(query, &["fm"])
+        .map(|raw| {
+            let value: serde_json::Value =
+                serde_json::from_str(raw).map_err(|_| ImportError::InvalidField {
+                    scheme: "share-link",
+                    field: "fm",
+                })?;
+            if !value.is_object() {
+                return Err(ImportError::InvalidField {
+                    scheme: "share-link",
+                    field: "fm",
+                });
+            }
+            Ok(value)
+        })
+        .transpose()?;
     node.extra = extras(query);
+    if matches!(&node.security, TransportSecurity::Reality(_)) {
+        let mut retained_tls_only = Vec::new();
+        for key in [
+            "alpn",
+            "ech",
+            "pcs",
+            "vcn",
+            "allowinsecure",
+            "allowInsecure",
+            "insecure",
+        ] {
+            if let Some(value) = query.get(key) {
+                node.extra
+                    .insert(key.to_owned(), serde_json::Value::String(value.clone()));
+                retained_tls_only.push(key);
+            }
+        }
+        if !retained_tls_only.is_empty() {
+            notes.push(format!(
+                "REALITY link fields {} are preserved for ecosystem round trips, but current Xray REALITY settings do not consume them",
+                retained_tls_only.join(", ")
+            ));
+        }
+    }
+    if matches!(
+        &node.security,
+        TransportSecurity::Tls(TlsSettings {
+            allow_insecure: true,
+            ..
+        })
+    ) {
+        node.compatibility = Compatibility::Unsupported;
+        notes.push(
+            "link requires TLS allowInsecure, which Xray-core removed after 2026-06-01; use certificate pins (pcs) or verified names (vcn)".to_owned(),
+        );
+    }
     if !notes.is_empty() {
-        node.compatibility = Compatibility::Degraded;
+        if node.compatibility == Compatibility::Supported {
+            node.compatibility = Compatibility::Degraded;
+        }
         node.notes = notes;
     }
-    ImportedEntry::Supported(node)
+    Ok(ImportedEntry::Supported(node))
 }
 
 // ----------------------------------------------------------------- VLESS
@@ -391,7 +536,7 @@ fn parse_vless(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportE
             level: None,
         }),
     );
-    Ok(finish(node, &authority.query, Vec::new()))
+    finish(node, &authority.query, Vec::new())
 }
 
 // ---------------------------------------------------------------- Trojan
@@ -404,7 +549,7 @@ fn parse_trojan(input: &str, source: NodeSource) -> Result<ImportedEntry, Import
             field: "password",
         });
     }
-    let mut node = Node::new(
+    let node = Node::new(
         make_id(&authority.name, "trojan"),
         authority.name.clone(),
         source,
@@ -416,22 +561,14 @@ fn parse_trojan(input: &str, source: NodeSource) -> Result<ImportedEntry, Import
                 .to_owned(),
         }),
     );
-    // Trojan is TLS by definition; a link that omits `security` still means TLS.
-    let entry = finish(node.clone(), &authority.query, Vec::new());
-    if let ImportedEntry::Supported(built) = entry {
-        node = built;
-    }
-    if matches!(node.security, TransportSecurity::None) {
-        node.security = TransportSecurity::Tls(TlsSettings {
-            server_name: get(&authority.query, &["sni", "peer"])
-                .map(str::to_owned)
-                .or_else(|| Some(authority.host.clone())),
-            alpn: Vec::new(),
-            fingerprint: get(&authority.query, &["fp"]).map(str::to_owned),
-            allow_insecure: false,
-        });
-    }
-    Ok(ImportedEntry::Supported(node))
+    // Trojan is TLS by definition; make that implicit default explicit before
+    // the common parser consumes TLS extensions such as ECH and certificate
+    // pins.
+    let mut query = authority.query;
+    query
+        .entry("security".into())
+        .or_insert_with(|| "tls".into());
+    finish(node, &query, Vec::new())
 }
 
 // ----------------------------------------------------------------- VMess
@@ -467,6 +604,28 @@ struct VmessPayload {
     alpn: Option<String>,
     #[serde(default)]
     fp: Option<String>,
+    #[serde(default)]
+    insecure: Option<serde_json::Value>,
+    #[serde(default)]
+    ech: Option<String>,
+    #[serde(default)]
+    vcn: Option<String>,
+    #[serde(default)]
+    pcs: Option<String>,
+    #[serde(default)]
+    pbk: Option<String>,
+    #[serde(default)]
+    sid: Option<String>,
+    #[serde(default)]
+    spx: Option<String>,
+    #[serde(default)]
+    pqv: Option<String>,
+    #[serde(default)]
+    fm: Option<String>,
+    #[serde(default)]
+    extra: Option<String>,
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_json::Value>,
 }
 
 fn number_field(value: Option<&serde_json::Value>) -> Option<u64> {
@@ -482,6 +641,13 @@ fn parse_vmess(
     original: &str,
     source: NodeSource,
 ) -> Result<ImportedEntry, ImportError> {
+    if payload
+        .split('#')
+        .next()
+        .is_some_and(|body| body.contains('@'))
+    {
+        return parse_vmess_authority(original, source);
+    }
     // The fragment, if any, is not part of the base64 blob.
     let blob = payload.split('#').next().unwrap_or(payload);
     let decoded = decode_base64_utf8(blob).ok_or(ImportError::InvalidBase64 { scheme: "vmess" })?;
@@ -532,18 +698,37 @@ fn parse_vmess(
         .take(MAX_NAME_CHARS)
         .collect::<String>();
     let mut query: BTreeMap<String, String> = BTreeMap::new();
-    if let Some(net) = parsed.net {
-        query.insert("type".into(), net);
-    }
+    let network = parsed.net.unwrap_or_else(|| "tcp".to_owned());
+    query.insert("type".into(), network.clone());
     if let Some(header) = parsed.header_type {
-        query.insert("headerType".into(), header);
+        match network.as_str() {
+            "xhttp" | "splithttp" | "grpc" => {
+                query.insert("mode".into(), header);
+            }
+            _ => {
+                query.insert("headerType".into(), header);
+            }
+        }
     }
     if let Some(host_header) = parsed.host {
-        query.insert("host".into(), host_header);
+        if network == "grpc" {
+            query.insert("authority".into(), host_header);
+        } else {
+            query.insert("host".into(), host_header);
+        }
     }
     if let Some(path) = parsed.path {
-        query.insert("serviceName".into(), path.clone());
-        query.insert("path".into(), path);
+        match network.as_str() {
+            "grpc" => {
+                query.insert("serviceName".into(), path);
+            }
+            "kcp" | "mkcp" => {
+                query.insert("seed".into(), path);
+            }
+            _ => {
+                query.insert("path".into(), path);
+            }
+        }
     }
     match parsed.tls.as_deref() {
         Some("tls") | Some("reality") => {
@@ -559,6 +744,30 @@ fn parse_vmess(
     }
     if let Some(fingerprint) = parsed.fp {
         query.insert("fp".into(), fingerprint);
+    }
+    let insecure = parsed.insecure.as_ref().is_some_and(|value| match value {
+        serde_json::Value::String(text) => matches!(text.as_str(), "1" | "true"),
+        serde_json::Value::Bool(value) => *value,
+        serde_json::Value::Number(value) => value.as_u64() == Some(1),
+        _ => false,
+    });
+    if insecure {
+        query.insert("insecure".into(), "1".into());
+    }
+    for (key, value) in [
+        ("ech", parsed.ech),
+        ("vcn", parsed.vcn),
+        ("pcs", parsed.pcs),
+        ("pbk", parsed.pbk),
+        ("sid", parsed.sid),
+        ("spx", parsed.spx),
+        ("pqv", parsed.pqv),
+        ("fm", parsed.fm),
+        ("extra", parsed.extra),
+    ] {
+        if let Some(value) = value {
+            query.insert(key.to_owned(), value);
+        }
     }
 
     let mut node = Node::new(
@@ -576,14 +785,41 @@ fn parse_vmess(
             level: None,
         }),
     );
-    let entry = finish(node.clone(), &query, notes);
+    if alter_id != 0 {
+        node.compatibility = Compatibility::Unsupported;
+    }
+    let entry = finish(node.clone(), &query, notes)?;
     if let ImportedEntry::Supported(built) = entry {
         node = built;
     }
-    // Preserve the whole original so a re-export is lossless even for the
-    // v2rayN fields xraytui does not model.
+    node.extra.extend(parsed.unknown);
     let _ = original;
     Ok(ImportedEntry::Supported(node))
+}
+
+fn parse_vmess_authority(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportError> {
+    let authority = split_authority(input, "vmess")?;
+    if authority.userinfo.is_empty() {
+        return Err(ImportError::MissingField {
+            scheme: "vmess",
+            field: "id",
+        });
+    }
+    let node = Node::new(
+        make_id(&authority.name, "vmess"),
+        authority.name.clone(),
+        source,
+        Endpoint::new(authority.host.clone(), authority.port),
+        ProtocolSettings::Vmess(VmessSettings {
+            id: Secret::new(authority.userinfo),
+            security: get(&authority.query, &["encryption"])
+                .unwrap_or("auto")
+                .to_owned(),
+            alter_id: 0,
+            level: None,
+        }),
+    );
+    finish(node, &authority.query, Vec::new())
 }
 
 // ----------------------------------------------------------- Shadowsocks
@@ -689,11 +925,227 @@ fn parse_shadowsocks(
         }),
     );
     node.extra = extras(&query);
+    if let Some(plugin) = get(&query, &["plugin"]) {
+        node.extra.insert(
+            "plugin".into(),
+            serde_json::Value::String(plugin.to_owned()),
+        );
+    }
     if !notes.is_empty() {
-        node.compatibility = Compatibility::Degraded;
+        node.compatibility = Compatibility::Unsupported;
         node.notes = notes;
     }
     let _ = original;
+    Ok(ImportedEntry::Supported(node))
+}
+
+// ------------------------------------------------------------ Xray Hysteria2
+
+fn parse_hysteria2(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportError> {
+    let authority = split_authority(input, "hysteria2")?;
+    if authority.userinfo.is_empty() {
+        return Err(ImportError::MissingField {
+            scheme: "hysteria2",
+            field: "auth",
+        });
+    }
+
+    let mut notes = Vec::new();
+    let security = get(&authority.query, &["security"]).unwrap_or("tls");
+    if security != "tls" {
+        notes.push(format!(
+            "Hysteria2 link requests security={security}; Xray's Hysteria transport requires TLS"
+        ));
+    }
+    let obfs_kind = get(&authority.query, &["obfs"]);
+    let obfs_password = get(&authority.query, &["obfs-password"]);
+    let obfs = match (obfs_kind, obfs_password) {
+        (Some("salamander"), Some(password)) => Some(Secret::new(password)),
+        (None, Some(password)) => {
+            notes.push(
+                "Hysteria2 link omitted obfs=salamander; inferred it from obfs-password".to_owned(),
+            );
+            Some(Secret::new(password))
+        }
+        (Some("none") | None, None) => None,
+        (Some("salamander"), None) => {
+            notes.push("Hysteria2 salamander obfuscation has no password".to_owned());
+            None
+        }
+        (Some(kind), _) => {
+            notes.push(format!(
+                "Hysteria2 obfuscation '{kind}' is not available in the pinned Xray release"
+            ));
+            None
+        }
+    };
+
+    let allow_insecure = any_true(
+        &authority.query,
+        &["insecure", "allowInsecure", "allowinsecure"],
+    );
+    if allow_insecure {
+        notes.push(
+            "link requires TLS allowInsecure, which Xray-core removed after 2026-06-01; use pinSHA256/pcs instead".to_owned(),
+        );
+    }
+
+    let mut node = Node::new(
+        make_id(&authority.name, "hysteria2"),
+        authority.name,
+        source,
+        Endpoint::new(authority.host, authority.port),
+        ProtocolSettings::Hysteria(xraytui_domain::HysteriaSettings {
+            auth: Secret::new(authority.userinfo),
+            obfs,
+            up: get(&authority.query, &["up", "upmbps"]).map(str::to_owned),
+            down: get(&authority.query, &["down", "downmbps"]).map(str::to_owned),
+            // v2rayN canonicalises the older `20000:30000` spelling to the
+            // Hysteria URI/Xray `20000-30000` spelling on export. Normalising
+            // at import keeps the stable identity unchanged across a round trip.
+            port_hopping: get(&authority.query, &["mport"]).map(|ports| ports.replace(':', "-")),
+        }),
+    );
+    node.security = TransportSecurity::Tls(TlsSettings {
+        server_name: get(&authority.query, &["sni"]).map(str::to_owned),
+        alpn: get(&authority.query, &["alpn"])
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|item| item.trim().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        fingerprint: get(&authority.query, &["fp"]).map(str::to_owned),
+        allow_insecure,
+        ech_config_list: get(&authority.query, &["ech"]).map(str::to_owned),
+        ech_force_query: None,
+        pinned_peer_cert_sha256: get(&authority.query, &["pinSHA256", "pcs"]).map(str::to_owned),
+        verify_peer_cert_by_name: get(&authority.query, &["vcn"]).map(str::to_owned),
+        cipher_suites: None,
+    });
+    if !notes.is_empty() {
+        node.compatibility = if security == "tls"
+            && !allow_insecure
+            && !notes
+                .iter()
+                .any(|note| note.contains("not available") || note.contains("no password"))
+        {
+            Compatibility::Degraded
+        } else {
+            Compatibility::Unsupported
+        };
+        node.notes = notes;
+    }
+    node.extra = authority
+        .query
+        .into_iter()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "security"
+                    | "sni"
+                    | "alpn"
+                    | "fp"
+                    | "insecure"
+                    | "allowInsecure"
+                    | "allowinsecure"
+                    | "ech"
+                    | "pinSHA256"
+                    | "pcs"
+                    | "vcn"
+                    | "obfs"
+                    | "obfs-password"
+                    | "mport"
+                    | "up"
+                    | "upmbps"
+                    | "down"
+                    | "downmbps"
+            )
+        })
+        .map(|(key, value)| (key, serde_json::Value::String(value)))
+        .collect();
+    Ok(ImportedEntry::Supported(node))
+}
+
+// ------------------------------------------------------------ WireGuard
+
+fn parse_wireguard(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportError> {
+    let authority = split_authority(input, "wireguard")?;
+    if authority.userinfo.is_empty() {
+        return Err(ImportError::MissingField {
+            scheme: "wireguard",
+            field: "secret key",
+        });
+    }
+    let public_key = get(&authority.query, &["publickey"]).ok_or(ImportError::MissingField {
+        scheme: "wireguard",
+        field: "publickey",
+    })?;
+    let address = get(&authority.query, &["address"])
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let reserved = get(&authority.query, &["reserved"])
+        .map(|value| {
+            let parsed = value
+                .split(',')
+                .map(str::trim)
+                .map(str::parse::<u8>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ImportError::InvalidField {
+                    scheme: "wireguard",
+                    field: "reserved",
+                })?;
+            if !parsed.is_empty() && parsed.len() != 3 {
+                return Err(ImportError::InvalidField {
+                    scheme: "wireguard",
+                    field: "reserved",
+                });
+            }
+            Ok(parsed)
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let endpoint = Endpoint::new(authority.host.clone(), authority.port);
+    let mut node = Node::new(
+        make_id(&authority.name, "wireguard"),
+        authority.name,
+        source,
+        endpoint.clone(),
+        ProtocolSettings::Wireguard(Box::new(WireguardSettings {
+            secret_key: Secret::new(authority.userinfo),
+            address,
+            peers: vec![WireguardPeer {
+                public_key: public_key.to_owned(),
+                pre_shared_key: get(&authority.query, &["presharedkey"]).map(Secret::new),
+                endpoint: endpoint.authority(),
+                allowed_ips: Vec::new(),
+                keep_alive: None,
+            }],
+            mtu: optional_i32(&authority.query, "mtu")?,
+            reserved,
+            domain_strategy: None,
+        })),
+    );
+    node.extra = authority
+        .query
+        .into_iter()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "publickey" | "presharedkey" | "reserved" | "address" | "mtu"
+            )
+        })
+        .map(|(key, value)| (key, serde_json::Value::String(value)))
+        .collect();
     Ok(ImportedEntry::Supported(node))
 }
 
@@ -727,7 +1179,7 @@ fn parse_socks(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportE
             udp: !matches!(get(&authority.query, &["udp"]), Some("false") | Some("0")),
         }),
     );
-    Ok(finish(node, &authority.query, Vec::new()))
+    finish(node, &authority.query, Vec::new())
 }
 
 fn parse_http_proxy(input: &str, source: NodeSource) -> Result<ImportedEntry, ImportError> {
@@ -740,7 +1192,7 @@ fn parse_http_proxy(input: &str, source: NodeSource) -> Result<ImportedEntry, Im
         Endpoint::new(authority.host.clone(), authority.port),
         ProtocolSettings::Http(HttpProxySettings { username, password }),
     );
-    Ok(finish(node, &authority.query, Vec::new()))
+    finish(node, &authority.query, Vec::new())
 }
 
 #[cfg(test)]
@@ -787,6 +1239,17 @@ mod tests {
     }
 
     #[test]
+    fn any_allow_insecure_alias_set_true_is_never_hidden_by_a_false_alias() {
+        let node =
+            node_of("vless://uuid@h.example:443?security=tls&insecure=0&allowInsecure=TRUE#unsafe");
+        let TransportSecurity::Tls(tls) = &node.security else {
+            panic!("expected TLS");
+        };
+        assert!(tls.allow_insecure);
+        assert_eq!(node.compatibility, Compatibility::Unsupported);
+    }
+
+    #[test]
     fn vless_with_reality() {
         let node = node_of(
             "vless://uuid@1.2.3.4:443?security=reality&pbk=PUB&sid=ab12&spx=%2F&fp=chrome&type=tcp#R",
@@ -804,6 +1267,36 @@ mod tests {
             }
             other => panic!("wrong security: {other:?}"),
         }
+    }
+
+    #[test]
+    fn reality_tls_only_extensions_are_preserved_instead_of_silently_consumed() {
+        let input = "vless://uuid@1.2.3.4:443?security=reality&pbk=PUB&sid=ab12\
+                     &fp=chrome&alpn=h2%2Ch3&ech=synthetic-ech&pcs=synthetic-pin\
+                     &vcn=cdn.example.com&type=tcp#R";
+        let node = node_of(input);
+        for key in ["alpn", "ech", "pcs", "vcn"] {
+            assert!(
+                node.extra.contains_key(key),
+                "missing {key}: {:?}",
+                node.extra
+            );
+        }
+        assert_eq!(node.compatibility, Compatibility::Degraded);
+        assert!(
+            node.notes
+                .iter()
+                .any(|note| note.contains("current Xray REALITY settings do not consume"))
+        );
+
+        let link = crate::export_share_link(&node, crate::ShareOptions::default())
+            .expect("extensions fit the authority link")
+            .link;
+        let reparsed = crate::parse_uri(link.expose())
+            .expect("reparse")
+            .into_node()
+            .expect("supported");
+        assert_eq!(node.canonical_identity(), reparsed.canonical_identity());
     }
 
     #[test]
@@ -847,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn vmess_with_alter_id_is_degraded_not_dropped() {
+    fn vmess_with_alter_id_is_preserved_but_not_executable() {
         let payload = serde_json::json!({
             "ps": "old", "add": "h.example", "port": 443, "id": "u", "aid": 64, "net": "tcp"
         });
@@ -856,7 +1349,7 @@ mod tests {
             crate::b64::encode_standard(payload.to_string().as_bytes())
         );
         let node = node_of(&link);
-        assert_eq!(node.compatibility, Compatibility::Degraded);
+        assert_eq!(node.compatibility, Compatibility::Unsupported);
         assert!(
             node.notes.first().is_some_and(|n| n.contains("alterId")),
             "{:?}",
@@ -886,16 +1379,49 @@ mod tests {
     }
 
     #[test]
-    fn shadowsocks_plugin_is_preserved_but_degraded() {
+    fn shadowsocks_plugin_is_preserved_but_not_executable() {
         let userinfo = crate::b64::encode_url_safe_no_pad(b"aes-256-gcm:secret");
         let link = format!("ss://{userinfo}@ss.example:8388?plugin=obfs-local%3Bobfs%3Dhttp#P");
         let node = node_of(&link);
-        assert_eq!(node.compatibility, Compatibility::Degraded);
+        assert_eq!(node.compatibility, Compatibility::Unsupported);
+        assert_eq!(
+            node.extra.get("plugin").and_then(serde_json::Value::as_str),
+            Some("obfs-local;obfs=http")
+        );
         assert!(
             node.notes.first().is_some_and(|n| n.contains("obfs-local")),
             "{:?}",
             node.notes
         );
+    }
+
+    #[test]
+    fn mature_client_wireguard_dialect_is_imported_without_guessing_defaults() {
+        let node = node_of(
+            "wireguard://PRIVATE%2BKEY%3D@[2001:db8::1]:51820\
+             ?publickey=PUBLIC%2BKEY%3D&presharedkey=PSK%2BVALUE%3D\
+             &reserved=1%2C2%2C3&address=172.16.0.2%2F32%2Cfd00%3A%3A2%2F128&mtu=1420\
+             #WG%20%E6%97%A5%E6%9C%AC",
+        );
+        assert_eq!(node.name, "WG 日本");
+        assert_eq!(node.endpoint, Endpoint::new("2001:db8::1", 51820));
+        let ProtocolSettings::Wireguard(wireguard) = &node.protocol else {
+            panic!("expected WireGuard");
+        };
+        assert_eq!(wireguard.secret_key.expose(), "PRIVATE+KEY=");
+        assert_eq!(wireguard.address, ["172.16.0.2/32", "fd00::2/128"]);
+        assert_eq!(wireguard.reserved, [1, 2, 3]);
+        assert_eq!(wireguard.mtu, Some(1420));
+        assert_eq!(wireguard.peers[0].public_key, "PUBLIC+KEY=");
+        assert_eq!(
+            wireguard.peers[0]
+                .pre_shared_key
+                .as_ref()
+                .map(Secret::expose),
+            Some("PSK+VALUE=")
+        );
+        assert_eq!(wireguard.peers[0].endpoint, "[2001:db8::1]:51820");
+        assert!(wireguard.peers[0].allowed_ips.is_empty());
     }
 
     #[test]
@@ -923,8 +1449,6 @@ mod tests {
     #[test]
     fn foreign_schemes_are_classified_not_rejected() {
         for (link, core) in [
-            ("hysteria2://pw@h.example:443#H", Some("hysteria2")),
-            ("hy2://pw@h.example:443#H", Some("hysteria2")),
             ("tuic://uuid@h.example:443#T", Some("tuic")),
             ("ssr://Zm9v", Some("shadowsocksr")),
         ] {
@@ -938,6 +1462,34 @@ mod tests {
             }
             assert!(!unsupported.redacted_original.contains("pw"), "{link}");
         }
+    }
+
+    #[test]
+    fn hysteria2_link_maps_to_xray_native_hysteria_semantics() {
+        let node = node_of(
+            "hysteria2://synthetic-auth@hy.example:443?security=tls&sni=edge.example\
+             &alpn=h3&obfs=salamander&obfs-password=synthetic-obfs&mport=20000-30000%2C40000\
+             &pinSHA256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef#HY2",
+        );
+        let ProtocolSettings::Hysteria(hysteria) = &node.protocol else {
+            panic!("expected Xray Hysteria");
+        };
+        assert_eq!(hysteria.auth.expose(), "synthetic-auth");
+        assert_eq!(
+            hysteria.obfs.as_ref().map(Secret::expose),
+            Some("synthetic-obfs")
+        );
+        assert_eq!(hysteria.port_hopping.as_deref(), Some("20000-30000,40000"));
+        let TransportSecurity::Tls(tls) = &node.security else {
+            panic!("expected TLS");
+        };
+        assert_eq!(tls.server_name.as_deref(), Some("edge.example"));
+        assert_eq!(tls.alpn, ["h3"]);
+        assert_eq!(
+            tls.pinned_peer_cert_sha256.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(node.compatibility, Compatibility::Supported);
     }
 
     #[test]
@@ -1016,10 +1568,18 @@ mod tests {
             ("xhttp", "xhttp"),
             ("httpupgrade", "httpu"),
             ("kcp", "kcp"),
-            ("something-new", "raw"),
         ] {
             let link = format!("vless://uuid@h.example:443?type={token}#T");
             assert_eq!(node_of(&link).transport.label(), expected, "token {token}");
         }
+        let error = parse(
+            "vless://uuid@h.example:443?type=something-new#T",
+            NodeSource::Manual,
+        )
+        .expect_err("unknown transports must not silently become raw");
+        assert!(matches!(
+            error,
+            ImportError::InvalidField { field: "type", .. }
+        ));
     }
 }

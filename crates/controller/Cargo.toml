@@ -37,6 +37,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "net", "time", "io-util", "fs", "signal", "sync"] }
@@ -48,5 +49,4 @@ xraytui-test-support = { workspace = true }
 # it, and `xraytui-linux-net` does not depend on this crate, so there is no cycle.
 xraytui-linux-net = { workspace = true }
 url = { workspace = true }
-tempfile = { workspace = true }
 proptest = { workspace = true }

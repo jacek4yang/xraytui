@@ -625,13 +625,20 @@ pub struct StreamSettings {
         rename = "kcpSettings"
     )]
     pub kcp_settings: Option<serde_json::Value>,
+    /// Xray-native Hysteria2 transport settings.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "hysteriaSettings"
+    )]
+    pub hysteria_settings: Option<serde_json::Value>,
     /// Post-transport obfuscation masks.
     ///
     /// Replaces the mKCP `header`/`seed` fields, which the pinned Xray release
     /// removed outright (`infra/conf/transport_internet.go`:
     /// `PrintRemovedFeatureError("mkcp header & seed", ...)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finalmask: Option<FinalMask>,
+    pub finalmask: Option<serde_json::Value>,
     /// Socket options, including `dialerProxy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sockopt: Option<SockOpt>,

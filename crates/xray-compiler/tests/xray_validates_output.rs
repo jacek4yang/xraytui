@@ -63,6 +63,28 @@ fn check(name: &str, json: &str) {
     }
 }
 
+fn probed_mkcp_options() -> CompileOptions {
+    const UNIFIED: &str = r#"{
+        "log":{"loglevel":"none"},
+        "outbounds":[{
+            "protocol":"freedom",
+            "streamSettings":{
+                "network":"mkcp",
+                "kcpSettings":{},
+                "finalmask":{"udp":[
+                    {"type":"mkcp-legacy","settings":{"header":"dtls"}},
+                    {"type":"mkcp-legacy","settings":{"value":"synthetic-seed"}}
+                ]}
+            }
+        }]
+    }"#;
+    let mut options = CompileOptions::default();
+    if validate(UNIFIED).is_ok() {
+        options.mkcp_finalmask_dialect = xraytui_xray_compiler::MkcpFinalmaskDialect::UnifiedLegacy;
+    }
+    options
+}
+
 fn trojan_node(id: &str, name: &str) -> Node {
     Node::new(
         NodeId::new(id).expect("valid"),
@@ -306,6 +328,7 @@ fn full_configuration_with_groups_chains_and_profiles_is_accepted() {
 }
 
 #[test]
+#[ignore = "requires CAP_NET_ADMIN because Xray run -test creates the TUN device"]
 fn tun_and_dns_configuration_is_accepted() {
     let state = full_state();
     let options = CompileOptions {
@@ -387,6 +410,7 @@ fn every_transport_and_security_combination_is_accepted() {
         TransportSecurity, WebsocketTransport, XhttpTransport,
     };
 
+    let options = probed_mkcp_options();
     let transports: Vec<(&str, Transport)> = vec![
         ("raw", Transport::Raw(RawTransport::default())),
         (
@@ -426,6 +450,8 @@ fn every_transport_and_security_combination_is_accepted() {
             Transport::Mkcp(MkcpTransport {
                 header_type: Some("dtls".into()),
                 seed: Some(Secret::new("seed")),
+                mtu: None,
+                tti: None,
             }),
         ),
     ];
@@ -440,6 +466,7 @@ fn every_transport_and_security_combination_is_accepted() {
                     alpn: vec!["h2".into(), "http/1.1".into()],
                     fingerprint: Some("chrome".into()),
                     allow_insecure: false,
+                    ..TlsSettings::default()
                 }),
             ),
         ] {
@@ -456,7 +483,7 @@ fn every_transport_and_security_combination_is_accepted() {
                 },
             );
             state.profiles.insert(profile.id.clone(), profile);
-            let compiled = compile(&state, &CompileOptions::default()).expect("compile");
+            let compiled = compile(&state, &options).expect("compile");
             check(
                 &format!("transport-{label}-{security_label}"),
                 &compiled.to_json().expect("json"),
@@ -480,4 +507,25 @@ fn vless_reality_configuration_is_accepted() {
     state.profiles.insert(profile.id.clone(), profile);
     let compiled = compile(&state, &CompileOptions::default()).expect("compile");
     check("vless-reality", &compiled.to_json().expect("json"));
+}
+
+#[test]
+fn cross_client_share_links_recompile_for_real_xray() {
+    let links = include_str!("../../import/tests/fixtures/cross-client-links.txt");
+    let batch = xraytui_import::parse_many(links, NodeSource::Manual);
+    assert!(batch.rejected.is_empty(), "{:?}", batch.rejected);
+    assert!(batch.unsupported.is_empty(), "{:?}", batch.unsupported);
+
+    for mut node in batch.nodes {
+        node.enabled = true;
+        let outbound =
+            xraytui_xray_compiler::outbound::build(&node, &format!("fixture/{}", node.id), None)
+                .unwrap_or_else(|error| panic!("{}: {error}", node.summary()));
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "log": { "loglevel": "warning" },
+            "outbounds": [outbound],
+        }))
+        .expect("JSON");
+        check(&format!("cross-client-{}", node.id), &json);
+    }
 }

@@ -61,6 +61,7 @@
 mod b64;
 mod export;
 mod link;
+mod private_file;
 pub mod qr;
 mod xray;
 
@@ -68,7 +69,10 @@ pub use b64::{
     MAX_BASE64_INPUT, decode_base64_flexible, decode_base64_utf8, encode_standard,
     encode_url_safe_no_pad, looks_like_base64,
 };
-pub use export::to_share_link;
+pub use export::{
+    ExportFidelity, ShareExport, ShareOptions, VmessShareFormat, export_share_link, to_share_link,
+};
+pub use private_file::{PrivateFileError, write_private_atomic};
 pub use xray::{parse_xray_config, parse_xray_outbound};
 
 use xraytui_domain::{Node, NodeId, NodeSource, UnsupportedNode};
@@ -192,6 +196,15 @@ pub enum ExportError {
         protocol: &'static str,
         /// The setting that has no representation.
         feature: &'static str,
+    },
+    /// Export would omit meaningful connection settings and was not explicitly
+    /// authorised as lossy.
+    #[error(
+        "share-link export would be lossy ({features}); use lossless Xray JSON or explicitly allow lossy export"
+    )]
+    LossyRefused {
+        /// Comma-separated, non-secret field names that cannot be represented.
+        features: String,
     },
     /// A field the link format requires was empty on the node.
     #[error("node cannot be exported: `{field}` is empty")]

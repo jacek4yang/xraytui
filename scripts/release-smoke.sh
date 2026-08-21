@@ -284,7 +284,7 @@ check $? "stop the core"
 step "installation"
 DESTDIR="$WORK/destdir"
 if [ -x "$ROOT/target/release/xraytui" ]; then
-    (cd "$ROOT" && cargo run --quiet -p xtask -- install --prefix /usr --destdir "$DESTDIR") \
+    "$ROOT/target/release/xtask" install --prefix /usr --destdir "$DESTDIR" \
         > "$WORK/install.log" 2>&1
     check $? "cargo xtask install --destdir"
     for file in usr/bin/xraytui usr/bin/xraytuid usr/bin/xraytui-netd \
@@ -296,7 +296,7 @@ if [ -x "$ROOT/target/release/xraytui" ]; then
     [ "$setuid" = "0" ]; check $? "no setuid or setgid files ($setuid found)"
     mode=$(stat -c '%a' "$DESTDIR/usr/bin/xraytui-netd")
     [ "$mode" = "755" ]; check $? "the helper is 0755 (was $mode)"
-    (cd "$ROOT" && cargo run --quiet -p xtask -- uninstall --prefix /usr --destdir "$DESTDIR") \
+    "$ROOT/target/release/xtask" uninstall --prefix /usr --destdir "$DESTDIR" \
         > "$WORK/uninstall.log" 2>&1
     check $? "cargo xtask uninstall --destdir"
     [ ! -f "$DESTDIR/usr/bin/xraytui" ]; check $? "uninstall removed the binaries"

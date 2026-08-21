@@ -12,7 +12,7 @@
 use xraytui_domain::draft::{NodeDraft, PROTOCOLS, SECURITIES, TRANSPORTS};
 use xraytui_domain::{Node, ProtocolSettings, TransportSecurity};
 
-use crate::app::Key;
+use crate::app::{Key, ShareFileKind};
 
 /// One editable line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +76,13 @@ pub enum FormKind {
     Listeners {
         /// Profile being changed.
         profile: String,
+    },
+    /// Export one node from the sharing menu.
+    ShareExport {
+        /// Which node.
+        id: String,
+        /// Representation being written.
+        kind: ShareFileKind,
     },
 }
 
@@ -273,6 +280,33 @@ impl Form {
             cursor: 0,
             kind: FormKind::Listeners {
                 profile: profile.to_owned(),
+            },
+            error: None,
+        }
+    }
+
+    /// A one-field destination form for an explicit secret export.
+    #[must_use]
+    pub fn share_export(node: &str, kind: ShareFileKind) -> Self {
+        let (title, suffix) = match kind {
+            ShareFileKind::QrPng => ("Export PNG QR", "png"),
+            ShareFileKind::ShareLink => ("Export share link", "txt"),
+            ShareFileKind::XrayJson => ("Export Xray outbound", "json"),
+        };
+        Self {
+            title: format!("{title}: {node}"),
+            fields: vec![
+                Field::new(
+                    "path",
+                    "Path",
+                    "credential-bearing file; written atomically with mode 0600",
+                )
+                .with(format!("{node}.{suffix}")),
+            ],
+            cursor: 0,
+            kind: FormKind::ShareExport {
+                id: node.to_owned(),
+                kind,
             },
             error: None,
         }
