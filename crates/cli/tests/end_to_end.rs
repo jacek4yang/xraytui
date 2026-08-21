@@ -38,7 +38,13 @@ fn binary(name: &str) -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.join(name)
+    let binary = path.join(name);
+    assert!(
+        binary.is_file(),
+        "{} is missing; run `cargo build --workspace` before the cross-package tests",
+        binary.display()
+    );
+    binary
 }
 
 /// A daemon running against a temporary root, killed on drop.

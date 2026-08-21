@@ -16,6 +16,7 @@ silently. Nothing in this repository requires internet access, a public proxy or
 a public resolver.
 
 ```sh
+cargo build --workspace
 cargo test --workspace
 XRAYTUI_TEST_XRAY=/usr/bin/xray XRAY_LOCATION_ASSET=/usr/share/xray cargo test --workspace
 ```
@@ -49,9 +50,10 @@ that the transit hop saw exactly one connection — which is what distinguishes
 sudo ./scripts/netns-test.sh
 ```
 
-Nine tests exercise TUN creation, addressing, routing, policy rules, nftables,
-cgroup classification and lease expiry against a real kernel. They cover
-acceptance scenarios C, J, K and M.
+Twelve linux-net tests plus one full controller/CLI scenario exercise TUN
+creation, addressing, routing, policy rules, nftables, cgroup classification,
+lease expiry and per-profile transparent egress against a real kernel. They
+cover acceptance scenarios C, J, K and M.
 
 Three separate things keep them off a real machine:
 
@@ -102,28 +104,14 @@ exemption relies on is where the other four believe it is.
 never allocates without bound and always terminates. This is not decorative: it
 is how the stack overflow in log redaction described in `STATUS.md` was found.
 
-## Privileged tests
-
-**Never run these against host networking.** Everything privileged belongs in a
-disposable namespace:
-
-```sh
-sudo unshare --net --mount --pid --fork -- \
-    cargo test -p xraytui-linux-net --features netns-tests -- --test-threads=1
-```
-
-The lab creates veth pairs, a local resolver and locally distinguishable egress
-endpoints, so per-application routing can be proven without leaving the machine.
-As of this writing the privileged backend is not implemented, so these tests do
-not exist yet; see `STATUS.md`.
-
 ## Quality gates
 
 ```sh
 cargo xtask ci
 ```
 
-runs fmt, check, clippy with `-D warnings`, test and doc. CI runs the same list.
+runs fmt, check, clippy with `-D warnings`, builds the real cross-package
+binaries, then runs tests and docs. CI runs the same list.
 
 ## Adding a test
 

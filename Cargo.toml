@@ -24,31 +24,31 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0-rc1"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.90"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/xraytui/xraytui"
+repository = "https://github.com/jacek4yang/xraytui"
 authors = ["xraytui contributors"]
 
 [workspace.dependencies]
 # --- internal ---
-xraytui-domain = { path = "crates/domain", version = "=1.0.0-rc1" }
-xraytui-secrets = { path = "crates/secrets", version = "=1.0.0-rc1" }
-xraytui-config = { path = "crates/config", version = "=1.0.0-rc1" }
-xraytui-import = { path = "crates/import", version = "=1.0.0-rc1" }
-xraytui-subscription = { path = "crates/subscription", version = "=1.0.0-rc1" }
-xraytui-xray-model = { path = "crates/xray-model", version = "=1.0.0-rc1" }
-xraytui-xray-compiler = { path = "crates/xray-compiler", version = "=1.0.0-rc1" }
-xraytui-xray-api = { path = "crates/xray-api", version = "=1.0.0-rc1" }
-xraytui-state-store = { path = "crates/state-store", version = "=1.0.0-rc1" }
-xraytui-ipc = { path = "crates/daemon-ipc", version = "=1.0.0-rc1" }
-xraytui-netd-protocol = { path = "crates/netd-protocol", version = "=1.0.0-rc1" }
-xraytui-linux-net = { path = "crates/linux-net", version = "=1.0.0-rc1" }
-xraytui-controller = { path = "crates/controller", version = "=1.0.0-rc1" }
-xraytui-tui = { path = "crates/tui", version = "=1.0.0-rc1" }
-xraytui-cli = { path = "crates/cli", version = "=1.0.0-rc1" }
-xraytui-test-support = { path = "crates/test-support", version = "=1.0.0-rc1" }
+xraytui-domain = { path = "crates/domain", version = "=1.0.0" }
+xraytui-secrets = { path = "crates/secrets", version = "=1.0.0" }
+xraytui-config = { path = "crates/config", version = "=1.0.0" }
+xraytui-import = { path = "crates/import", version = "=1.0.0" }
+xraytui-subscription = { path = "crates/subscription", version = "=1.0.0" }
+xraytui-xray-model = { path = "crates/xray-model", version = "=1.0.0" }
+xraytui-xray-compiler = { path = "crates/xray-compiler", version = "=1.0.0" }
+xraytui-xray-api = { path = "crates/xray-api", version = "=1.0.0" }
+xraytui-state-store = { path = "crates/state-store", version = "=1.0.0" }
+xraytui-ipc = { path = "crates/daemon-ipc", version = "=1.0.0" }
+xraytui-netd-protocol = { path = "crates/netd-protocol", version = "=1.0.0" }
+xraytui-linux-net = { path = "crates/linux-net", version = "=1.0.0" }
+xraytui-controller = { path = "crates/controller", version = "=1.0.0" }
+xraytui-tui = { path = "crates/tui", version = "=1.0.0" }
+xraytui-cli = { path = "crates/cli", version = "=1.0.0" }
+xraytui-test-support = { path = "crates/test-support", version = "=1.0.0" }
 
 # --- async / runtime ---
 tokio = { version = "1.47", default-features = false }

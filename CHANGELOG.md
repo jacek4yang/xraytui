@@ -5,8 +5,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Initial implementation. Not production ready — see `STATUS.md` for the honest
-per-scenario state.
+## [1.0.0] - 2026-08-20
+
+First daily-use release. See `STATUS.md` for the measured acceptance matrix and
+`RELEASE-NOTES.md` for the supported deployment boundary.
 
 ### Added
 
@@ -101,6 +103,24 @@ per-scenario state.
 
 ### Fixed
 
+* The shipping daemon now notices and restarts an unexpectedly dead Xray-core;
+  it no longer reports a dead PID as healthy indefinitely.
+* `app assign` and `app unassign` mutate policy transactionally instead of
+  printing a TOML snippet and exiting with failure.
+* All CLI and TUI mutations use one validate, compile, reconcile and rollback
+  path; narrow changes can no longer bypass model validation.
+* `xraytui init` refuses to overwrite policy files it cannot parse.
+* Closed stdout pipes terminate normally instead of panicking with a backtrace.
+* The Arch package now uses the real repository and immutable release asset,
+  verifies its checksum, declares complete dependencies, and installs through
+  the canonical manifest.
+* Clean Arch builds now link the distribution's SQLite and disable makepkg's
+  incompatible global GCC LTO for native Rust dependency archives; the
+  workspace's own Rust thin LTO remains enabled.
+* The user systemd unit no longer tries to start the system-level network helper
+  from the wrong service manager.
+* `h2` was upgraded from 0.4.15 to 0.4.16 to fix RUSTSEC-2026-0258 before the
+  final release.
 * The privileged helper could not run `nft` at all: `Command::env_clear()` removes
   the `PATH` Rust uses to resolve a relative program name, so a bare name failed
   with `NotFound` on machines where the program was installed. Programs are now
@@ -111,13 +131,11 @@ per-scenario state.
 
 ### Known limitations
 
-
-* The interface can switch profiles, cycle the mode and probe nodes, but cannot
-  yet create a node, edit a rule or add a subscription; those stay CLI-only.
-* Per-profile transparent egress: cgroup classification and marking work, but
-  selecting a different exit per profile needs a `tproxy` inbound per profile.
-* Runtime history is in memory only.
-* The DNS backends have not been driven against a live resolver.
+* IPv6 is experimental, disabled by default and fail-closed. IPv4 is the
+  supported and fully exercised path for 1.0.0.
+* Shared machines with mutually untrusted local users are out of scope because
+  Xray's loopback TCP commander has no authentication.
+* The Arch package is verified and published for `x86_64` only.
 
 ### Upstream findings
 

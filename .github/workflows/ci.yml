@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: 1.95.0
+
+jobs:
+  quality:
+    name: Rust quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The cross-package end-to-end suite executes all three real binaries.
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+      - run: cargo doc --workspace --no-deps
+
+  security:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    env:
+      # cargo-audit tracks current stable Rust independently of the project's
+      # supported toolchain, so build the policy tools with current stable.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  arch-package:
+    name: Clean Arch package build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      # The Arch base-devel image does not include Git. Install it before
+      # checkout so actions/checkout creates the repository metadata required
+      # by scripts/source-dist.sh instead of falling back to a REST snapshot.
+      - name: Install clean build dependencies
+        run: pacman -Syu --noconfirm git rust protobuf
+      - uses: actions/checkout@v5
+      - name: Trust the runner-mounted worktree
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build deterministic source archive
+        run: sh scripts/source-dist.sh
+      - name: Build and test with makepkg as an unprivileged user
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && SRCDEST='$GITHUB_WORKSPACE/target/dist' makepkg --nodeps --noconfirm"

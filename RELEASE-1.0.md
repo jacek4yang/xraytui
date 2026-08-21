@@ -21,13 +21,13 @@ ordinary failures by hand.
 
 | Gate | What it means | State |
 |---|---|---|
-| G0 | Recovery, checkpoint tooling, verified baseline | in progress |
-| G1 | Durable SQLite state, migrations, `init`, doctor | pending |
-| G2 | Typed configuration surface, one mutation path | pending |
-| G3 | Daily-use TUI | pending |
-| G4 | DNS, recovery, reliability | pending |
-| G5 | Smoke test, dist, packaging, RC tag | pending |
-| G6 | audit, deny, upgrade tests, clean Arch, IPv6, v1.0.0 | pending |
+| G0 | Recovery, checkpoint tooling, verified baseline | complete |
+| G1 | Durable SQLite state, migrations, `init`, doctor | complete |
+| G2 | Typed configuration surface, one mutation path | complete |
+| G3 | Daily-use TUI | complete |
+| G4 | DNS, recovery, reliability | complete; real resolve1 apply/observe/revert passed |
+| G5 | Smoke test, dist, packaging, RC tag | complete |
+| G6 | audit, deny, upgrade tests, clean Arch, IPv6 policy, v1.0.0 | complete |
 
 "Blocked here" means the environment cannot run it, not that it is optional:
 the harness is written, guarded and runnable where the environment exists. What
