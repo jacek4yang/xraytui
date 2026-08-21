@@ -22,6 +22,6 @@ pkgbase = xraytui
 	options = !debug
 	options = !lto
 	source = xraytui-1.1.0.tar.gz::https://github.com/jacek4yang/xraytui/releases/download/v1.1.0/xraytui-1.1.0.tar.gz
-	sha256sums = ffbcd9a369cb7a8cdc60b4e275602c1b8591dac1b9dcd44c7fc1448b86bb1549
+	sha256sums = 96cb495f885bffb106033b6b3684646e61b2e1d3a9512183368f5eea2f0c1f3b
 
 pkgname = xraytui

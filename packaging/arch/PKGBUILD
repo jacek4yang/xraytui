@@ -34,7 +34,7 @@ optdepends=(
 )
 install=xraytui.install
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
-sha256sums=('ffbcd9a369cb7a8cdc60b4e275602c1b8591dac1b9dcd44c7fc1448b86bb1549')
+sha256sums=('96cb495f885bffb106033b6b3684646e61b2e1d3a9512183368f5eea2f0c1f3b')
 
 _xraytui_set_rustflags() {
   local remap="--remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
