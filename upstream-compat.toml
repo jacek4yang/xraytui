@@ -51,10 +51,10 @@ preview_commit = "5ca6f4b7d4dc20a881d4330e498892697627ec0c"
 name = "v2rayN share serializers"
 repository = "2dust/v2rayN"
 reference = "master"
-snapshot_commit = "ebb4bd5daa45478e337a68f0be768fb7045520dc"
+snapshot_commit = "af0eb9ed14638fa877d11c235e491442ec7ba215"
 
 [ecosystem.files]
-"v2rayN/ServiceLib/Handler/Fmt/BaseFmt.cs" = "c4424f273fcabbc0707cd74afc1ebb7ca6fec1d31381ad28e98e4745961bca66"
+"v2rayN/ServiceLib/Handler/Fmt/BaseFmt.cs" = "2e7e911331b18d57dd2d4f97089f6ddb1096c3752eaf8c834c3777eafd431baf"
 "v2rayN/ServiceLib/Handler/Fmt/VLESSFmt.cs" = "db41efd8d68c975697053a0583e4841d91e8f191c6f15d3bebd5b4de5986f636"
 "v2rayN/ServiceLib/Handler/Fmt/VmessFmt.cs" = "58db7545ae2f6402f2ed9d83d2998b3a3b389de9d8a207af6bc0d3d0051618ad"
 "v2rayN/ServiceLib/Handler/Fmt/TrojanFmt.cs" = "6311e75fcc748f4e9b7b1bc881b591d8200a3a7f47513497973cee73e786eb71"

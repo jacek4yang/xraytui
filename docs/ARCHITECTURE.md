@@ -76,6 +76,13 @@ concurrency limits, bounded event channels and idle timeouts live. The netd
 socket is a real privilege boundary: the PID from `SO_PEERCRED` is used for
 logging only, never for authorisation, because PIDs are reusable.
 
+Netd protocol version 2 carries independent IPv4 and IPv6 blackhole decisions.
+The helper records the configured TUN families in its credential-owned lease;
+it never infers them from include prefixes. A plan that includes a prefix from a
+disabled family is rejected during candidate validation, before live routes are
+flushed. When reading a lease written before protocol v2, it recovers the
+missing flags from the live interface's netlink address records.
+
 ## One core, many balancers
 
 "Several proxies at once" can be built as N core processes or as one core with N

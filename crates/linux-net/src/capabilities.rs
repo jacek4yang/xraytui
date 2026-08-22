@@ -24,6 +24,7 @@ pub fn probe(options: &EngineOptions) -> NetdCapabilities {
     NetdCapabilities {
         tun: tun::device_usable(),
         cap_net_admin: has_net_admin(),
+        ipv6_tun: ipv6_tun_available(),
         nftables: options.nft.available(),
         cgroup_v2,
         nft_cgroup_match: cgroup_v2 && options.nft.supports_cgroup_match(&own_cgroup()),
@@ -31,6 +32,27 @@ pub fn probe(options: &EngineOptions) -> NetdCapabilities {
         resolvconf: dns.resolvconf_available(),
         kernel: kernel_release(),
     }
+}
+
+/// Whether a newly created TUN may be configured with an IPv6 address.
+///
+/// Linux keeps `/proc/net/if_inet6` present when IPv6 is disabled with sysctl,
+/// so checking for that file alone is insufficient. New interfaces inherit
+/// `conf/default/disable_ipv6`, while `conf/all/disable_ipv6` can disable the
+/// namespace globally; both must permit IPv6.
+#[must_use]
+pub fn ipv6_tun_available() -> bool {
+    ipv6_tun_available_under(std::path::Path::new("/proc"))
+}
+
+fn ipv6_tun_available_under(proc_root: &std::path::Path) -> bool {
+    if !proc_root.join("net/if_inet6").exists() {
+        return false;
+    }
+    ["all", "default"].iter().all(|scope| {
+        std::fs::read_to_string(proc_root.join(format!("sys/net/ipv6/conf/{scope}/disable_ipv6")))
+            .is_ok_and(|value| value.trim() == "0")
+    })
 }
 
 /// Whether the current process holds `CAP_NET_ADMIN` in its effective set.
@@ -121,5 +143,25 @@ mod tests {
             assert!(report.cgroup_v2 && report.nft_cgroup_match);
         }
         assert!(!report.kernel.is_empty());
+    }
+
+    #[test]
+    fn ipv6_tun_detection_checks_both_namespace_switches() {
+        let root = tempfile::tempdir().expect("temporary proc tree");
+        for scope in ["all", "default"] {
+            let directory = root.path().join(format!("sys/net/ipv6/conf/{scope}"));
+            std::fs::create_dir_all(&directory).expect("sysctl directory");
+            std::fs::write(directory.join("disable_ipv6"), "0\n").expect("sysctl fixture");
+        }
+        std::fs::create_dir_all(root.path().join("net")).expect("net fixture");
+        std::fs::write(root.path().join("net/if_inet6"), "").expect("if_inet6 fixture");
+        assert!(ipv6_tun_available_under(root.path()));
+
+        std::fs::write(
+            root.path().join("sys/net/ipv6/conf/default/disable_ipv6"),
+            "1\n",
+        )
+        .expect("disable fixture");
+        assert!(!ipv6_tun_available_under(root.path()));
     }
 }

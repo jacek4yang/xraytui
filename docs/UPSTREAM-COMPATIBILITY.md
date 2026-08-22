@@ -120,11 +120,17 @@ routing points at is **C**. (The deprecated `proxySettings.tag` form is not used
 
 The official Xray share-link proposal (XTLS/Xray-core discussion 716) and the
 actual v2rayN/v2rayNG serializers were checked together. The reviewed client
-snapshots are v2rayN commit `ebb4bd5daa45478e337a68f0be768fb7045520dc`
+snapshots are v2rayN commit `af0eb9ed14638fa877d11c235e491442ec7ba215`
 and v2rayNG commit `63f557242bdd071214c4037c76c912b66da925c8`.
 `upstream-compat.toml` watches the exact serializer files on their active master
 branches, so a relevant change fails the compatibility review even when Xray's
 own tag did not move.
+
+The v2rayN snapshot was reviewed again on 2026-08-22. Its only watched-path
+change since `ebb4bd5daa45478e337a68f0be768fb7045520dc` removes an unused
+`System.Collections.Specialized` import from `BaseFmt.cs`; query parsing and
+serialization behavior are byte-for-byte unchanged after that line. No typed
+model, importer, serializer or fixture change is required.
 
 Verified modern mappings include:
 
@@ -273,13 +279,21 @@ Rust resolves a relative program name against the *child's* `PATH`. Clearing the
 environment therefore makes `Command::new("nft").env_clear()` fail with
 `NotFound` on a machine where `nft` is installed. See `DECISIONS.md` D-016.
 
-### A kernel without IPv6 rejects every `AF_INET6` route message
+### IPv6 route support and IPv6 interface enablement are different capabilities
 
 `ipv6.disable=1`, or a kernel built without IPv6, answers `RTM_NEWROUTE` for an
 IPv6 destination with `EOPNOTSUPP` — including a blackhole route, and including
 `ip -6 route add`. The helper checks for `/proc/net/if_inet6` once and installs
 the IPv4 half of the plan, reporting what it left out, rather than treating an
 unusable family as a failure.
+
+By contrast, setting `net.ipv6.conf.{all,default}.disable_ipv6=1` inside a live
+network namespace leaves `/proc/net/if_inet6` present and still permits IPv6
+policy rules and blackhole routes, but rejects assigning an IPv6 address to the
+new TUN. This was reproduced on Linux 6.12.100 and is now a nested namespace
+acceptance test. TUN capability probing therefore reads both sysctls; an IPv6
+TUN request is refused before mutation with the proc/sysctl checks named, while
+an IPv4-only request may still install an IPv6 blackhole and remain fail-closed.
 
 ## Features detected dynamically at runtime
 

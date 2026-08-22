@@ -698,6 +698,25 @@ impl Daemon {
             }),
         });
 
+        let ipv6_tun = xraytui_linux_net::capabilities::ipv6_tun_available();
+        checks.push(DoctorCheck {
+            name: "kernel-ipv6".into(),
+            status: if ipv6_tun {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
+            detail: if ipv6_tun {
+                "IPv6 is enabled for newly created TUN interfaces".into()
+            } else {
+                "IPv6 TUN routing is unavailable because the host kernel or this network namespace has IPv6 disabled; IPv4 remains available".into()
+            },
+            remedy: (!ipv6_tun).then(|| {
+                "check /proc/net/if_inet6 and /proc/sys/net/ipv6/conf/{all,default}/disable_ipv6; IPv6 stays fail-closed until enabled"
+                    .to_owned()
+            }),
+        });
+
         let socket = self.netd.socket().to_path_buf();
         let reachable = self.netd.available().await;
         let held = self.netd.interface().await;

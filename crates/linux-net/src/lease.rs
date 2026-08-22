@@ -38,6 +38,12 @@ pub struct Lease {
     pub table: u32,
     /// Firewall mark reserved for this user.
     pub fwmark: u32,
+    /// Whether the current TUN was configured to carry IPv4.
+    #[serde(default)]
+    pub ipv4: Option<bool>,
+    /// Whether the current TUN was configured to carry IPv6.
+    #[serde(default)]
+    pub ipv6: Option<bool>,
     /// What to do when the lease expires.
     pub failure_policy: FailurePolicy,
     /// Unix time, in seconds, after which the lease is stale.
@@ -71,6 +77,8 @@ impl Lease {
             interface,
             table: xraytui_netd_protocol::table_for_uid(uid),
             fwmark: xraytui_netd_protocol::fwmark_for_uid(uid),
+            ipv4: None,
+            ipv6: None,
             failure_policy,
             expires_at: now.saturating_add(ttl_secs),
             ttl_secs,
@@ -274,6 +282,19 @@ mod tests {
         let lease = Lease::new(1000, "xraytui1000".into(), 30, FailurePolicy::Restore, 100);
         store.put(&lease).expect("put");
         assert_eq!(store.get(1000), Some(lease));
+    }
+
+    #[test]
+    fn a_pre_family_flag_lease_keeps_the_families_unknown_for_live_recovery() {
+        let lease = Lease::new(1000, "xraytui1000".into(), 30, FailurePolicy::Restore, 100);
+        let mut encoded = serde_json::to_value(lease).expect("encode legacy fixture");
+        let object = encoded.as_object_mut().expect("lease object");
+        object.remove("ipv4");
+        object.remove("ipv6");
+
+        let decoded: Lease = serde_json::from_value(encoded).expect("decode legacy lease");
+        assert_eq!(decoded.ipv4, None);
+        assert_eq!(decoded.ipv6, None);
     }
 
     #[test]

@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol version for the helper socket, versioned separately from the user
 /// control protocol because it changes for different reasons.
-pub const NETD_PROTOCOL_VERSION: u32 = 1;
+pub const NETD_PROTOCOL_VERSION: u32 = 2;
 
 /// Default socket path.
 pub const DEFAULT_SOCKET: &str = "/run/xraytui/netd.sock";
@@ -308,6 +308,10 @@ pub struct RoutingRequest {
     pub bypass_endpoints: Vec<IpAddr>,
     /// Skip RFC1918, link-local and multicast destinations.
     pub bypass_private: bool,
+    /// Blackhole IPv4 rather than leaving it to leak around an IPv6-only
+    /// tunnel.
+    #[serde(default)]
+    pub blackhole_ipv4: bool,
     /// Blackhole IPv6 rather than leaving it to leak around the tunnel.
     pub blackhole_ipv6: bool,
 }
@@ -414,6 +418,10 @@ pub struct NetdCapabilities {
     pub tun: bool,
     /// The helper holds `CAP_NET_ADMIN`.
     pub cap_net_admin: bool,
+    /// New interfaces may use IPv6; the kernel and per-network-namespace
+    /// disable switches permit an IPv6 address on the TUN.
+    #[serde(default)]
+    pub ipv6_tun: bool,
     /// `nft` is present and the project table can be managed.
     pub nftables: bool,
     /// cgroup v2 is mounted with the controllers the exec backend needs.
@@ -521,6 +529,7 @@ impl Operation {
             Self::Plan(request) => {
                 validate_tun(&request.tun, uid)?;
                 validate_routing(&request.routing)?;
+                validate_family_consistency(&request.tun, &request.routing)?;
                 validate_firewall(&request.firewall)?;
                 validate_dns(&request.dns)
             }
@@ -633,6 +642,26 @@ fn validate_routing(request: &RoutingRequest) -> Result<(), NetdError> {
                 "excluding the default route would disable the tunnel entirely".into(),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_family_consistency(
+    tun: &TunRequest,
+    routing: &RoutingRequest,
+) -> Result<(), NetdError> {
+    if let Some(prefix) = routing.include.iter().find(|prefix| {
+        (prefix.addr().is_ipv4() && tun.ipv4.is_none())
+            || (prefix.addr().is_ipv6() && tun.ipv6.is_none())
+    }) {
+        return Err(NetdError::Refused(format!(
+            "included prefix {prefix} requires {}, but the TUN has no address for that family",
+            if prefix.addr().is_ipv4() {
+                "IPv4"
+            } else {
+                "IPv6"
+            }
+        )));
     }
     Ok(())
 }
@@ -860,6 +889,7 @@ mod tests {
             exclude: vec!["0.0.0.0/0".parse().unwrap_or_else(|_| unreachable!())],
             bypass_endpoints: vec![],
             bypass_private: true,
+            blackhole_ipv4: false,
             blackhole_ipv6: false,
         };
         let error = Operation::ApplyRouting(request)
@@ -881,12 +911,53 @@ mod tests {
             exclude: vec![],
             bypass_endpoints: vec![],
             bypass_private: true,
+            blackhole_ipv4: false,
             blackhole_ipv6: false,
         };
         assert!(matches!(
             Operation::ApplyRouting(request).validate(1000),
             Err(NetdError::Refused(_))
         ));
+    }
+
+    #[test]
+    fn a_plan_cannot_include_a_family_the_tun_does_not_carry() {
+        let uid = 1000;
+        let mut routing = RoutingRequest {
+            include: vec!["2001:db8::/32".parse().unwrap_or_else(|_| unreachable!())],
+            exclude: vec![],
+            bypass_endpoints: vec![],
+            bypass_private: false,
+            blackhole_ipv4: false,
+            blackhole_ipv6: true,
+        };
+        let mut request = PlanRequest {
+            tun: tun(uid),
+            routing: routing.clone(),
+            firewall: FirewallRequest {
+                cgroup_marks: Vec::new(),
+                kill_switch: false,
+                bypass_uid: true,
+            },
+            dns: DnsRequest {
+                backend: DnsBackend::None,
+                servers: Vec::new(),
+                domains: Vec::new(),
+            },
+        };
+        let error = Operation::Plan(Box::new(request.clone()))
+            .validate(uid)
+            .expect_err("IPv6 is disabled on the TUN");
+        assert!(error.to_string().contains("requires IPv6"), "{error}");
+
+        routing.include = vec!["198.51.100.0/24".parse().unwrap_or_else(|_| unreachable!())];
+        request.tun.ipv4 = None;
+        request.tun.ipv6 = "fd00::1/64".parse().ok();
+        request.routing = routing;
+        let error = Operation::Plan(Box::new(request))
+            .validate(uid)
+            .expect_err("IPv4 is disabled on the TUN");
+        assert!(error.to_string().contains("requires IPv4"), "{error}");
     }
 
     #[test]
@@ -1191,6 +1262,7 @@ mod tests {
         let mut capabilities = NetdCapabilities {
             tun: true,
             cap_net_admin: true,
+            ipv6_tun: true,
             nftables: true,
             cgroup_v2: true,
             nft_cgroup_match: true,

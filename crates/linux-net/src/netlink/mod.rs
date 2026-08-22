@@ -32,9 +32,10 @@ use message::{
     FRA_SUPPRESS_PREFIXLEN, IFA_ADDRESS, IFA_LOCAL, IFF_UP, IFLA_IFNAME, IFLA_MTU, NLM_F_ACK,
     NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REPLACE, NLMSG_DONE, NLMSG_ERROR, NLMSG_NOOP,
     RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_NOWHERE, RT_SCOPE_UNIVERSE, RT_TABLE_UNSPEC, RTA_DST,
-    RTA_OIF, RTA_PRIORITY, RTA_TABLE, RTM_DELLINK, RTM_DELROUTE, RTM_DELRULE, RTM_GETLINK,
-    RTM_GETROUTE, RTM_GETRULE, RTM_NEWADDR, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, RTN_BLACKHOLE,
-    RTN_UNICAST, RTPROT_XRAYTUI, as_str, as_u32, attributes, ifaddrmsg, ifinfomsg, messages, rtmsg,
+    RTA_OIF, RTA_PRIORITY, RTA_TABLE, RTM_DELLINK, RTM_DELROUTE, RTM_DELRULE, RTM_GETADDR,
+    RTM_GETLINK, RTM_GETROUTE, RTM_GETRULE, RTM_NEWADDR, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE,
+    RTN_BLACKHOLE, RTN_UNICAST, RTPROT_XRAYTUI, as_str, as_u32, attributes, ifaddrmsg, ifinfomsg,
+    messages, rtmsg,
 };
 
 /// Largest netlink datagram the helper will accept.
@@ -385,6 +386,57 @@ impl Netlink {
             format!("add address {prefix} to interface {index}"),
         )?;
         Ok(())
+    }
+
+    /// List the addresses currently assigned to one interface.
+    ///
+    /// This is used to migrate lease records created before the address-family
+    /// flags existed. The kernel is authoritative: guessing from routes would
+    /// confuse an ordinary main-table route with an address carried by the TUN.
+    ///
+    /// # Errors
+    /// Propagates netlink failures. Malformed individual address records are
+    /// ignored, while a malformed netlink envelope still fails the operation.
+    pub fn addresses_on_link(&self, index: u32) -> Result<Vec<IpNet>, NetlinkError> {
+        let mut builder = Builder::new(RTM_GETADDR, NLM_F_DUMP);
+        builder.header(&ifaddrmsg(AF_UNSPEC, 0, 0, 0));
+        let replies = self.transact(builder, format!("list addresses on interface {index}"))?;
+        let mut out = Vec::new();
+        for (kind, payload) in &replies {
+            if *kind != RTM_NEWADDR || payload.len() < 8 {
+                continue;
+            }
+            let Some(message_index) = payload
+                .get(4..8)
+                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                .map(u32::from_ne_bytes)
+            else {
+                continue;
+            };
+            if message_index != index {
+                continue;
+            }
+            let family = payload[0];
+            let prefix_len = payload[1];
+            let mut local = None;
+            let mut peer = None;
+            for (kind, value) in attributes(payload, 8) {
+                match kind {
+                    IFA_LOCAL => local = Some(value),
+                    IFA_ADDRESS => peer = Some(value),
+                    _ => {}
+                }
+            }
+            if let Some(prefix) = local
+                .or(peer)
+                .and_then(|bytes| decode_prefix(family, bytes, prefix_len))
+            {
+                out.push(prefix);
+            }
+        }
+        out.sort_by_key(ToString::to_string);
+        out.dedup();
+        Ok(out)
     }
 
     // --- routes ----------------------------------------------------------

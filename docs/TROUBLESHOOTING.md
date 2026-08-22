@@ -254,6 +254,33 @@ Manual `resolvectl revert` commands are in `docs/RECOVERY.md`.
 
 ---
 
+## IPv6 TUN routing is unavailable
+
+**Symptom.** Enabling a dual-stack or IPv6-only TUN is refused with:
+
+```text
+IPv6 TUN routing is unavailable because the host kernel has IPv6 disabled.
+IPv4 remains available.
+```
+
+Check the same evidence used by `xraytui doctor`:
+
+```sh
+cat /proc/net/if_inet6
+cat /proc/sys/net/ipv6/conf/all/disable_ipv6
+cat /proc/sys/net/ipv6/conf/default/disable_ipv6
+```
+
+Both sysctl values must be `0` before a newly created interface can receive an
+IPv6 address. The helper refuses before creating the TUN; it does not silently
+downgrade the request. Either enable IPv6 at the host/network-namespace level,
+or keep `tun.ipv6 = false`. With the default
+`tun.disabled_family_policy = "block"`, the latter still installs an IPv6
+blackhole so an available host route cannot leak traffic. Set the policy to
+`"direct"` only when direct IPv6 is intentional.
+
+---
+
 ## Stale nftables rules or routes after a crash
 
 **Symptom.** Traffic is blackholed, or routed into a device that no longer

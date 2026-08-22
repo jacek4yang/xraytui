@@ -381,3 +381,26 @@ connection-schema paths and active v2rayN/v2rayNG serializers. A changed path
 turns `cargo xtask upstream-check` into a mandatory model/parser/serializer/
 compiler/fixture review. Round-trip identity and independent QR decode tests are
 the executable contract; `docs/SHARING.md` is the user-facing contract.
+
+---
+
+## D-021 — Disabled TUN families are explicit and symmetric
+
+**Context.** The original request carried only `blackhole_ipv6`. That made the
+default IPv4-only mode fail closed, but an IPv6-only configuration had no
+equivalent IPv4 decision. Inferring a family from an include prefix also let a
+contradictory update alter routing semantics.
+
+**Decision.** The netd protocol carries independent IPv4 and IPv6 blackhole
+decisions and the lease records which families were configured on the TUN.
+Disabled families default to `block`. `disabled_family_policy = "direct"` is an
+explicit expert opt-in and cannot be combined with the global block-on-failure
+policy. Include prefixes for an absent family are rejected before live routes
+are flushed. The netd protocol version is 2.
+
+**Consequences.** IPv4-only and IPv6-only modes have the same no-leak semantics;
+mixed proxy/direct modes remain possible only when named explicitly. Old lease
+files deserialize the new family flags as unknown and recover them from the
+live TUN's netlink address state; a new session records authoritative flags
+during `CreateTun`. A caller/helper version mismatch is refused instead of
+guessing the missing policy.

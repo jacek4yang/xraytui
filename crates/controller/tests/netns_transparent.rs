@@ -309,6 +309,7 @@ fn scenario_m_two_instances_of_one_executable_take_two_exits_at_once() {
                 exclude: Vec::new(),
                 bypass_endpoints: Vec::new(),
                 bypass_private: false,
+                blackhole_ipv4: false,
                 blackhole_ipv6: true,
             },
         ))
