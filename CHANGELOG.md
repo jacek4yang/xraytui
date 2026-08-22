@@ -17,6 +17,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sockets and prove kill-switch drops with an nftables counter.
 * `doctor` now reports whether IPv6 is enabled for newly created TUN interfaces
   and names the relevant proc/sysctl evidence when it is not.
+* Deterministic real-Xray IPv6 fixtures for IPv6 proxy endpoints, concurrent
+  IPv4/IPv6 profiles, a two-hop IPv6 chain, and split AAAA DNS through a two-hop
+  IPv6 chain. The DNS fixture speaks real DNS wire format and observes every
+  intermediate socket.
+* Upstream compatibility watches for Xray's DNS protobuf, JSON loader,
+  nameserver selection/tagging and routed DNS-over-TCP implementation on both
+  stable and preview, bringing the current Xray source watch to 43 paths.
 
 ### Fixed
 
@@ -35,6 +42,22 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Pull-request package builds now use the disposable checked-out source
   archive's checksum without changing the committed PKGBUILD, which remains
   pinned to the immutable published release artifact.
+* `proxy_servers` now actually traverse the default profile instead of sharing
+  one direct DNS tag with every resolver. Proxied DNS failure is fail-closed by
+  default, direct fallback requires `proxy_failure_policy = "direct"`, and
+  direct-domain matching uses upstream `disableFallbackIfMatch` rather than the
+  weaker `skipFallback` assumption. Schema 1 migrates safely to schema 2 so
+  older binaries cannot silently ignore the policy; every TOML transformation
+  is rendered before the first private atomic replacement and a uniquely named
+  full backup remains available for recovery.
+* DNS compilation no longer invents an implicit `localhost` resolver. Empty
+  resolver sets, direct scopes without a direct resolver, and direct-fallback
+  policy without a direct resolver are actionable errors instead of ambiguous
+  routing.
+* A resolver declared in `proxy_servers` is refused when the default profile,
+  its configured fallback, or a selected group's fallback can route direct.
+  The same check now runs before hot selector mutations, so switching a live
+  default profile cannot bypass the no-leak compiler policy.
 
 ## [1.1.0] - 2026-08-21
 

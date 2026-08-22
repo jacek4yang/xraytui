@@ -28,7 +28,8 @@ generation. First path segments are reserved
 | `inbound/system/api` | inbound | The gRPC commander (`api.tag`). |
 | `inbound/system/dns` | inbound | Local DNS listener, when one is configured. |
 | `inbound/system/tun` | inbound | The shared system TUN inbound. |
-| `inbound/system/dns-query` | `dns.tag` | Applied by Xray to queries the DNS module itself emits, so they can be routed explicitly. |
+| `inbound/system/dns-query/direct` | per-nameserver `tag` / `dns.tag` | Applied by Xray to direct nameserver traffic. |
+| `inbound/system/dns-query/proxy` | per-nameserver `tag` | Applied by Xray to proxied nameserver traffic. |
 
 ### Generated tags
 
@@ -91,31 +92,35 @@ semantics.
 
 | # | `ruleTag` | Conditions | Target | Emitted when |
 |---|---|---|---|---|
-| 1 | `rule/system/core-bypass` | `process: ["self/"]` | `outboundTag: control/direct` | always |
-| 2a | `rule/system/dns-intercept` | `inboundTag: [inbound/system/tun, inbound/system/dns]`, `port: "53"`, `network: "tcp,udp"` | `outboundTag: control/dns` | DNS module enabled and at least one of those inbounds exists |
-| 2b | `rule/system/dns-direct` | `inboundTag: [inbound/system/dns-query]` | `outboundTag: control/direct` | DNS module enabled |
-| 3 | `rule/profile/<id>/inbound` | `inboundTag:` that profile's socks/http/transparent inbounds | `balancerTag: profile/<id>/selector` | per enabled profile that has at least one listener |
-| 4 | `rule/group/<id>/stage2` | `inboundTag: [group/<id>/entry]` | `balancerTag: group/<id>/balancer` | per group |
-| 5 | `rule/system/private-direct` | `ip: ["geoip:private"]` | `outboundTag: control/direct` | `bypass_private_networks` and a TUN inbound exists |
-| 6 | `rule/user/<id>` | the rule's own matcher | `outboundTag: control/block` | user routing rules whose action is `block`, sorted by `(priority, id)` |
-| 7 | `rule/app/<id>` | `process:` the rule's matchers | per the rule's action | application rules, sorted by `(priority, id)` |
-| 8 | `rule/user/<id>` | the rule's own matcher | per the rule's action | remaining user routing rules, sorted by `(priority, id)` |
-| 9 | `rule/system/mode-fallback` | none, so `network: "tcp,udp"` | see below | always |
+| 1a | `rule/system/dns-upstream-direct` | `inboundTag: [inbound/system/dns-query/direct]` | `outboundTag: control/direct` | DNS module enabled |
+| 1b | `rule/system/dns-upstream-proxy` | `inboundTag: [inbound/system/dns-query/proxy]` | `balancerTag: profile/<default>/selector` | proxied resolvers configured |
+| 2 | `rule/system/core-bypass` | `process: ["self/"]` | `outboundTag: control/direct` | always |
+| 3 | `rule/system/dns-intercept` | `inboundTag: [inbound/system/tun, inbound/system/dns]`, `port: "53"`, `network: "tcp,udp"` | `outboundTag: control/dns` | DNS module enabled and at least one of those inbounds exists |
+| 4 | `rule/profile/<id>/inbound` | `inboundTag:` that profile's socks/http/transparent inbounds | `balancerTag: profile/<id>/selector` | per enabled profile that has at least one listener |
+| 5 | `rule/group/<id>/stage2` | `inboundTag: [group/<id>/entry]` | `balancerTag: group/<id>/balancer` | per group |
+| 6 | `rule/system/private-direct` | `ip: ["geoip:private"]` | `outboundTag: control/direct` | `bypass_private_networks` and a TUN inbound exists |
+| 7 | `rule/user/<id>` | the rule's own matcher | `outboundTag: control/block` | user routing rules whose action is `block`, sorted by `(priority, id)` |
+| 8 | `rule/app/<id>` | `process:` the rule's matchers | per the rule's action | application rules, sorted by `(priority, id)` |
+| 9 | `rule/user/<id>` | the rule's own matcher | per the rule's action | remaining user routing rules, sorted by `(priority, id)` |
+| 10 | `rule/system/mode-fallback` | none, so `network: "tcp,udp"` | see below | always |
 
-Three properties of that order are deliberate:
+Four properties of that order are deliberate:
 
-- **Rule 1 first.** Without it the core dials its own uplink through its own TUN
-  and loops. `process: ["self/"]` is matched by PID against the Xray process
-  itself.
-- **Rule 6 before rule 8.** A user `block` is never overtaken by a later, broader
+- **DNS upstream tags precede the self bypass.** Xray's DNS client carries no
+  ordinary application inbound, so its exact per-nameserver route must win
+  before the broad direct rule for the Xray process.
+- **The self bypass precedes ordinary traffic.** Without it the core dials its
+  own uplink through its own TUN and loops. `process: ["self/"]` is matched by
+  PID against the Xray process itself.
+- **Rule 7 before rule 9.** A user `block` is never overtaken by a later, broader
   proxy rule, regardless of the priority numbers the user chose.
-- **Rule 9 always present.** Xray's implicit "first outbound" fallback is never
+- **Rule 10 always present.** Xray's implicit "first outbound" fallback is never
   relied on. Since `control/block` is the first outbound, relying on it would
   drop everything, and an explicit terminal rule is reviewable.
 
-Rule 9's target depends on the system mode:
+Rule 10's target depends on the system mode:
 
-| `mode` | Rule 9 target |
+| `mode` | Rule 10 target |
 |---|---|
 | `off`, `direct` | `outboundTag: control/direct` |
 | `global`, `rule` | `balancerTag: profile/<default>/selector`, or `outboundTag: control/direct` when no default profile is set |

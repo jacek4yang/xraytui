@@ -229,10 +229,35 @@ not treated as evidence that the generated JSON is invalid.
 
 `dns.servers[]` accepts `address`, `port`, `domains`, `expectedIPs`,
 `unexpectedIPs`, `skipFallback`, `queryStrategy`, `tag`, `timeoutMs`,
-`disableCache`, `finalQuery`, `clientIp`. The `dokodemo`-style DNS inbound is
-`protocol: "dns"` with `{network, address, port, nonIPQuery, blockTypes}`;
-`nonIPQuery` accepts `drop` / `skip` / `reject`, which is how non-A/AAAA queries
-are handled deterministically.
+`disableCache`, `finalQuery`, `clientIp`. Xray's `dns` proxy handler accepts
+`{network, address, port, nonIPQuery, blockTypes}`; xraytui feeds that handler
+from a local `dokodemo-door` and the `control/dns` outbound. `nonIPQuery` accepts
+`drop` / `skip` / `reject`, which is how non-A/AAAA queries are handled
+deterministically.
+
+The stable and preview source were re-audited on 2026-08-22. `app/dns/dns.go`
+selects each `NameServer.Tag` over the global `Config.Tag`, and
+`app/dns/nameserver.go` installs that value as `session.Inbound.Tag` before the
+resolver dispatches its socket. A normal routing `inboundTag` rule can therefore
+send different nameservers to direct and profile/chain outbounds. This is proven
+against both real binaries by a loopback DNS-over-TCP fixture: an AAAA query
+traverses both members of an IPv6 chain, while a `full:` direct-domain query
+reaches only the direct fixture.
+
+Two fallback fields have different semantics in upstream source. Per-server
+`skipFallback` excludes that server from the generic fallback set; it does not
+mean “a matched-domain failure stops here.” Global `disableFallbackIfMatch`
+provides the latter guarantee. xraytui emits both for direct-domain servers and
+omits generic direct servers whenever proxied DNS is configured with the default
+`proxy_failure_policy = "block"`. A real-core failure test points the proxied
+resolver at a closed IPv6 TCP port, observes the configured proxy connection,
+and observes zero connections at the available direct resolver.
+
+The compiler additionally refuses implicit empty resolver policy and rejects a
+`proxy_servers` route whose default profile or group/profile fallback can select
+direct traffic. Controller hot-selector changes compile the candidate before
+calling `OverrideBalancerTarget`, closing the runtime mutation path around that
+check.
 
 ## Verified userland semantics
 

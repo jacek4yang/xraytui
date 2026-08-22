@@ -404,3 +404,37 @@ files deserialize the new family flags as unknown and recover them from the
 live TUN's netlink address state; a new session records authoritative flags
 during `CreateTun`. A caller/helper version mismatch is refused instead of
 guessing the missing policy.
+
+---
+
+## D-022 — Proxied DNS is tagged per resolver and fails closed
+
+**Context.** Xray's DNS config has a global `tag` and a per-nameserver `tag`.
+The earlier compiler emitted one global tag routed to direct, so entries named
+`proxy_servers` were not proxied. It also treated `skipFallback` as “do not try
+another server after a matched-domain failure,” which is not its upstream
+meaning.
+
+**Decision.** Direct and proxied nameservers receive distinct inbound tags.
+Their exact routing rules precede the general Xray-process bypass; direct goes
+to `control/direct`, while proxied DNS goes to the enabled default profile's
+selector and can therefore traverse a node, group, or chain. Missing policy is
+a compile error, not a direct fallback. Generic direct resolvers are omitted
+when proxied resolvers exist unless `dns.proxy_failure_policy = "direct"` was
+explicitly selected. Direct-domain entries also enable upstream
+`disableFallbackIfMatch`. No implicit `localhost` resolver is synthesized:
+empty resolver sets and direct policy without an explicit direct resolver are
+compile errors. A profile used for proxied DNS must not have an effective direct
+target or profile/group fallback. Hot selector changes compile the candidate
+before the runtime API mutation, so the same invariant holds without a restart.
+
+**Compatibility and migration.** This is a safety-semantic configuration
+change, so the schema advances from 1 to 2. Migration creates the normal private
+backup and writes `proxy_failure_policy = "block"`; an old binary refuses schema
+2 instead of ignoring the new field and restoring the former direct behavior.
+
+**Evidence.** Stable and preview Xray both accept and execute the generated
+configuration. A synthetic AAAA resolver is reached through every hop of a
+two-hop IPv6 chain; an independent direct resolver handles only its scoped
+domain; a closed proxied resolver causes failure with zero direct-resolver
+connections.

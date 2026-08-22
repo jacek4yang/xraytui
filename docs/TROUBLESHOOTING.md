@@ -20,6 +20,7 @@ If networking is already broken and xraytui is not running, go straight to
 | Application rule does not match | The socket is owned by a helper process | Use `xraytui exec --profile` |
 | TUN refuses to come up | netd unreachable, group membership, table/mark conflict, unprivileged attach not permitted | `xraytui tun plan`, then `doctor` |
 | DNS not restored | Backend failed, or the daemon died before teardown | `resolvectl status`, then `doctor --repair` |
+| Proxied DNS will not compile or returns failure | No enabled default profile, the selected route is down, or a hostname-based first hop depends on the same DNS listener | Inspect the default profile; keep the default fail-closed policy and verify bootstrap resolution |
 | Stale nftables or routes after a crash | Lease expired with `failure_policy = "block"`, or netd was also killed | `xraytui-netd --recover` |
 | `address already in use` | Another process, or a previous run, holds the listener port | Find the holder before changing the port |
 | Node share says `lossy` or `unsupported` | A standard single-node link cannot preserve required semantics | Export Xray JSON, or inspect with `--allow-lossy` before explicitly accepting loss |
@@ -251,6 +252,28 @@ xraytui-netd --recover            # reconcile when the daemon is gone
 
 Restoration is idempotent, so running the repair paths more than once is safe.
 Manual `resolvectl revert` commands are in `docs/RECOVERY.md`.
+
+## Proxied DNS fails
+
+`dns.proxy_servers` uses the enabled default profile. A missing, disabled or
+direct-capable default profile is a compile error; direct-capable includes a
+profile or selected group fallback that can choose `direct`. Resolver failure
+returns DNS failure under the default `proxy_failure_policy = "block"`. The
+daemon never silently retries the same query through `direct_servers`. Set the
+policy to `"direct"` only when that privacy/availability tradeoff is intentional
+and configure the direct resolver explicitly.
+
+DNS also refuses to start when both resolver lists are empty, when
+`direct_domains` has no direct resolver, or when direct fallback was requested
+without one. These errors prevent a scoped query from silently crossing routes
+or inheriting the host resolver by accident.
+
+If the default profile's first proxy hop is a hostname and the host resolver has
+also been pointed at xraytui, the proxy route may depend on the query it is meant
+to carry. Use an IP-literal bootstrap hop or retain an independent host resolver.
+Automatic detection of that dependency cycle is a documented remaining
+limitation; repeated retry or an unannounced direct route is not used as a
+fallback.
 
 ---
 
