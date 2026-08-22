@@ -935,7 +935,7 @@ mod tests {
             .await
             .expect_err("the selector fast path must run compiler policy checks");
         assert!(
-            error.to_string().contains("can select direct traffic"),
+            error.to_string().contains("direct target or fallback"),
             "{error}"
         );
         assert!(

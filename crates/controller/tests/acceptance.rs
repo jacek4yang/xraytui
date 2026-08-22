@@ -769,6 +769,178 @@ async fn split_dns_uses_direct_and_proxied_ipv6_chain_paths_without_crossing_the
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hostname_first_hop_bootstraps_directly_then_carries_dns_through_the_proxy() {
+    let _binary = require_xray!("hostname bootstrap for proxied DNS");
+    let proxy = MockEgress::start_forwarding("dns-bootstrap-proxy")
+        .await
+        .expect("forwarding proxy");
+    let bootstrap_dns = TcpDnsFixture::start_on(
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+    )
+    .await
+    .expect("bootstrap DNS fixture");
+    let proxied_answer: IpAddr = "192.0.2.53".parse().expect("proxied answer");
+    let proxied_dns =
+        TcpDnsFixture::start_on(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), proxied_answer)
+            .await
+            .expect("proxied DNS fixture");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let profile_port = free_port().expect("profile port");
+    let dns_listen = SocketAddr::from(([127, 0, 0, 1], free_udp_port()));
+
+    let mut proxy_node = fixtures::socks_node(
+        "dns-bootstrap-proxy",
+        "DNS hostname bootstrap proxy",
+        proxy.socks_addr(),
+    );
+    // Xray preserves endpoint spelling and its `full:` DNS matcher is
+    // case-sensitive, so this mixed-case name guards exact-rule fidelity.
+    proxy_node.endpoint.address = "Bootstrap-Proxy.TEST".into();
+    let mut state = DesiredState::default();
+    fixtures::add_node(&mut state, proxy_node);
+    let profile_id = ProfileId::new("dns-bootstrap").expect("profile id");
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks(
+            "dns-bootstrap",
+            Target::Node {
+                id: NodeId::new("dns-bootstrap-proxy").expect("node id"),
+            },
+            profile_port,
+        ),
+    );
+    state.default_profile = Some(profile_id);
+
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: Vec::new(),
+            proxy_servers: vec![format!("tcp://{}", proxied_dns.address())],
+            bootstrap_servers: vec![format!("tcp://{}", bootstrap_dns.address())],
+            direct_domains: Vec::new(),
+            query_strategy: "UseIPv4".into(),
+            listen: Some(dns_listen),
+            allow_direct_fallback: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut engine = engine_for_with_compile(state, dir.path(), options).await;
+    engine.rebuild_and_start().await.expect("start real Xray");
+
+    assert_eq!(
+        dns_answer(dns_listen, "through-proxy.test", DnsRecordType::A).await,
+        proxied_answer
+    );
+    assert!(
+        bootstrap_dns.query_count() >= 1,
+        "the first-hop hostname was not resolved by the bootstrap resolver"
+    );
+    assert!(
+        proxied_dns.query_count() >= 1,
+        "the user DNS query did not reach the proxied resolver"
+    );
+    assert!(
+        proxy.connection_count() >= 1,
+        "the proxied resolver was not reached through the selected profile"
+    );
+    engine.stop_core().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_hostname_bootstrap_never_uses_an_overlapping_direct_resolver() {
+    let _binary = require_xray!("fail-closed hostname bootstrap for proxied DNS");
+    let proxy = MockEgress::start_forwarding("dns-bootstrap-must-not-connect")
+        .await
+        .expect("forwarding proxy");
+    let direct_dns = TcpDnsFixture::start_on(
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+    )
+    .await
+    .expect("ordinary direct DNS fixture");
+    let proxied_dns = TcpDnsFixture::start_on(
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        "192.0.2.54".parse().expect("proxied answer"),
+    )
+    .await
+    .expect("proxied DNS fixture");
+    let bootstrap_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve unavailable bootstrap address");
+    let unavailable_bootstrap = bootstrap_listener.local_addr().expect("bootstrap address");
+    drop(bootstrap_listener);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let profile_port = free_port().expect("profile port");
+    let dns_listen = SocketAddr::from(([127, 0, 0, 1], free_udp_port()));
+    let mut proxy_node = fixtures::socks_node(
+        "dns-bootstrap-failure",
+        "DNS bootstrap failure proxy",
+        proxy.socks_addr(),
+    );
+    proxy_node.endpoint.address = "bootstrap-failure.test".into();
+    let mut state = DesiredState::default();
+    fixtures::add_node(&mut state, proxy_node);
+    let profile_id = ProfileId::new("dns-bootstrap-failure").expect("profile id");
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks(
+            "dns-bootstrap-failure",
+            Target::Node {
+                id: NodeId::new("dns-bootstrap-failure").expect("node id"),
+            },
+            profile_port,
+        ),
+    );
+    state.default_profile = Some(profile_id);
+
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: vec![format!("tcp://{}", direct_dns.address())],
+            proxy_servers: vec![format!("tcp://{}", proxied_dns.address())],
+            bootstrap_servers: vec![format!("tcp://{unavailable_bootstrap}")],
+            direct_domains: vec!["full:bootstrap-failure.test".into()],
+            query_strategy: "UseIPv4".into(),
+            listen: Some(dns_listen),
+            allow_direct_fallback: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut engine = engine_for_with_compile(state, dir.path(), options).await;
+    engine.rebuild_and_start().await.expect("start real Xray");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(8),
+        query_dns(dns_listen, "must-fail.test", DnsRecordType::A),
+    )
+    .await;
+    assert!(
+        !matches!(outcome, Ok(Ok(_))),
+        "a failed bootstrap unexpectedly produced a DNS answer"
+    );
+    assert_eq!(
+        direct_dns.query_count(),
+        0,
+        "bootstrap failure crossed into an overlapping ordinary direct resolver"
+    );
+    assert_eq!(
+        proxied_dns.query_count(),
+        0,
+        "the proxied resolver was reached before its first-hop dependency existed"
+    );
+    assert_eq!(
+        proxy.connection_count(),
+        0,
+        "Xray connected to the proxy without resolving its hostname"
+    );
+    engine.stop_core().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn failed_proxied_dns_does_not_fall_back_to_a_direct_resolver() {
     let _binary = require_xray!("fail-closed proxied DNS");
     let Some(proxy) = ipv6_egress("dns-failure-proxy", true).await else {

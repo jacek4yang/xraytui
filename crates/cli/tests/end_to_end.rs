@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use xraytui_test_support::{MockEgress, free_port};
+use xraytui_domain::{DesiredState, NodeId, ProfileId, Target};
+use xraytui_test_support::{MockEgress, fixtures, free_port};
 
 fn have_xray() -> bool {
     std::env::var("XRAYTUI_TEST_XRAY").is_ok_and(|p| Path::new(&p).is_file())
@@ -226,11 +227,12 @@ fn daemon_startup_migrates_schema_one_before_loading_it() {
         String::from_utf8_lossy(&output.stderr)
     );
     let migrated = std::fs::read_to_string(&path).expect("migrated config");
-    assert!(migrated.contains("schema_version = 2"), "{migrated}");
+    assert!(migrated.contains("schema_version = 3"), "{migrated}");
     assert!(
         migrated.contains("proxy_failure_policy = \"block\""),
         "{migrated}"
     );
+    assert!(migrated.contains("bootstrap_servers = []"), "{migrated}");
     let backup = std::fs::read_dir(root.path())
         .expect("root entries")
         .filter_map(Result::ok)
@@ -242,6 +244,52 @@ fn daemon_startup_migrates_schema_one_before_loading_it() {
         })
         .expect("migration backup");
     assert!(backup.path().join("config.toml").is_file());
+}
+
+#[test]
+fn daemon_check_refuses_a_hostname_proxied_dns_route_without_bootstrap_resolvers() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = xraytui_config::Paths::rooted_at(root.path());
+    paths.ensure().expect("configuration directories");
+    let mut config = xraytui_config::ConfigFile::default();
+    config.dns.enabled = true;
+    config.dns.direct_servers.clear();
+    config.dns.direct_domains.clear();
+    config.dns.proxy_servers = vec!["tcp://192.0.2.53".into()];
+    xraytui_config::store_toml(&paths.config_file(), &config).expect("config");
+
+    let mut state = DesiredState::default();
+    let mut node = fixtures::socks_node(
+        "bootstrap-node",
+        "Bootstrap node",
+        "127.0.0.1:1080".parse().expect("endpoint"),
+    );
+    node.endpoint.address = "proxy-bootstrap.test".into();
+    fixtures::add_node(&mut state, node);
+    let profile_id = ProfileId::new("bootstrap").expect("profile id");
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks(
+            "bootstrap",
+            Target::Node {
+                id: NodeId::new("bootstrap-node").expect("node id"),
+            },
+            10_880,
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    xraytui_config::store::save(&paths, &state).expect("policy");
+
+    let output = Command::new(binary("xraytuid"))
+        .arg("--root")
+        .arg(root.path())
+        .arg("--check")
+        .output()
+        .expect("run xraytuid check");
+    assert!(!output.status.success(), "unsafe policy was accepted");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("hostname bootstrap"), "{stderr}");
+    assert!(stderr.contains("bootstrap_servers"), "{stderr}");
 }
 
 #[test]

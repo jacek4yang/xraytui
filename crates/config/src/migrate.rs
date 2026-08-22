@@ -27,12 +27,20 @@ pub struct Migration {
 
 /// Every known migration, in order.
 ///
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    from: 1,
-    to: 2,
-    description: "make proxied DNS failure policy explicit and fail closed",
-    apply: migrate_v1_to_v2,
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        from: 1,
+        to: 2,
+        description: "make proxied DNS failure policy explicit and fail closed",
+        apply: migrate_v1_to_v2,
+    },
+    Migration {
+        from: 2,
+        to: 3,
+        description: "make hostname bootstrap resolvers explicit",
+        apply: migrate_v2_to_v3,
+    },
+];
 
 fn migrate_v1_to_v2(table: &mut toml::Table) -> Result<(), String> {
     let Some(dns) = table.get_mut("dns") else {
@@ -43,6 +51,18 @@ fn migrate_v1_to_v2(table: &mut toml::Table) -> Result<(), String> {
         .ok_or_else(|| "[dns] must be a TOML table".to_owned())?;
     dns.entry("proxy_failure_policy".to_owned())
         .or_insert_with(|| toml::Value::String("block".to_owned()));
+    Ok(())
+}
+
+fn migrate_v2_to_v3(table: &mut toml::Table) -> Result<(), String> {
+    let Some(dns) = table.get_mut("dns") else {
+        return Ok(());
+    };
+    let dns = dns
+        .as_table_mut()
+        .ok_or_else(|| "[dns] must be a TOML table".to_owned())?;
+    dns.entry("bootstrap_servers".to_owned())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
     Ok(())
 }
 
@@ -360,9 +380,44 @@ mod tests {
             Some("block")
         );
         assert!(
+            table
+                .get("dns")
+                .and_then(toml::Value::as_table)
+                .and_then(|dns| dns.get("bootstrap_servers"))
+                .and_then(toml::Value::as_array)
+                .is_some_and(Vec::is_empty)
+        );
+        assert!(
             plan.backup_dir.join("config.toml").is_file(),
             "migration must create a backup"
         );
+    }
+
+    #[test]
+    fn v2_dns_configuration_migrates_to_explicit_empty_bootstrap_resolvers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "schema_version = 2\n\n[dns]\nproxy_servers = [\"tcp://resolver.example:53\"]\n",
+        )
+        .expect("write");
+
+        let plan = run(temp.path()).expect("run");
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].from, 2);
+        assert_eq!(plan.steps[0].to, 3);
+        let migrated = std::fs::read_to_string(&path).expect("read");
+        let table: toml::Table = toml::from_str(&migrated).expect("toml");
+        assert!(
+            table
+                .get("dns")
+                .and_then(toml::Value::as_table)
+                .and_then(|dns| dns.get("bootstrap_servers"))
+                .and_then(toml::Value::as_array)
+                .is_some_and(Vec::is_empty)
+        );
+        assert!(plan.backup_dir.join("config.toml").is_file());
     }
 
     #[test]

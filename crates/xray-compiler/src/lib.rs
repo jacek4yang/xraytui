@@ -44,7 +44,10 @@
 pub mod outbound;
 pub mod tags;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use serde_json::json;
 use xraytui_domain::{
@@ -155,6 +158,9 @@ pub struct DnsOptions {
     pub direct_servers: Vec<String>,
     /// Resolvers reached through the default profile.
     pub proxy_servers: Vec<String>,
+    /// Direct resolvers reserved for resolving hostname-based first hops that
+    /// must be reached before `proxy_servers` can carry any traffic.
+    pub bootstrap_servers: Vec<String>,
     /// Permit proxied resolvers to fall back to direct resolvers after failure.
     pub allow_direct_fallback: bool,
     /// Domains resolved by the direct servers regardless of order.
@@ -173,6 +179,7 @@ impl Default for DnsOptions {
             enabled: false,
             direct_servers: vec!["localhost".into()],
             proxy_servers: Vec::new(),
+            bootstrap_servers: Vec::new(),
             allow_direct_fallback: false,
             direct_domains: Vec::new(),
             query_strategy: "UseIP".into(),
@@ -275,6 +282,7 @@ pub fn compile(state: &DesiredState, options: &CompileOptions) -> Result<Compile
         .collect();
 
     let mut builder = Builder::new(state, options);
+    builder.prepare_dns_policy()?;
     builder.build_outbounds()?;
     builder.build_balancers();
     builder.build_inbounds();
@@ -358,6 +366,8 @@ struct Builder<'a> {
     owned_tags: BTreeSet<String>,
     selectable_tags: BTreeSet<String>,
     warnings: Vec<String>,
+    dns_bootstrap_domains: BTreeSet<String>,
+    dns_bootstrap_strategies: BTreeMap<String, String>,
 }
 
 impl<'a> Builder<'a> {
@@ -377,11 +387,171 @@ impl<'a> Builder<'a> {
             owned_tags: BTreeSet::new(),
             selectable_tags: BTreeSet::new(),
             warnings: Vec::new(),
+            dns_bootstrap_domains: BTreeSet::new(),
+            dns_bootstrap_strategies: BTreeMap::new(),
         }
     }
 
     fn own(&mut self, tag: &str) {
         self.owned_tags.insert(tag.to_owned());
+    }
+
+    fn prepare_dns_policy(&mut self) -> Result<(), CompileError> {
+        self.validate_dns_policy()?;
+        if !self.options.dns.enabled {
+            return Ok(());
+        }
+        for server in &self.options.dns.bootstrap_servers {
+            validate_bootstrap_server(server, self.options.dns.listen)?;
+        }
+        if self.options.dns.proxy_servers.is_empty() {
+            if !self.options.dns.bootstrap_servers.is_empty() {
+                self.warnings.push(
+                    "[dns.bootstrap-unused] bootstrap_servers is configured but proxy_servers is empty; the bootstrap resolver set is not emitted"
+                        .into(),
+                );
+            }
+            return Ok(());
+        }
+
+        let (profile_id, profile) = self.dns_proxy_profile()?;
+        let profile_id = profile_id.clone();
+        let target = profile.target.clone();
+        let fallback = (profile.kill_switch != KillSwitch::Block)
+            .then(|| profile.fallback.clone())
+            .flatten();
+        let mut seen_groups = BTreeSet::new();
+        self.collect_bootstrap_target(&target, &mut seen_groups, &profile_id)?;
+        if let Some(fallback) = &fallback {
+            self.collect_bootstrap_target(fallback, &mut seen_groups, &profile_id)?;
+        }
+
+        if !self.dns_bootstrap_domains.is_empty() && self.options.dns.bootstrap_servers.is_empty() {
+            let domains = self
+                .dns_bootstrap_domains
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CompileError::DnsPolicy(format!(
+                "proxied DNS through default profile '{profile_id}' needs hostname bootstrap for {domains}, but bootstrap_servers is empty; configure at least one directly reachable IP-literal resolver in [dns].bootstrap_servers, or use an IP-literal first hop (TLS/REALITY server_name may remain a hostname)"
+            )));
+        }
+
+        if !self.dns_bootstrap_domains.is_empty() {
+            self.warnings.push(format!(
+                "[dns.bootstrap] proxied DNS resolves {} first-hop hostname(s) through explicit direct bootstrap_servers; those first-hop dials use a forced-IP strategy and fail closed",
+                self.dns_bootstrap_domains.len()
+            ));
+        }
+        Ok(())
+    }
+
+    fn dns_proxy_profile(&self) -> Result<(&ProfileId, &EgressProfile), CompileError> {
+        let profile_id = self.state.default_profile.as_ref().ok_or_else(|| {
+            CompileError::DnsPolicy(
+                "proxy_servers requires an enabled default profile; configure one or remove the proxied resolvers"
+                    .into(),
+            )
+        })?;
+        let profile = self
+            .state
+            .profiles
+            .get(profile_id)
+            .filter(|candidate| candidate.enabled)
+            .ok_or_else(|| {
+                CompileError::DnsPolicy(format!(
+                    "proxy_servers resolves through default profile '{profile_id}', but that profile is missing or disabled"
+                ))
+            })?;
+        Ok((profile_id, profile))
+    }
+
+    fn collect_bootstrap_target(
+        &mut self,
+        target: &Target,
+        seen_groups: &mut BTreeSet<GroupId>,
+        profile_id: &ProfileId,
+    ) -> Result<(), CompileError> {
+        match target {
+            Target::Node { id } => {
+                let node = self.state.nodes.get(id).ok_or_else(|| {
+                    CompileError::DnsPolicy(format!(
+                        "default DNS profile references missing bootstrap node '{id}'"
+                    ))
+                })?;
+                self.collect_bootstrap_node(node, tags::node(id))?;
+            }
+            Target::Chain { id } => {
+                let chain = self.state.chains.get(id).filter(|chain| chain.enabled).ok_or_else(
+                    || {
+                        CompileError::DnsPolicy(format!(
+                            "default DNS profile references missing or disabled bootstrap chain '{id}'"
+                        ))
+                    },
+                )?;
+                let first = chain.hops.first().ok_or_else(|| {
+                    CompileError::DnsPolicy(format!(
+                        "default DNS profile chain '{id}' has no first hop"
+                    ))
+                })?;
+                let node = self.state.nodes.get(first).ok_or_else(|| {
+                    CompileError::DnsPolicy(format!(
+                        "default DNS profile chain '{id}' references missing first hop '{first}'"
+                    ))
+                })?;
+                let tag = if chain.terminal_index() == Some(0) {
+                    tags::chain_terminal(id)
+                } else {
+                    tags::chain_hop(id, 0)
+                };
+                self.collect_bootstrap_node(node, tag)?;
+            }
+            Target::Group { id } => {
+                if !seen_groups.insert(id.clone()) {
+                    return Err(CompileError::DnsPolicy(format!(
+                        "default DNS profile contains a bootstrap dependency cycle at group '{id}'"
+                    )));
+                }
+                let group = self.state.groups.get(id).ok_or_else(|| {
+                    CompileError::DnsPolicy(format!(
+                        "default DNS profile references missing bootstrap group '{id}'"
+                    ))
+                })?;
+                let fallback = group.fallback.clone();
+                for member in self.state.group_members(id) {
+                    self.collect_bootstrap_target(&member, seen_groups, profile_id)?;
+                }
+                if let Some(fallback) = &fallback {
+                    self.collect_bootstrap_target(fallback, seen_groups, profile_id)?;
+                }
+                seen_groups.remove(id);
+            }
+            Target::Direct => {
+                return Err(CompileError::DnsPolicy(format!(
+                    "proxied DNS default profile '{profile_id}' contains an explicit direct target or fallback; choose a fail-closed proxy target or use direct_servers explicitly"
+                )));
+            }
+            Target::Block => {}
+        }
+        Ok(())
+    }
+
+    fn collect_bootstrap_node(
+        &mut self,
+        node: &xraytui_domain::Node,
+        tag: String,
+    ) -> Result<(), CompileError> {
+        let domains = bootstrap_domains(node)?;
+        if domains.is_empty() {
+            return Ok(());
+        }
+        self.dns_bootstrap_domains.extend(domains);
+        self.dns_bootstrap_strategies.insert(
+            tag,
+            forced_domain_strategy(node, &self.options.dns.query_strategy)?,
+        );
+        Ok(())
     }
 
     // ---------------------------------------------------------------- outbounds
@@ -423,11 +593,12 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let tag = tags::node(id);
-            let built = outbound::build_with_dialect(
+            let built = outbound::build_with_dialect_and_domain_strategy(
                 node,
                 &tag,
                 None,
                 self.options.mkcp_finalmask_dialect,
+                self.dns_bootstrap_strategies.get(&tag).map(String::as_str),
             )?;
             self.own(&tag);
             self.selectable_tags.insert(tag);
@@ -466,11 +637,12 @@ impl<'a> Builder<'a> {
                 } else {
                     tags::chain_hop(id, index)
                 };
-                let built = outbound::build_with_dialect(
+                let built = outbound::build_with_dialect_and_domain_strategy(
                     node,
                     &tag,
                     previous.as_deref(),
                     self.options.mkcp_finalmask_dialect,
+                    self.dns_bootstrap_strategies.get(&tag).map(String::as_str),
                 )?;
                 self.own(&tag);
                 if is_terminal {
@@ -758,7 +930,6 @@ impl<'a> Builder<'a> {
     // -------------------------------------------------------------------- rules
 
     fn build_rules(&mut self) -> Result<(), CompileError> {
-        self.validate_dns_policy()?;
         self.build_dns_config();
 
         // 1. Nameserver traffic carries a tag chosen per server. These exact
@@ -773,33 +944,13 @@ impl<'a> Builder<'a> {
                 .to_outbound(tags::CONTROL_DIRECT),
             );
             if !self.options.dns.proxy_servers.is_empty() {
-                let profile = self.state.default_profile.as_ref().ok_or_else(|| {
-                    CompileError::DnsPolicy(
-                        "proxy_servers requires an enabled default profile; configure one or remove the proxied resolvers"
-                            .into(),
-                    )
-                })?;
-                let candidate = self
-                    .state
-                    .profiles
-                    .get(profile)
-                    .filter(|candidate| candidate.enabled)
-                    .ok_or_else(|| {
-                        CompileError::DnsPolicy(format!(
-                            "proxy_servers resolves through default profile '{profile}', but that profile is missing or disabled"
-                        ))
-                    })?;
-                if self.profile_can_route_direct(candidate) {
-                    return Err(CompileError::DnsPolicy(format!(
-                        "proxy_servers resolves through default profile '{profile}', but that profile can select direct traffic; choose a fail-closed proxy target or use direct_servers explicitly"
-                    )));
-                }
+                let profile = self.dns_proxy_profile()?.0.clone();
                 self.rules.push(
                     RoutingRule {
                         inbound_tag: vec![tags::DNS_QUERY_PROXY.to_owned()],
                         ..RoutingRule::field(tags::system_rule("dns-upstream-proxy"))
                     }
-                    .to_balancer(tags::profile_selector(profile)),
+                    .to_balancer(tags::profile_selector(&profile)),
                 );
             }
         }
@@ -1053,6 +1204,24 @@ impl<'a> Builder<'a> {
             return;
         }
         let mut servers: Vec<DnsServer> = Vec::new();
+        if !self.dns_bootstrap_domains.is_empty() {
+            let domains = self
+                .dns_bootstrap_domains
+                .iter()
+                .map(|domain| format!("full:{domain}"))
+                .collect::<Vec<_>>();
+            let last = self.options.dns.bootstrap_servers.len().saturating_sub(1);
+            for (index, address) in self.options.dns.bootstrap_servers.iter().enumerate() {
+                servers.push(DnsServer::Detailed(Box::new(DnsServerDetail {
+                    address: address.clone(),
+                    domains: domains.clone(),
+                    skip_fallback: Some(true),
+                    final_query: (index == last).then_some(true),
+                    tag: Some(tags::DNS_QUERY_DIRECT.to_owned()),
+                    ..Default::default()
+                })));
+            }
+        }
         if !self.options.dns.direct_domains.is_empty() {
             for address in &self.options.dns.direct_servers {
                 servers.push(DnsServer::Detailed(Box::new(DnsServerDetail {
@@ -1087,8 +1256,9 @@ impl<'a> Builder<'a> {
             query_strategy: Some(self.options.dns.query_strategy.clone()),
             disable_cache: None,
             disable_fallback: None,
-            disable_fallback_if_match: (!self.options.dns.direct_domains.is_empty())
-                .then_some(true),
+            disable_fallback_if_match: (!self.options.dns.direct_domains.is_empty()
+                || !self.dns_bootstrap_domains.is_empty())
+            .then_some(true),
         });
     }
 
@@ -1118,52 +1288,156 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn profile_can_route_direct(&self, profile: &EgressProfile) -> bool {
-        let mut seen = BTreeSet::new();
-        if self.target_can_route_direct(&profile.target, &mut seen) {
-            return true;
-        }
-        profile.kill_switch != KillSwitch::Block
-            && profile.fallback.as_ref().is_some_and(|fallback| {
-                self.target_can_route_direct(fallback, &mut BTreeSet::new())
-            })
-    }
-
-    fn target_can_route_direct(
-        &self,
-        target: &Target,
-        seen_groups: &mut BTreeSet<GroupId>,
-    ) -> bool {
-        match target {
-            Target::Direct => true,
-            Target::Group { id } => {
-                // State validation normally catches missing references. Treat an
-                // unexpected missing group or cycle as unsafe here nevertheless:
-                // this function guards a no-leak promise and must fail closed.
-                if !seen_groups.insert(id.clone()) {
-                    return true;
-                }
-                let Some(group) = self.state.groups.get(id) else {
-                    return true;
-                };
-                let manual_is_direct = group
-                    .manual_selection
-                    .as_ref()
-                    .is_some_and(|selection| self.target_can_route_direct(selection, seen_groups));
-                let fallback_is_direct = !manual_is_direct
-                    && group.fallback.as_ref().is_some_and(|fallback| {
-                        self.target_can_route_direct(fallback, seen_groups)
-                    });
-                seen_groups.remove(id);
-                manual_is_direct || fallback_is_direct
-            }
-            Target::Node { .. } | Target::Chain { .. } | Target::Block => false,
-        }
-    }
-
     fn check_prefix_safety(&self) -> Result<(), CompileError> {
         tags::assert_prefix_safety(&self.selectable_tags).map_err(CompileError::TagCollision)
     }
+}
+
+fn bootstrap_domains(node: &xraytui_domain::Node) -> Result<BTreeSet<String>, CompileError> {
+    let mut domains = BTreeSet::new();
+    match &node.protocol {
+        xraytui_domain::ProtocolSettings::Wireguard(settings) => {
+            for peer in &settings.peers {
+                let host = wireguard_peer_host(&peer.endpoint, &node.id)?;
+                if host.parse::<IpAddr>().is_err() {
+                    domains.insert(normalize_bootstrap_domain(host, &node.id)?);
+                }
+            }
+        }
+        _ => {
+            let address = node.endpoint.address.trim();
+            let unbracketed = address
+                .strip_prefix('[')
+                .and_then(|value| value.strip_suffix(']'))
+                .unwrap_or(address);
+            if unbracketed.parse::<IpAddr>().is_err() {
+                domains.insert(normalize_bootstrap_domain(address, &node.id)?);
+            }
+        }
+    }
+    Ok(domains)
+}
+
+fn wireguard_peer_host<'a>(endpoint: &'a str, node: &NodeId) -> Result<&'a str, CompileError> {
+    let invalid = || {
+        CompileError::DnsPolicy(format!(
+            "WireGuard bootstrap node '{node}' has an invalid peer endpoint; expected host:port or [IPv6]:port"
+        ))
+    };
+    let (host, port) = if let Some(bracketed) = endpoint.strip_prefix('[') {
+        let (host, port) = bracketed.split_once("]:").ok_or_else(&invalid)?;
+        (host, port)
+    } else {
+        let (host, port) = endpoint.rsplit_once(':').ok_or_else(&invalid)?;
+        if host.contains(':') {
+            return Err(invalid());
+        }
+        (host, port)
+    };
+    if host.is_empty() || port.parse::<u16>().ok().filter(|port| *port != 0).is_none() {
+        return Err(invalid());
+    }
+    Ok(host)
+}
+
+fn normalize_bootstrap_domain(domain: &str, node: &NodeId) -> Result<String, CompileError> {
+    // Xray's DNS `full:` matcher is case-sensitive at this layer, while its
+    // outbound address loader preserves the spelling from the node. Keep that
+    // spelling so an uppercase endpoint cannot miss the bootstrap rule.
+    let normalized = domain.trim().trim_end_matches('.').to_owned();
+    if normalized.is_empty()
+        || normalized.contains(['/', ':', '[', ']'])
+        || normalized
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(CompileError::DnsPolicy(format!(
+            "bootstrap node '{node}' has an invalid hostname endpoint"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn forced_domain_strategy(
+    node: &xraytui_domain::Node,
+    query_strategy: &str,
+) -> Result<String, CompileError> {
+    let configured = match &node.protocol {
+        xraytui_domain::ProtocolSettings::Wireguard(settings) => {
+            settings.domain_strategy.as_deref()
+        }
+        _ => node.sockopt.domain_strategy.as_deref(),
+    };
+    let requested = configured
+        .filter(|strategy| !strategy.eq_ignore_ascii_case("asis"))
+        .unwrap_or(query_strategy);
+    let compact = requested
+        .chars()
+        .filter(|character| !matches!(character, '-' | '_'))
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    let forced = match compact.as_str() {
+        "useip" | "forceip" => "ForceIP",
+        "useip4" | "useipv4" | "forceip4" | "forceipv4" => "ForceIPv4",
+        "useip6" | "useipv6" | "forceip6" | "forceipv6" => "ForceIPv6",
+        "useip4v6" | "useipv4v6" | "forceip4v6" | "forceipv4v6" => "ForceIPv4v6",
+        "useip6v4" | "useipv6v4" | "forceip6v4" | "forceipv6v4" => "ForceIPv6v4",
+        _ => {
+            return Err(CompileError::DnsPolicy(format!(
+                "bootstrap node '{}' has unsupported domain strategy '{requested}'; use AsIs, UseIP, UseIPv4, UseIPv6, or an Xray ForceIP variant",
+                node.id
+            )));
+        }
+    };
+    Ok(forced.to_owned())
+}
+
+fn validate_bootstrap_server(
+    server: &str,
+    dns_listener: Option<std::net::SocketAddr>,
+) -> Result<(), CompileError> {
+    let trimmed = server.trim();
+    let (ip, port) = if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        (ip, Some(53))
+    } else {
+        let parsed = url::Url::parse(trimmed).map_err(|_| {
+            CompileError::DnsPolicy(
+                "every bootstrap_servers entry must be an IP literal or a resolver URL with an IP-literal host"
+                    .into(),
+            )
+        })?;
+        let host = parsed
+            .host_str()
+            .unwrap_or_default()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let ip = host.parse::<IpAddr>().map_err(|_| {
+            CompileError::DnsPolicy(
+                "bootstrap_servers cannot contain 'localhost' or a hostname because resolving the bootstrap resolver could recreate the DNS dependency cycle; use an IP-literal resolver address"
+                    .into(),
+            )
+        })?;
+        let default_port = match parsed.scheme() {
+            "tcp" | "tcp+local" => 53,
+            "https" | "https+local" | "h2c" | "h2c+local" => 443,
+            "quic+local" => 853,
+            scheme => {
+                return Err(CompileError::DnsPolicy(format!(
+                    "bootstrap_servers uses unsupported resolver scheme '{scheme}'; use an IP literal or an Xray DNS URL with tcp, tcp+local, https, https+local, h2c, h2c+local, or quic+local"
+                )));
+            }
+        };
+        let port = Some(parsed.port().unwrap_or(default_port));
+        (ip, port)
+    };
+
+    if dns_listener.is_some_and(|listen| listen.ip() == ip && port == Some(listen.port())) {
+        return Err(CompileError::DnsPolicy(
+            "bootstrap_servers points back to the xraytui DNS listener; choose an independent IP-literal resolver so bootstrap cannot recurse"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 fn socks_inbound_settings(spec: &ListenerSpec) -> serde_json::Value {

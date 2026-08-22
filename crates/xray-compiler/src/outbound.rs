@@ -36,6 +36,21 @@ pub fn build_with_dialect(
     dialer_proxy: Option<&str>,
     mkcp_dialect: MkcpFinalmaskDialect,
 ) -> Result<Outbound, CompileError> {
+    build_with_dialect_and_domain_strategy(node, tag, dialer_proxy, mkcp_dialect, None)
+}
+
+/// Build an outbound while overriding only its endpoint-resolution strategy.
+///
+/// This is reserved for compiler-proven bootstrap dials. It does not mutate the
+/// node model and must never be applied to later chain hops, whose hostname may
+/// intentionally be resolved by the preceding proxy.
+pub(crate) fn build_with_dialect_and_domain_strategy(
+    node: &Node,
+    tag: &str,
+    dialer_proxy: Option<&str>,
+    mkcp_dialect: MkcpFinalmaskDialect,
+    domain_strategy: Option<&str>,
+) -> Result<Outbound, CompileError> {
     if !node.is_compilable() {
         return Err(CompileError::UnsupportedNode {
             node: node.id.to_string(),
@@ -47,9 +62,14 @@ pub fn build_with_dialect(
         });
     }
 
-    let settings = protocol_settings(node)?;
+    let settings = protocol_settings(node, domain_strategy)?;
     let stream = if node.protocol.accepts_stream_settings() {
-        Some(stream_settings(node, dialer_proxy, mkcp_dialect)?)
+        Some(stream_settings(
+            node,
+            dialer_proxy,
+            mkcp_dialect,
+            domain_strategy,
+        )?)
     } else if dialer_proxy.is_some() {
         // WireGuard carries its own transport, so there is nowhere
         // to hang a dialerProxy. Refusing is better than emitting a config that
@@ -75,7 +95,7 @@ pub fn build_with_dialect(
     })
 }
 
-fn protocol_settings(node: &Node) -> Result<Value, CompileError> {
+fn protocol_settings(node: &Node, domain_strategy: Option<&str>) -> Result<Value, CompileError> {
     let address = node.endpoint.address.clone();
     let port = node.endpoint.port;
 
@@ -188,7 +208,7 @@ fn protocol_settings(node: &Node) -> Result<Value, CompileError> {
             if !w.reserved.is_empty() {
                 settings.insert("reserved".into(), json!(w.reserved));
             }
-            if let Some(strategy) = &w.domain_strategy {
+            if let Some(strategy) = domain_strategy.or(w.domain_strategy.as_deref()) {
                 settings.insert("domainStrategy".into(), json!(strategy));
             }
             Value::Object(settings)
@@ -237,6 +257,7 @@ fn stream_settings(
     node: &Node,
     dialer_proxy: Option<&str>,
     mkcp_dialect: MkcpFinalmaskDialect,
+    domain_strategy: Option<&str>,
 ) -> Result<StreamSettings, CompileError> {
     let hysteria = match &node.protocol {
         ProtocolSettings::Hysteria(settings) => Some(settings),
@@ -430,7 +451,7 @@ fn stream_settings(
         }
     }
 
-    let sockopt = sockopt_json(&node.sockopt, dialer_proxy);
+    let sockopt = sockopt_json(&node.sockopt, dialer_proxy, domain_strategy);
     if sockopt.is_some() {
         stream.sockopt = sockopt;
     }
@@ -573,13 +594,19 @@ fn reality_json(reality: &RealitySettings, node: &Node) -> Value {
     Value::Object(settings)
 }
 
-fn sockopt_json(sockopt: &SocketSettings, dialer_proxy: Option<&str>) -> Option<SockOpt> {
+fn sockopt_json(
+    sockopt: &SocketSettings,
+    dialer_proxy: Option<&str>,
+    domain_strategy: Option<&str>,
+) -> Option<SockOpt> {
     let built = SockOpt {
         mark: sockopt.mark,
         tcp_fast_open: sockopt.tcp_fast_open,
         tcp_keep_alive_interval: sockopt.tcp_keep_alive_interval,
         interface: sockopt.interface.clone(),
-        domain_strategy: sockopt.domain_strategy.clone(),
+        domain_strategy: domain_strategy
+            .map(str::to_owned)
+            .or_else(|| sockopt.domain_strategy.clone()),
         dialer_proxy: dialer_proxy.map(str::to_owned),
         // A dialing socket is never transparent; only the transparent inbound
         // sets this, and inbounds do not come through here.

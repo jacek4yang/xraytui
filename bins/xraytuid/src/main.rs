@@ -118,19 +118,25 @@ async fn run(cli: Cli) -> Result<()> {
 
     if cli.check {
         let diagnostics = state.validate();
-        for diagnostic in &diagnostics {
-            let severity = match diagnostic.severity {
-                xraytui_domain::Severity::Error => "error",
-                xraytui_domain::Severity::Warning => "warning",
-            };
-            println!("{severity}: [{}] {}", diagnostic.code, diagnostic.message);
-        }
         let errors = diagnostics
             .iter()
             .filter(|d| d.severity == xraytui_domain::Severity::Error)
             .count();
         if errors > 0 {
+            for diagnostic in &diagnostics {
+                let severity = match diagnostic.severity {
+                    xraytui_domain::Severity::Error => "error",
+                    xraytui_domain::Severity::Warning => "warning",
+                };
+                println!("{severity}: [{}] {}", diagnostic.code, diagnostic.message);
+            }
             anyhow::bail!("{errors} configuration error(s)");
+        }
+        let engine_config = daemon::build_engine_config(&paths, &config, &state);
+        let compiled = xraytui_xray_compiler::compile(&state, &engine_config.compile)
+            .context("configuration cannot be compiled safely")?;
+        for warning in compiled.warnings {
+            println!("warning: {warning}");
         }
         println!("configuration is valid");
         return Ok(());
