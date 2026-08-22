@@ -320,8 +320,8 @@ mod tests {
 
     #[test]
     fn resolvconf_receives_one_nameserver_line_per_server() {
-        let (script, log) = fake_resolvconf();
-        let manager = DnsManager::new("/nonexistent/bus", &script);
+        let fixture = FakeResolvconf::new();
+        let manager = DnsManager::new("/nonexistent/bus", &fixture.program);
         let spec = DnsRequest {
             backend: DnsBackend::Resolvconf,
             servers: vec![
@@ -331,7 +331,7 @@ mod tests {
             domains: vec!["example.test".into(), "~.".into()],
         };
         manager.apply("xraytui1000", 3, &spec).expect("apply");
-        let recorded = std::fs::read_to_string(&log).expect("log");
+        let recorded = std::fs::read_to_string(&fixture.log).expect("log");
         assert!(recorded.contains("argv: -a xraytui1000"), "{recorded}");
         assert!(recorded.contains("nameserver 10.0.0.53"), "{recorded}");
         assert!(recorded.contains("nameserver fd00::53"), "{recorded}");
@@ -342,12 +342,12 @@ mod tests {
 
     #[test]
     fn reverting_resolvconf_deletes_the_interface_record() {
-        let (script, log) = fake_resolvconf();
-        let manager = DnsManager::new("/nonexistent/bus", &script);
+        let fixture = FakeResolvconf::new();
+        let manager = DnsManager::new("/nonexistent/bus", &fixture.program);
         manager
             .revert("xraytui1000", 3, DnsBackend::Resolvconf)
             .expect("revert");
-        let recorded = std::fs::read_to_string(&log).expect("log");
+        let recorded = std::fs::read_to_string(&fixture.log).expect("log");
         assert!(recorded.contains("argv: -d xraytui1000"), "{recorded}");
     }
 
@@ -359,26 +359,50 @@ mod tests {
 
     /// A stand-in for `resolvconf` that records its argv and stdin.
     ///
-    /// Written as a shell script because that is what the *test* needs; the
-    /// helper still executes it with an argv and never through a shell.
-    fn fake_resolvconf() -> (PathBuf, PathBuf) {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!(
-            "xraytui-dns-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let log = dir.join("log");
-        let script = dir.join("resolvconf");
-        let body = format!(
-            "#!/bin/sh\nexec >>'{}' 2>&1\necho \"argv: $*\"\ncat\n",
-            log.display()
-        );
-        std::fs::write(&script, body).expect("write script");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod script");
-        let _ = std::fs::write(&log, "");
-        (script, log)
+    /// Each fixture owns a unique directory for its entire lifetime. The old
+    /// process/thread-derived pathname could be reused after PID reuse and was
+    /// written directly at its executable name. Preparing a private draft and
+    /// renaming it only after the writer closes prevents both collisions and
+    /// `ETXTBSY` when the test immediately spawns it.
+    struct FakeResolvconf {
+        _directory: tempfile::TempDir,
+        program: PathBuf,
+        log: PathBuf,
+    }
+
+    impl FakeResolvconf {
+        fn new() -> Self {
+            use std::fs::OpenOptions;
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let directory = tempfile::tempdir().expect("temp dir");
+            let log = directory.path().join("log");
+            let draft = directory.path().join("resolvconf.draft");
+            let program = directory.path().join("resolvconf");
+            let body = format!(
+                "#!/bin/sh\nexec >>'{}' 2>&1\necho \"argv: $*\"\ncat\n",
+                log.display()
+            );
+
+            {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&draft)
+                    .expect("create script");
+                file.write_all(body.as_bytes()).expect("write script");
+                file.set_permissions(std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod script");
+                file.sync_all().expect("sync script");
+            }
+            std::fs::rename(&draft, &program).expect("publish script");
+            std::fs::write(&log, "").expect("create log");
+
+            Self {
+                _directory: directory,
+                program,
+                log,
+            }
+        }
     }
 }
