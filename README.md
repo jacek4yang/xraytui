@@ -90,11 +90,12 @@ the user explicitly opts in. See [docs/SHARING.md](docs/SHARING.md).
 Version 1.1.0 adds first-class interoperable sharing for a trusted single-user
 Linux workstation. Post-release development now exercises deterministic
 IPv4-only, IPv6-only, dual-stack and no-leak kernel paths plus real-Xray IPv6
-endpoints, chains and split/failing DNS on stable and preview. `STATUS.md` keeps
-published evidence separate from candidate evidence. IPv6 remains experimental
-and disabled by default until group selection, the combined TUN/system resolver
-path and broader failure injection receive equivalent coverage. Shared machines
-with mutually untrusted local users are outside
+endpoints, chains, split/failing DNS and explicit fail-closed hostname bootstrap
+on stable and preview. `STATUS.md` keeps published evidence separate from
+candidate evidence. IPv6 remains experimental and disabled by default until
+group selection, the combined TUN/system resolver path and broader failure
+injection receive equivalent coverage. Shared machines with mutually untrusted
+local users are outside
 the support boundary because Xray's loopback commander has no authentication.
 
 `STATUS.md` is the authoritative, evidence-backed feature and test matrix;

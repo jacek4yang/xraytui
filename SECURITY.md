@@ -60,10 +60,12 @@ which Xray-core releases each version is tested against.
 * **A member of the `xraytui` group can create project-owned TUN devices and
   routes for their own UID.** That is the grant the administrator made by adding
   them to the group.
-* **A hostname-based proxied-DNS bootstrap can form a dependency cycle.** The
-  default failure policy blocks rather than querying a direct fallback, but
-  automatic cycle detection is not implemented yet. Keep an independent host
-  resolver for the first proxy hop or use an IP literal; see `docs/DNS.md`.
+* **Hostname bootstrap DNS intentionally reveals the first-hop name to the
+  configured direct resolver.** The compiler now detects this dependency,
+  requires an independent IP-literal `dns.bootstrap_servers` entry and fails
+  closed when it is unavailable. Use an IP-literal first-hop endpoint when even
+  that hostname disclosure is unacceptable; TLS/REALITY identity may remain a
+  hostname. See `docs/DNS.md`.
 
 ## Out of scope
 

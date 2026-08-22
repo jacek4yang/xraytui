@@ -26,7 +26,7 @@ pub use schema::{
 };
 
 /// Current schema version of `config.toml` and the policy files.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Configuration failures.
 #[derive(Debug, thiserror::Error)]

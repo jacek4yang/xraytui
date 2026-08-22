@@ -109,6 +109,10 @@ Four properties of that order are deliberate:
 - **DNS upstream tags precede the self bypass.** Xray's DNS client carries no
   ordinary application inbound, so its exact per-nameserver route must win
   before the broad direct rule for the Xray process.
+- **Bootstrap DNS shares the direct upstream tag but not the generic resolver
+  set.** Exact first-hop `full:` matches, `skipFallback`, terminal `finalQuery`
+  and `disableFallbackIfMatch` isolate it. The matching first-hop outbound copy
+  uses `ForceIP*`; later `dialerProxy` hops retain remote hostname resolution.
 - **The self bypass precedes ordinary traffic.** Without it the core dials its
   own uplink through its own TUN and loops. `process: ["self/"]` is matched by
   PID against the Xray process itself.

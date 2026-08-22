@@ -8,7 +8,7 @@
 use super::*;
 use xraytui_domain::{
     AppRuleId, ApplicationRule, Chain, EgressProfile, Endpoint, Group, GroupMembership, Node,
-    NodeSource, ProtocolSettings, RoutingMatch, TrojanSettings,
+    NodeSource, ProtocolSettings, RoutingMatch, TrojanSettings, WireguardPeer, WireguardSettings,
 };
 use xraytui_secrets::Secret;
 
@@ -1027,6 +1027,7 @@ fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
             enabled: true,
             direct_servers: vec!["127.0.0.53".into()],
             proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            bootstrap_servers: vec!["tcp://9.9.9.9".into()],
             direct_domains: vec!["geosite:private".into()],
             listen: Some("127.0.0.1:15353".parse().expect("addr")),
             ..Default::default()
@@ -1040,7 +1041,7 @@ fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
     assert_eq!(dns.disable_fallback_if_match, Some(true));
     assert_eq!(
         dns.servers.len(),
-        2,
+        3,
         "direct fallback is fail-closed unless explicitly enabled"
     );
     let details: Vec<&DnsServerDetail> = dns
@@ -1051,9 +1052,22 @@ fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
             DnsServer::Simple(_) => None,
         })
         .collect();
-    assert_eq!(details.len(), 2);
+    assert_eq!(details.len(), 3);
     assert_eq!(details[0].tag.as_deref(), Some(tags::DNS_QUERY_DIRECT));
-    assert_eq!(details[1].tag.as_deref(), Some(tags::DNS_QUERY_PROXY));
+    assert_eq!(details[0].domains, vec!["full:hk-01.example.com"]);
+    assert_eq!(details[0].skip_fallback, Some(true));
+    assert_eq!(details[0].final_query, Some(true));
+    assert_eq!(details[1].tag.as_deref(), Some(tags::DNS_QUERY_DIRECT));
+    assert_eq!(details[2].tag.as_deref(), Some(tags::DNS_QUERY_PROXY));
+    let bootstrap = find_outbound(&compiled, "node/hk-01/out");
+    assert_eq!(
+        bootstrap
+            .stream_settings
+            .as_ref()
+            .and_then(|stream| stream.sockopt.as_ref())
+            .and_then(|sockopt| sockopt.domain_strategy.as_deref()),
+        Some("ForceIP")
+    );
 
     let routing = compiled.config.routing.as_ref().expect("routing");
     let intercept = routing
@@ -1099,12 +1113,373 @@ fn proxied_dns_without_a_default_profile_is_refused_instead_of_going_direct() {
         dns: DnsOptions {
             enabled: true,
             proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            bootstrap_servers: vec!["9.9.9.9".into()],
             ..Default::default()
         },
         ..Default::default()
     };
     let error = compile(&base_state(), &options).expect_err("route is unresolved");
     assert!(error.to_string().contains("default profile"), "{error}");
+}
+
+#[test]
+fn hostname_bootstrap_without_an_explicit_resolver_is_refused() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&state, &options).expect_err("bootstrap route must be explicit");
+    let message = error.to_string();
+    assert!(message.contains("hostname bootstrap"), "{message}");
+    assert!(message.contains("hk-01.example.com"), "{message}");
+    assert!(message.contains("bootstrap_servers"), "{message}");
+}
+
+#[test]
+fn bootstrap_resolver_must_have_an_ip_literal_host() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            bootstrap_servers: vec!["https://bootstrap.example/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&state, &options).expect_err("resolver cannot need resolution");
+    assert!(error.to_string().contains("IP-literal"), "{error}");
+}
+
+#[test]
+fn bootstrap_resolver_must_use_an_xray_supported_scheme() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            bootstrap_servers: vec!["made-up://9.9.9.9".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&state, &options).expect_err("unknown scheme must be rejected");
+    assert!(
+        error.to_string().contains("unsupported resolver scheme"),
+        "{error}"
+    );
+}
+
+#[test]
+fn bootstrap_resolver_cannot_point_back_to_the_xray_dns_listener() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            bootstrap_servers: vec!["tcp://127.0.0.1:15353".into()],
+            listen: Some("127.0.0.1:15353".parse().expect("listener")),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&state, &options).expect_err("recursive listener must be rejected");
+    assert!(error.to_string().contains("points back"), "{error}");
+}
+
+#[test]
+fn ip_literal_first_hop_needs_no_bootstrap_resolver_or_strategy_override() {
+    let mut state = base_state();
+    state
+        .nodes
+        .get_mut(&NodeId::new("hk-01").expect("valid"))
+        .expect("node")
+        .endpoint
+        .address = "192.0.2.10".into();
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let compiled = compile(&state, &options).expect("literal is independently reachable");
+    let outbound = find_outbound(&compiled, "node/hk-01/out");
+    assert!(
+        outbound
+            .stream_settings
+            .as_ref()
+            .and_then(|stream| stream.sockopt.as_ref())
+            .is_none()
+    );
+}
+
+#[test]
+fn chain_bootstrap_resolves_and_forces_only_the_first_hop() {
+    let mut state = base_state();
+    let chain_id = ChainId::new("bootstrap-chain").expect("valid");
+    state.chains.insert(
+        chain_id.clone(),
+        Chain {
+            id: chain_id.clone(),
+            name: "Bootstrap chain".into(),
+            hops: vec![
+                NodeId::new("hk-01").expect("valid"),
+                NodeId::new("us-01").expect("valid"),
+            ],
+            enabled: true,
+        },
+    );
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile("web", Target::Chain { id: chain_id }),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            bootstrap_servers: vec!["tcp://9.9.9.9".into()],
+            query_strategy: "UseIPv6".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let compiled = compile(&state, &options).expect("safe chain bootstrap");
+    let first = find_outbound(&compiled, "chain/bootstrap-chain/hop0");
+    assert_eq!(
+        first
+            .stream_settings
+            .as_ref()
+            .and_then(|stream| stream.sockopt.as_ref())
+            .and_then(|sockopt| sockopt.domain_strategy.as_deref()),
+        Some("ForceIPv6")
+    );
+    let terminal = find_outbound(&compiled, "chain/bootstrap-chain/terminal");
+    assert_eq!(
+        terminal
+            .stream_settings
+            .as_ref()
+            .and_then(|stream| stream.sockopt.as_ref())
+            .and_then(|sockopt| sockopt.domain_strategy.as_deref()),
+        None,
+        "later hops must keep remote hostname resolution through dialerProxy"
+    );
+    let standalone = find_outbound(&compiled, "node/hk-01/out");
+    assert_eq!(
+        standalone
+            .stream_settings
+            .as_ref()
+            .and_then(|stream| stream.sockopt.as_ref())
+            .and_then(|sockopt| sockopt.domain_strategy.as_deref()),
+        None,
+        "an unused standalone copy must not gain bootstrap semantics"
+    );
+    let dns = compiled.config.dns.as_ref().expect("DNS");
+    let bootstrap = dns
+        .servers
+        .iter()
+        .find_map(|server| match server {
+            DnsServer::Detailed(detail) if detail.address == "tcp://9.9.9.9" => Some(detail),
+            _ => None,
+        })
+        .expect("bootstrap resolver");
+    assert_eq!(bootstrap.domains, vec!["full:hk-01.example.com"]);
+}
+
+#[test]
+fn group_bootstrap_covers_every_selectable_member_and_fallback() {
+    let mut state = base_state();
+    let group_id = GroupId::new("proxy-pool").expect("valid");
+    state.groups.insert(
+        group_id.clone(),
+        Group {
+            id: group_id.clone(),
+            name: "Proxy pool".into(),
+            strategy: GroupStrategy::Random,
+            membership: GroupMembership {
+                nodes: vec![
+                    NodeId::new("hk-01").expect("valid"),
+                    NodeId::new("jp-02").expect("valid"),
+                ],
+                ..Default::default()
+            },
+            manual_selection: None,
+            fallback: Some(Target::Node {
+                id: NodeId::new("us-01").expect("valid"),
+            }),
+        },
+    );
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile("web", Target::Group { id: group_id }),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            bootstrap_servers: vec!["tcp://9.9.9.9".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let compiled = compile(&state, &options).expect("safe group bootstrap");
+    for id in ["hk-01", "jp-02", "us-01"] {
+        let outbound = find_outbound(&compiled, &format!("node/{id}/out"));
+        assert_eq!(
+            outbound
+                .stream_settings
+                .as_ref()
+                .and_then(|stream| stream.sockopt.as_ref())
+                .and_then(|sockopt| sockopt.domain_strategy.as_deref()),
+            Some("ForceIP"),
+            "every possible group route must fail closed"
+        );
+    }
+    let dns = compiled.config.dns.as_ref().expect("DNS");
+    let bootstrap = dns
+        .servers
+        .iter()
+        .find_map(|server| match server {
+            DnsServer::Detailed(detail) if detail.address == "tcp://9.9.9.9" => Some(detail),
+            _ => None,
+        })
+        .expect("bootstrap resolver");
+    assert_eq!(
+        bootstrap.domains,
+        vec![
+            "full:hk-01.example.com",
+            "full:jp-02.example.com",
+            "full:us-01.example.com",
+        ]
+    );
+}
+
+#[test]
+fn wireguard_bootstrap_uses_peer_hostnames_but_not_ip_literals() {
+    let mut wireguard = node("wg", "WireGuard");
+    wireguard.protocol = ProtocolSettings::Wireguard(Box::new(WireguardSettings {
+        secret_key: Secret::new("synthetic-private-key"),
+        address: vec!["10.0.0.2/32".into()],
+        peers: vec![
+            WireguardPeer {
+                public_key: "synthetic-public-key-a".into(),
+                pre_shared_key: None,
+                endpoint: "WG-Endpoint.EXAMPLE:51820".into(),
+                allowed_ips: vec!["0.0.0.0/0".into()],
+                keep_alive: None,
+            },
+            WireguardPeer {
+                public_key: "synthetic-public-key-b".into(),
+                pre_shared_key: None,
+                endpoint: "192.0.2.20:51820".into(),
+                allowed_ips: vec!["0.0.0.0/0".into()],
+                keep_alive: None,
+            },
+            WireguardPeer {
+                public_key: "synthetic-public-key-c".into(),
+                pre_shared_key: None,
+                endpoint: "[2001:db8::20]:51820".into(),
+                allowed_ips: vec!["::/0".into()],
+                keep_alive: None,
+            },
+        ],
+        mtu: None,
+        reserved: Vec::new(),
+        domain_strategy: None,
+    }));
+    assert_eq!(
+        bootstrap_domains(&wireguard).expect("peer endpoints"),
+        BTreeSet::from(["WG-Endpoint.EXAMPLE".to_owned()]),
+        "the exact Xray endpoint spelling must survive bootstrap extraction"
+    );
+    assert_eq!(
+        forced_domain_strategy(&wireguard, "UseIPv6").expect("strategy"),
+        "ForceIPv6"
+    );
+}
+
+#[test]
+fn wireguard_bootstrap_rejects_ambiguous_or_unusable_peer_authorities() {
+    let id = NodeId::new("wg").expect("valid");
+    for endpoint in [
+        "2001:db8::20:51820",
+        "[2001:db8::20]",
+        "wg.example.com:0",
+        "wg.example.com:not-a-port",
+        ":51820",
+    ] {
+        let error = wireguard_peer_host(endpoint, &id).expect_err("invalid endpoint");
+        assert!(
+            error.to_string().contains("host:port or [IPv6]:port"),
+            "{endpoint}: {error}"
+        );
+    }
 }
 
 #[test]
@@ -1178,6 +1553,7 @@ fn proxied_dns_through_a_direct_default_profile_is_refused() {
         dns: DnsOptions {
             enabled: true,
             proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            bootstrap_servers: vec!["9.9.9.9".into()],
             ..Default::default()
         },
         ..Default::default()
@@ -1185,7 +1561,7 @@ fn proxied_dns_through_a_direct_default_profile_is_refused() {
     let error = compile(&state, &options).expect_err("proxy route must remain proxied");
     let message = error.to_string();
     assert!(message.contains("profile 'web'"), "{message}");
-    assert!(message.contains("can select direct traffic"), "{message}");
+    assert!(message.contains("direct target or fallback"), "{message}");
 }
 
 #[test]
@@ -1212,7 +1588,7 @@ fn proxied_dns_through_a_profile_with_a_direct_fallback_is_refused() {
     };
     let error = compile(&state, &options).expect_err("profile fallback must fail closed");
     assert!(
-        error.to_string().contains("can select direct traffic"),
+        error.to_string().contains("direct target or fallback"),
         "{error}"
     );
 }
@@ -1235,6 +1611,7 @@ fn a_blocked_profile_fallback_cannot_make_proxied_dns_direct() {
         dns: DnsOptions {
             enabled: true,
             proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            bootstrap_servers: vec!["9.9.9.9".into()],
             ..Default::default()
         },
         ..Default::default()
@@ -1278,9 +1655,51 @@ fn proxied_dns_through_a_group_with_a_direct_fallback_is_refused() {
     };
     let error = compile(&state, &options).expect_err("group fallback must fail closed");
     assert!(
-        error.to_string().contains("can select direct traffic"),
+        error.to_string().contains("direct target or fallback"),
         "{error}"
     );
+}
+
+#[test]
+fn proxied_dns_group_dependency_cycle_is_reported_as_a_cycle() {
+    let mut state = base_state();
+    let group_id = GroupId::new("recursive").expect("valid");
+    state.groups.insert(
+        group_id.clone(),
+        Group {
+            id: group_id.clone(),
+            name: "Recursive".into(),
+            strategy: GroupStrategy::Random,
+            membership: GroupMembership {
+                nodes: vec![NodeId::new("hk-01").expect("valid")],
+                ..Default::default()
+            },
+            manual_selection: None,
+            fallback: Some(Target::Group {
+                id: group_id.clone(),
+            }),
+        },
+    );
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile("web", Target::Group { id: group_id }),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            bootstrap_servers: vec!["9.9.9.9".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let error = compile(&state, &options).expect_err("cycle must be refused");
+    let message = error.to_string();
+    assert!(message.contains("dependency cycle"), "{message}");
+    assert!(message.contains("recursive"), "{message}");
 }
 
 #[test]
@@ -1314,6 +1733,7 @@ fn direct_fallback_after_proxied_dns_failure_requires_explicit_opt_in() {
             enabled: true,
             direct_servers: vec!["127.0.0.53".into()],
             proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            bootstrap_servers: vec!["9.9.9.9".into()],
             allow_direct_fallback: true,
             ..Default::default()
         },

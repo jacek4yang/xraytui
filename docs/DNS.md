@@ -54,13 +54,18 @@ Objects emitted:
 
 Server list construction, in the order the compiler emits it:
 
-1. If `direct_domains` is non-empty, one **detailed** server per entry of
+1. When the proxied-DNS profile can start through a hostname, one **detailed**
+   server per entry of `bootstrap_servers`. These entries match only the exact
+   first-hop names, carry the direct tag and `skipFallback: true`, and the last
+   carries `finalQuery: true`. Global `disableFallbackIfMatch: true` provides a
+   second guard against unrelated resolvers joining the lookup.
+2. If `direct_domains` is non-empty, one **detailed** server per entry of
    `direct_servers`, each carrying `domains: direct_domains` and
    `skipFallback: true`, the direct tag, and global
    `disableFallbackIfMatch: true`.
-2. Every entry of `proxy_servers`, as a detailed server carrying the proxied
+3. Every entry of `proxy_servers`, as a detailed server carrying the proxied
    tag.
-3. Every entry of `direct_servers`, carrying the direct tag, only when no
+4. Every entry of `direct_servers`, carrying the direct tag, only when no
    proxied resolver exists or `proxy_failure_policy = "direct"` explicitly
    permits direct fallback.
 
@@ -98,6 +103,7 @@ The split is expressed by the two server lists plus `direct_domains`:
 |---|---|---|
 | `direct_servers` | without a proxy | the host's own resolver, or a LAN resolver that knows internal names |
 | `proxy_servers` | through the default profile | a public resolver you want queried from the proxy's vantage point, so the answer matches where the connection will come from |
+| `bootstrap_servers` | directly, but only for exact hostname-based first hops needed to establish `proxy_servers` | independent IP-literal resolvers; empty is valid only when every possible first hop is already an IP literal |
 | `proxy_failure_policy` | `block` returns failure; `direct` permits the generic direct resolver list | keep `block` unless exposing a failed proxied query directly is an intentional availability tradeoff |
 | `direct_domains` | forced onto `direct_servers` regardless of list order, with `skipFallback` and `disableFallbackIfMatch` | `geosite:private` by default; add internal zones and any `geosite:` set that must resolve locally |
 
@@ -143,7 +149,7 @@ Three separate mechanisms prevent it.
 | `rule/system/core-bypass` with `process: ["self/"]`, emitted immediately afterward | generated rule table | Other core traffic — especially its uplink — being captured by its own TUN. Without this the core dials through itself. |
 | `nonIPQuery` set to a deterministic value (`drop` by default) | `control/dns` outbound | Non-A/AAAA queries taking an undefined path. |
 
-One loop the software cannot prevent for you: setting `direct_servers =
+One loop still requires an explicit configuration choice: setting `direct_servers =
 ["localhost"]` **while** the system resolver has been pointed at xraytui's own
 listener. `localhost` means "ask the system resolver", and the system resolver is
 now the core. Symptom: every name times out and the DNS listener shows continuous
@@ -151,15 +157,24 @@ traffic. When `[dns] manager` points the host at `[dns] listen`, set
 `direct_servers` to a concrete address — the upstream resolver the host used
 before, or a public one — never `localhost`.
 
-A second bootstrap dependency deserves explicit attention. The first proxy hop
-may itself have a hostname. Xray's transport dialer can consult the host resolver
-unless the node's socket `domainStrategy` requests Xray DNS; pointing the host
-resolver at xraytui while the only proxied DNS route needs that hostname can
-therefore create a cycle. The deterministic acceptance fixtures use IP-literal
-chain endpoints. For a hostname-based bootstrap profile, keep an independent
-host resolver available or give the first hop a stable IP literal. Automatic
-bootstrap-DNS cycle detection is not yet implemented; this limitation is tracked
-in `STATUS.md` and is not hidden behind a fallback.
+The compiler now closes the second bootstrap cycle automatically. It expands the
+default profile's target, permitted profile fallback, every group candidate and
+group fallback. For a chain, only hop 1 is a local bootstrap dependency; later
+hostname hops remain unresolved until `dialerProxy` hands them to the preceding
+proxy. Every hostname-based dependency must have at least one
+`bootstrap_servers` entry whose own host is an IP literal. `localhost`, a
+hostname resolver, the xraytui DNS listener itself, and schemes Xray does not
+implement are refused. Accepted URL schemes are `tcp`, `tcp+local`, `https`,
+`https+local`, `h2c`, `h2c+local`, and `quic+local`; a bare IP uses classic UDP
+DNS.
+
+For those exact first-hop outbound copies, the compiler converts the effective
+family preference into `ForceIP`, `ForceIPv4`, `ForceIPv6`, `ForceIPv4v6`, or
+`ForceIPv6v4`. This distinction is deliberate: upstream `UseIP*` logs an
+internal-resolution failure and continues with the unresolved hostname, while
+`ForceIP*` returns the failure. An unavailable bootstrap resolver therefore
+blocks the connection rather than invoking the system resolver. The generated
+warning and Xray JSON make this direct control-plane query visible.
 
 ## Leak diagnostics
 
@@ -200,6 +215,10 @@ Then confirm the path xraytui believes in:
   connection counter under the default `block` policy. The real-Xray acceptance
   test exercises that exact failure. If `proxy_failure_policy = "direct"`, the
   direct query is intentional and should be reported as such.
+- A hostname-based first hop appears as an exact `full:<host>` rule on the
+  bootstrap resolvers. A bootstrap failure must not query an overlapping
+  `direct_domains` resolver or reach the proxied resolver; the real-Xray
+  acceptance fixture asserts all three connection counters.
 - Application-level DNS bypasses xraytui entirely. A browser with DNS-over-HTTPS
   enabled resolves inside the browser over port 443; it will not appear as port
   53 traffic and no DNS setting in xraytui affects it. Disable it in the browser

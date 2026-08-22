@@ -442,6 +442,10 @@ pub struct DnsSection {
     /// Resolvers reached through the default profile.
     #[serde(default)]
     pub proxy_servers: Vec<String>,
+    /// Independent, directly reached resolvers used only for hostname-based
+    /// first hops needed to establish the proxied-DNS route.
+    #[serde(default)]
+    pub bootstrap_servers: Vec<String>,
     /// What to do when every proxied resolver fails.
     #[serde(default)]
     pub proxy_failure_policy: DnsProxyFailurePolicy,
@@ -489,6 +493,7 @@ impl Default for DnsSection {
             listen: None,
             direct_servers: default_direct_servers(),
             proxy_servers: Vec::new(),
+            bootstrap_servers: Vec::new(),
             proxy_failure_policy: DnsProxyFailurePolicy::default(),
             direct_domains: default_direct_domains(),
             query_strategy: default_query_strategy(),

@@ -246,6 +246,14 @@ pub struct DnsServerDetail {
         rename = "skipFallback"
     )]
     pub skip_fallback: Option<bool>,
+    /// Stop priority matching after this server. Used on the last resolver in
+    /// an isolated resolver set so unrelated matching servers cannot join it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "finalQuery"
+    )]
+    pub final_query: Option<bool>,
     /// Routing tag applied to this resolver's own traffic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
@@ -836,5 +844,17 @@ mod tests {
         let json = serde_json::to_value(&dns).expect("serialise");
         assert_eq!(json["disableFallbackIfMatch"], true);
         assert!(json.get("disable_fallback_if_match").is_none());
+    }
+
+    #[test]
+    fn dns_priority_terminator_uses_the_upstream_field_name() {
+        let server = DnsServerDetail {
+            address: "9.9.9.9".into(),
+            final_query: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&server).expect("serialise");
+        assert_eq!(json["finalQuery"], true);
+        assert!(json.get("final_query").is_none());
     }
 }

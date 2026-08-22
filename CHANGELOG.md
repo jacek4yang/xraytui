@@ -23,7 +23,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   intermediate socket.
 * Upstream compatibility watches for Xray's DNS protobuf, JSON loader,
   nameserver selection/tagging and routed DNS-over-TCP implementation on both
-  stable and preview, bringing the current Xray source watch to 43 paths.
+  stable and preview. It now also watches normal and WireGuard endpoint
+  resolution plus the `ForceIP*` parser/semantics, bringing the current Xray
+  source watch to 55 stable/preview snapshots.
+* Explicit `dns.bootstrap_servers` for hostname-based first hops that must be
+  established before proxied DNS is usable. The compiler derives dependencies
+  across nodes, chains, every group candidate and permitted fallback, emits
+  exact scoped resolver rules, and applies a forced-IP family strategy only to
+  the locally dialled first-hop outbound copy.
 
 ### Fixed
 
@@ -58,6 +65,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its configured fallback, or a selected group's fallback can route direct.
   The same check now runs before hot selector mutations, so switching a live
   default profile cannot bypass the no-leak compiler policy.
+* Proxied DNS can no longer recurse through the host resolver when its selected
+  first hop is a hostname. Empty/hostname/`localhost` bootstrap resolver sets
+  and a resolver pointing back to xraytui's own listener are refused. Bootstrap
+  failure cannot fall through to an overlapping ordinary direct resolver or an
+  unresolved system-dialer attempt. Schema 2 migrates atomically to schema 3;
+  existing `[dns]` tables receive the new policy explicitly and empty.
 
 ## [1.1.0] - 2026-08-21
 

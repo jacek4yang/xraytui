@@ -819,7 +819,11 @@ fn response_for(outcome: ApplyOutcome, warnings: Vec<String>) -> Response {
     }
 }
 
-fn build_engine_config(paths: &Paths, config: &ConfigFile, state: &DesiredState) -> EngineConfig {
+pub(crate) fn build_engine_config(
+    paths: &Paths,
+    config: &ConfigFile,
+    state: &DesiredState,
+) -> EngineConfig {
     let api_endpoint = if config.core.api_unix_socket {
         // Kept behind an explicit opt-in: no released Xray-core serves the
         // commander over a Unix socket (see docs/UPSTREAM-COMPATIBILITY.md).
@@ -855,6 +859,7 @@ fn build_engine_config(paths: &Paths, config: &ConfigFile, state: &DesiredState)
                 enabled: config.dns.enabled,
                 direct_servers: config.dns.direct_servers.clone(),
                 proxy_servers: config.dns.proxy_servers.clone(),
+                bootstrap_servers: config.dns.bootstrap_servers.clone(),
                 allow_direct_fallback: config.dns.proxy_failure_policy
                     == DnsProxyFailurePolicy::Direct,
                 direct_domains: config.dns.direct_domains.clone(),
