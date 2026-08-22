@@ -27,10 +27,24 @@ pub struct Migration {
 
 /// Every known migration, in order.
 ///
-/// Empty at schema version 1: there is nothing older to migrate from. The
-/// machinery exists now so that the first real migration is a data change rather
-/// than an infrastructure change.
-pub const MIGRATIONS: &[Migration] = &[];
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    from: 1,
+    to: 2,
+    description: "make proxied DNS failure policy explicit and fail closed",
+    apply: migrate_v1_to_v2,
+}];
+
+fn migrate_v1_to_v2(table: &mut toml::Table) -> Result<(), String> {
+    let Some(dns) = table.get_mut("dns") else {
+        return Ok(());
+    };
+    let dns = dns
+        .as_table_mut()
+        .ok_or_else(|| "[dns] must be a TOML table".to_owned())?;
+    dns.entry("proxy_failure_policy".to_owned())
+        .or_insert_with(|| toml::Value::String("block".to_owned()));
+    Ok(())
+}
 
 /// What migrating a directory would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,16 +146,17 @@ pub fn plan(dir: &Path) -> Result<MigrationPlan, ConfigError> {
 /// Apply every pending migration, after taking a backup.
 ///
 /// # Errors
-/// Propagates I/O, parse and migration failures. On a migration failure nothing
-/// has been written, because each file is rewritten only after every step for it
-/// has succeeded in memory.
+/// Propagates I/O, parse and migration failures. Every candidate is rendered in
+/// memory before the backup and before the first write, so a transformation
+/// failure changes nothing. Each subsequent file replacement is private and
+/// atomic; the mandatory backup is the recovery boundary for an I/O failure.
 pub fn run(dir: &Path) -> Result<MigrationPlan, ConfigError> {
     let plan = plan(dir)?;
     if plan.is_empty() {
         return Ok(plan);
     }
-    backup(dir, &plan.backup_dir)?;
 
+    let mut candidates = Vec::with_capacity(plan.steps.len());
     for step in &plan.steps {
         let text = std::fs::read_to_string(&step.path).map_err(|source| ConfigError::Io {
             path: step.path.clone(),
@@ -169,7 +184,12 @@ pub fn run(dir: &Path) -> Result<MigrationPlan, ConfigError> {
             toml::Value::Integer(i64::from(version.max(SCHEMA_VERSION))),
         );
         let rendered = toml::to_string_pretty(&table)?;
-        write_private_atomic(&step.path, rendered.as_bytes())?;
+        candidates.push((step.path.clone(), rendered));
+    }
+
+    backup(dir, &plan.backup_dir)?;
+    for (path, rendered) in candidates {
+        write_private_atomic(&path, rendered.as_bytes())?;
     }
     Ok(plan)
 }
@@ -215,14 +235,21 @@ fn toml_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
 fn backup_path(dir: &Path) -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_nanos())
         .unwrap_or_default();
-    dir.with_file_name(format!(
+    let base = format!(
         "{}.backup.{stamp}",
         dir.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("xraytui")
-    ))
+    );
+    let mut candidate = dir.with_file_name(&base);
+    let mut suffix = 0_u32;
+    while candidate.exists() {
+        suffix = suffix.saturating_add(1);
+        candidate = dir.with_file_name(format!("{base}.{suffix}"));
+    }
+    candidate
 }
 
 fn backup(dir: &Path, destination: &Path) -> Result<(), ConfigError> {
@@ -247,7 +274,11 @@ mod tests {
     #[test]
     fn current_version_files_need_no_migration() {
         let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(temp.path().join("config.toml"), "schema_version = 1\n").expect("write");
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("schema_version = {SCHEMA_VERSION}\n"),
+        )
+        .expect("write");
         let plan = plan(temp.path()).expect("plan");
         assert!(plan.is_empty());
         assert!(
@@ -293,12 +324,63 @@ mod tests {
     fn migration_run_is_a_no_op_at_the_current_version() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("config.toml");
-        std::fs::write(&path, "schema_version = 1\nvalue = 3\n").expect("write");
+        let contents = format!("schema_version = {SCHEMA_VERSION}\nvalue = 3\n");
+        std::fs::write(&path, &contents).expect("write");
         let plan = run(temp.path()).expect("run");
         assert!(plan.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), contents);
+    }
+
+    #[test]
+    fn v1_dns_configuration_migrates_to_fail_closed_proxy_policy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "schema_version = 1\n\n[dns]\nproxy_servers = [\"tcp://resolver.example:53\"]\n",
+        )
+        .expect("write");
+
+        let plan = run(temp.path()).expect("run");
+        assert_eq!(plan.steps.len(), 1);
+        let migrated = std::fs::read_to_string(&path).expect("read");
+        let table: toml::Table = toml::from_str(&migrated).expect("toml");
         assert_eq!(
-            std::fs::read_to_string(&path).expect("read"),
-            "schema_version = 1\nvalue = 3\n"
+            table
+                .get("schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(i64::from(SCHEMA_VERSION))
+        );
+        assert_eq!(
+            table
+                .get("dns")
+                .and_then(toml::Value::as_table)
+                .and_then(|dns| dns.get("proxy_failure_policy"))
+                .and_then(toml::Value::as_str),
+            Some("block")
+        );
+        assert!(
+            plan.backup_dir.join("config.toml").is_file(),
+            "migration must create a backup"
+        );
+    }
+
+    #[test]
+    fn a_late_transformation_error_does_not_partially_migrate_earlier_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = temp.path().join("a.toml");
+        let invalid = temp.path().join("b.toml");
+        let original = "schema_version = 1\nvalue = 7\n";
+        std::fs::write(&first, original).expect("first file");
+        std::fs::write(&invalid, "schema_version = 1\ndns = \"not a table\"\n")
+            .expect("invalid migration input");
+
+        let error = run(temp.path()).expect_err("second transformation must fail");
+        assert!(error.to_string().contains("[dns] must be a TOML table"));
+        assert_eq!(
+            std::fs::read_to_string(&first).expect("unchanged first file"),
+            original,
+            "all transformations must succeed before the first commit"
         );
     }
 

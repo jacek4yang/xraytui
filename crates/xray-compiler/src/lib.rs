@@ -48,8 +48,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::json;
 use xraytui_domain::{
-    AppMatcher, ChainId, DesiredState, GroupId, GroupStrategy, KillSwitch, ListenerSpec, NodeId,
-    ProfileId, RuleAction, Severity, SystemMode, Target,
+    AppMatcher, ChainId, DesiredState, EgressProfile, GroupId, GroupStrategy, KillSwitch,
+    ListenerSpec, NodeId, ProfileDnsPolicy, ProfileId, RuleAction, Severity, SystemMode, Target,
 };
 use xraytui_xray_model::{
     ApiConfig, Balancer, BalancerStrategy, BurstObservatoryConfig, DnsConfig, DnsServer,
@@ -79,6 +79,9 @@ pub enum CompileError {
         /// Explanation.
         reason: String,
     },
+    /// DNS policy asked for a route that cannot be resolved safely.
+    #[error("DNS policy cannot be compiled: {0}")]
+    DnsPolicy(String),
     /// The generated tag set was not prefix-free.
     ///
     /// This is an internal invariant violation, reported rather than ignored
@@ -152,6 +155,8 @@ pub struct DnsOptions {
     pub direct_servers: Vec<String>,
     /// Resolvers reached through the default profile.
     pub proxy_servers: Vec<String>,
+    /// Permit proxied resolvers to fall back to direct resolvers after failure.
+    pub allow_direct_fallback: bool,
     /// Domains resolved by the direct servers regardless of order.
     pub direct_domains: Vec<String>,
     /// `UseIP`, `UseIPv4` or `UseIPv6`.
@@ -168,6 +173,7 @@ impl Default for DnsOptions {
             enabled: false,
             direct_servers: vec!["localhost".into()],
             proxy_servers: Vec::new(),
+            allow_direct_fallback: false,
             direct_domains: Vec::new(),
             query_strategy: "UseIP".into(),
             listen: None,
@@ -248,6 +254,20 @@ pub fn compile(state: &DesiredState, options: &CompileOptions) -> Result<Compile
     if !errors.is_empty() {
         return Err(CompileError::Invalid(errors.join("; ")));
     }
+    if let Some((id, policy)) = state
+        .profiles
+        .iter()
+        .find_map(|(id, profile)| profile.dns_policy.map(|policy| (id, policy)))
+    {
+        let policy = match policy {
+            ProfileDnsPolicy::Proxied => "proxied",
+            ProfileDnsPolicy::Direct => "direct",
+            ProfileDnsPolicy::Remote => "remote",
+        };
+        return Err(CompileError::DnsPolicy(format!(
+            "profile '{id}' requests dns_policy '{policy}', but per-profile DNS overrides are not implemented; remove the override and configure the global [dns] route explicitly"
+        )));
+    }
     let mut warnings: Vec<String> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning)
@@ -258,7 +278,7 @@ pub fn compile(state: &DesiredState, options: &CompileOptions) -> Result<Compile
     builder.build_outbounds()?;
     builder.build_balancers();
     builder.build_inbounds();
-    builder.build_rules();
+    builder.build_rules()?;
     builder.check_prefix_safety()?;
     warnings.append(&mut builder.warnings);
 
@@ -737,10 +757,54 @@ impl<'a> Builder<'a> {
 
     // -------------------------------------------------------------------- rules
 
-    fn build_rules(&mut self) {
+    fn build_rules(&mut self) -> Result<(), CompileError> {
+        self.validate_dns_policy()?;
         self.build_dns_config();
 
-        // 1. Xray's own traffic must never be captured by this ruleset. Without
+        // 1. Nameserver traffic carries a tag chosen per server. These exact
+        //    rules precede the general self-process bypass so proxied DNS can
+        //    never be captured by a broader direct rule.
+        if self.options.dns.enabled {
+            self.rules.push(
+                RoutingRule {
+                    inbound_tag: vec![tags::DNS_QUERY_DIRECT.to_owned()],
+                    ..RoutingRule::field(tags::system_rule("dns-upstream-direct"))
+                }
+                .to_outbound(tags::CONTROL_DIRECT),
+            );
+            if !self.options.dns.proxy_servers.is_empty() {
+                let profile = self.state.default_profile.as_ref().ok_or_else(|| {
+                    CompileError::DnsPolicy(
+                        "proxy_servers requires an enabled default profile; configure one or remove the proxied resolvers"
+                            .into(),
+                    )
+                })?;
+                let candidate = self
+                    .state
+                    .profiles
+                    .get(profile)
+                    .filter(|candidate| candidate.enabled)
+                    .ok_or_else(|| {
+                        CompileError::DnsPolicy(format!(
+                            "proxy_servers resolves through default profile '{profile}', but that profile is missing or disabled"
+                        ))
+                    })?;
+                if self.profile_can_route_direct(candidate) {
+                    return Err(CompileError::DnsPolicy(format!(
+                        "proxy_servers resolves through default profile '{profile}', but that profile can select direct traffic; choose a fail-closed proxy target or use direct_servers explicitly"
+                    )));
+                }
+                self.rules.push(
+                    RoutingRule {
+                        inbound_tag: vec![tags::DNS_QUERY_PROXY.to_owned()],
+                        ..RoutingRule::field(tags::system_rule("dns-upstream-proxy"))
+                    }
+                    .to_balancer(tags::profile_selector(profile)),
+                );
+            }
+        }
+
+        // 2. Xray's own traffic must never be captured by this ruleset. Without
         //    this the core dials its uplink through its own TUN and loops.
         self.rules.push(
             RoutingRule {
@@ -750,7 +814,7 @@ impl<'a> Builder<'a> {
             .to_outbound(tags::CONTROL_DIRECT),
         );
 
-        // 2. DNS interception, before anything else can claim port 53.
+        // 3. DNS interception, before anything else can claim port 53.
         if self.options.dns.enabled {
             let mut inbound_tags = vec![];
             if self.options.tun.is_some() {
@@ -761,11 +825,11 @@ impl<'a> Builder<'a> {
             }
             // A transparent listener receives its application's port 53 traffic
             // too, because the redirect is by mark and not by port. Handing that
-            // to the DNS module rather than forwarding it blindly is what makes
-            // a profile's DNS policy apply to `exec --transparent` exactly as it
-            // applies to the tunnel — and it is also what stops a query from
-            // being answered by whatever the application thought its resolver
-            // was.
+            // to the DNS module rather than forwarding it blindly applies the
+            // global resolver policy consistently to transparent and TUN traffic
+            // and stops the query from reaching whichever resolver the
+            // application originally selected. Per-profile DNS overrides are
+            // refused until they can be enforced faithfully.
             for (id, profile) in &self.state.profiles {
                 if profile.enabled && profile.transparent.is_some() {
                     inbound_tags.push(tags::profile_transparent_inbound(id));
@@ -782,14 +846,6 @@ impl<'a> Builder<'a> {
                     .to_outbound(tags::CONTROL_DNS),
                 );
             }
-            // Queries the DNS module itself emits are tagged and routed here.
-            self.rules.push(
-                RoutingRule {
-                    inbound_tag: vec![dns_query_tag()],
-                    ..RoutingRule::field(tags::system_rule("dns-direct"))
-                }
-                .to_outbound(tags::CONTROL_DIRECT),
-            );
         }
 
         // 2b. Transparent traffic to private space goes direct, when the user
@@ -944,6 +1000,7 @@ impl<'a> Builder<'a> {
                 rule.network = Some("tcp,udp".to_owned());
             }
         }
+        Ok(())
     }
 
     fn compile_user_rule(&self, rule: &xraytui_domain::RoutingRule) -> RoutingRule {
@@ -1002,38 +1059,111 @@ impl<'a> Builder<'a> {
                     address: address.clone(),
                     domains: self.options.dns.direct_domains.clone(),
                     skip_fallback: Some(true),
+                    tag: Some(tags::DNS_QUERY_DIRECT.to_owned()),
                     ..Default::default()
                 })));
             }
         }
         for address in &self.options.dns.proxy_servers {
-            servers.push(DnsServer::Simple(address.clone()));
+            servers.push(DnsServer::Detailed(Box::new(DnsServerDetail {
+                address: address.clone(),
+                tag: Some(tags::DNS_QUERY_PROXY.to_owned()),
+                ..Default::default()
+            })));
         }
-        for address in &self.options.dns.direct_servers {
-            servers.push(DnsServer::Simple(address.clone()));
-        }
-        if servers.is_empty() {
-            servers.push(DnsServer::Simple("localhost".into()));
+        if self.options.dns.proxy_servers.is_empty() || self.options.dns.allow_direct_fallback {
+            for address in &self.options.dns.direct_servers {
+                servers.push(DnsServer::Detailed(Box::new(DnsServerDetail {
+                    address: address.clone(),
+                    tag: Some(tags::DNS_QUERY_DIRECT.to_owned()),
+                    ..Default::default()
+                })));
+            }
         }
         self.dns = Some(DnsConfig {
             servers,
             hosts: BTreeMap::new(),
-            tag: Some(dns_query_tag()),
+            tag: Some(tags::DNS_QUERY_DIRECT.to_owned()),
             query_strategy: Some(self.options.dns.query_strategy.clone()),
             disable_cache: None,
             disable_fallback: None,
+            disable_fallback_if_match: (!self.options.dns.direct_domains.is_empty())
+                .then_some(true),
         });
+    }
+
+    fn validate_dns_policy(&self) -> Result<(), CompileError> {
+        if !self.options.dns.enabled {
+            return Ok(());
+        }
+        let dns = &self.options.dns;
+        if dns.direct_servers.is_empty() && dns.proxy_servers.is_empty() {
+            return Err(CompileError::DnsPolicy(
+                "DNS is enabled but no direct_servers or proxy_servers are configured; configure an explicit resolver instead of relying on an implicit system fallback"
+                    .into(),
+            ));
+        }
+        if !dns.direct_domains.is_empty() && dns.direct_servers.is_empty() {
+            return Err(CompileError::DnsPolicy(
+                "direct_domains is configured but direct_servers is empty; add a direct resolver or remove the scoped direct domains so they cannot cross into proxied DNS"
+                    .into(),
+            ));
+        }
+        if dns.allow_direct_fallback && dns.direct_servers.is_empty() {
+            return Err(CompileError::DnsPolicy(
+                "proxy_failure_policy is 'direct' but direct_servers is empty; configure the explicit direct fallback resolver or use the fail-closed 'block' policy"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn profile_can_route_direct(&self, profile: &EgressProfile) -> bool {
+        let mut seen = BTreeSet::new();
+        if self.target_can_route_direct(&profile.target, &mut seen) {
+            return true;
+        }
+        profile.kill_switch != KillSwitch::Block
+            && profile.fallback.as_ref().is_some_and(|fallback| {
+                self.target_can_route_direct(fallback, &mut BTreeSet::new())
+            })
+    }
+
+    fn target_can_route_direct(
+        &self,
+        target: &Target,
+        seen_groups: &mut BTreeSet<GroupId>,
+    ) -> bool {
+        match target {
+            Target::Direct => true,
+            Target::Group { id } => {
+                // State validation normally catches missing references. Treat an
+                // unexpected missing group or cycle as unsafe here nevertheless:
+                // this function guards a no-leak promise and must fail closed.
+                if !seen_groups.insert(id.clone()) {
+                    return true;
+                }
+                let Some(group) = self.state.groups.get(id) else {
+                    return true;
+                };
+                let manual_is_direct = group
+                    .manual_selection
+                    .as_ref()
+                    .is_some_and(|selection| self.target_can_route_direct(selection, seen_groups));
+                let fallback_is_direct = !manual_is_direct
+                    && group.fallback.as_ref().is_some_and(|fallback| {
+                        self.target_can_route_direct(fallback, seen_groups)
+                    });
+                seen_groups.remove(id);
+                manual_is_direct || fallback_is_direct
+            }
+            Target::Node { .. } | Target::Chain { .. } | Target::Block => false,
+        }
     }
 
     fn check_prefix_safety(&self) -> Result<(), CompileError> {
         tags::assert_prefix_safety(&self.selectable_tags).map_err(CompileError::TagCollision)
     }
-}
-
-/// Inbound tag applied to queries the DNS module itself emits.
-#[must_use]
-fn dns_query_tag() -> String {
-    "inbound/system/dns-query".to_owned()
 }
 
 fn socks_inbound_settings(spec: &ListenerSpec) -> serde_json::Value {

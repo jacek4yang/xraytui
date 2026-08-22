@@ -114,6 +114,15 @@ impl ConfigFile {
         if self.health.timeout_ms < 200 {
             problems.push("[health] timeout_ms must be at least 200".to_owned());
         }
+        if !matches!(
+            self.dns.query_strategy.as_str(),
+            "UseIP" | "UseIPv4" | "UseIPv6"
+        ) {
+            problems.push("[dns] query_strategy must be UseIP, UseIPv4, or UseIPv6".to_owned());
+        }
+        if !matches!(self.dns.non_ip_query.as_str(), "drop" | "skip" | "reject") {
+            problems.push("[dns] non_ip_query must be drop, skip, or reject".to_owned());
+        }
         if !self.health.test_url.starts_with("http://")
             && !self.health.test_url.starts_with("https://")
         {
@@ -433,6 +442,9 @@ pub struct DnsSection {
     /// Resolvers reached through the default profile.
     #[serde(default)]
     pub proxy_servers: Vec<String>,
+    /// What to do when every proxied resolver fails.
+    #[serde(default)]
+    pub proxy_failure_policy: DnsProxyFailurePolicy,
     /// Domains always resolved by `direct_servers`.
     #[serde(default = "default_direct_domains")]
     pub direct_domains: Vec<String>,
@@ -442,6 +454,17 @@ pub struct DnsSection {
     /// `drop`, `skip` or `reject` for non-A/AAAA queries.
     #[serde(default = "default_non_ip_query")]
     pub non_ip_query: String,
+}
+
+/// Whether proxied DNS may fall back to a resolver reached directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsProxyFailurePolicy {
+    /// Return a DNS failure rather than expose the query on a direct path.
+    #[default]
+    Block,
+    /// Explicitly permit fallback to `direct_servers`.
+    Direct,
 }
 
 fn default_direct_servers() -> Vec<String> {
@@ -466,6 +489,7 @@ impl Default for DnsSection {
             listen: None,
             direct_servers: default_direct_servers(),
             proxy_servers: Vec::new(),
+            proxy_failure_policy: DnsProxyFailurePolicy::default(),
             direct_domains: default_direct_domains(),
             query_strategy: default_query_strategy(),
             non_ip_query: default_non_ip_query(),
@@ -709,6 +733,17 @@ mod tests {
 
         config.runtime.failure_policy = FailurePolicy::Restore;
         config.validate().expect("explicit direct mode is allowed");
+    }
+
+    #[test]
+    fn dns_tokens_are_validated_instead_of_becoming_upstream_defaults() {
+        let mut config = ConfigFile::default();
+        config.dns.query_strategy = "PreferIPv6".into();
+        config.dns.non_ip_query = "maybe".into();
+        let error = config.validate().expect_err("invalid DNS tokens");
+        let text = error.to_string();
+        assert!(text.contains("query_strategy"), "{text}");
+        assert!(text.contains("non_ip_query"), "{text}");
     }
 
     #[test]

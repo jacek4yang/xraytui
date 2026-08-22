@@ -151,7 +151,7 @@ fn full_state() -> DesiredState {
                 ..Default::default()
             },
             manual_selection: None,
-            fallback: Some(Target::Direct),
+            fallback: Some(Target::Block),
         },
     );
 
@@ -340,6 +340,7 @@ fn tun_and_dns_configuration_is_accepted() {
             enabled: true,
             direct_servers: vec!["127.0.0.53".into(), "localhost".into()],
             proxy_servers: vec!["https://1.1.1.1/dns-query".into()],
+            allow_direct_fallback: false,
             direct_domains: vec!["geosite:private".into()],
             listen: Some("127.0.0.1:15353".parse().expect("addr")),
             query_strategy: "UseIP".into(),

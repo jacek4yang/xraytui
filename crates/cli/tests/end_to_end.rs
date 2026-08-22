@@ -203,6 +203,48 @@ fn the_daemon_validates_a_fresh_configuration() {
 }
 
 #[test]
+fn daemon_startup_migrates_schema_one_before_loading_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let config_dir = root.path().join("config");
+    std::fs::create_dir(&config_dir).expect("config directory");
+    let path = config_dir.join("config.toml");
+    std::fs::write(
+        &path,
+        "schema_version = 1\n\n[dns]\nproxy_servers = [\"tcp://resolver.example:53\"]\n",
+    )
+    .expect("schema one config");
+
+    let output = Command::new(binary("xraytuid"))
+        .arg("--root")
+        .arg(root.path())
+        .arg("--check")
+        .output()
+        .expect("run xraytuid");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let migrated = std::fs::read_to_string(&path).expect("migrated config");
+    assert!(migrated.contains("schema_version = 2"), "{migrated}");
+    assert!(
+        migrated.contains("proxy_failure_policy = \"block\""),
+        "{migrated}"
+    );
+    let backup = std::fs::read_dir(root.path())
+        .expect("root entries")
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("config.backup.")
+        })
+        .expect("migration backup");
+    assert!(backup.path().join("config.toml").is_file());
+}
+
+#[test]
 fn a_second_daemon_refuses_to_start_for_the_same_user() {
     require_xray!("daemon lock");
     let Some(daemon) = Daemon::start() else {

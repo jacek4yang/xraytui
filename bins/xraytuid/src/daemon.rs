@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::sync::{Mutex, broadcast};
-use xraytui_config::{ConfigFile, Paths};
+use xraytui_config::{ConfigFile, DnsProxyFailurePolicy, Paths};
 use xraytui_controller::{ApplyOutcome, Engine, EngineConfig};
 use xraytui_domain::{DesiredState, Severity, SystemMode, Target};
 use xraytui_ipc::{
@@ -855,6 +855,8 @@ fn build_engine_config(paths: &Paths, config: &ConfigFile, state: &DesiredState)
                 enabled: config.dns.enabled,
                 direct_servers: config.dns.direct_servers.clone(),
                 proxy_servers: config.dns.proxy_servers.clone(),
+                allow_direct_fallback: config.dns.proxy_failure_policy
+                    == DnsProxyFailurePolicy::Direct,
                 direct_domains: config.dns.direct_domains.clone(),
                 query_strategy: config.dns.query_strategy.clone(),
                 listen: config.dns.listen,

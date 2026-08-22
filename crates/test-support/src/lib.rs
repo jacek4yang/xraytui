@@ -13,7 +13,7 @@
 #![warn(missing_docs)]
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -21,9 +21,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
+pub mod dns_fixture;
 pub mod fixtures;
 pub mod http_fixture;
 
+pub use dns_fixture::{DnsRecordType, TcpDnsFixture, query_dns};
 pub use http_fixture::HttpFixtureServer;
 
 /// Bind an ephemeral loopback port and return it.
@@ -76,7 +78,16 @@ impl MockEgress {
     /// # Errors
     /// Propagates bind failures.
     pub async fn start(name: impl Into<String>) -> io::Result<Self> {
-        Self::start_with_mode(name, EgressMode::Identify).await
+        Self::start_on(name, IpAddr::V4(Ipv4Addr::LOCALHOST)).await
+    }
+
+    /// Start an identifying egress on a specific local address family.
+    ///
+    /// # Errors
+    /// Propagates bind failures, including `AddrNotAvailable` when the selected
+    /// family is disabled in the current network namespace.
+    pub async fn start_on(name: impl Into<String>, bind_ip: IpAddr) -> io::Result<Self> {
+        Self::start_with_mode_on(name, EgressMode::Identify, bind_ip).await
     }
 
     /// Start a faithfully forwarding egress, for use as an intermediate hop.
@@ -88,7 +99,15 @@ impl MockEgress {
     /// # Errors
     /// Propagates bind failures.
     pub async fn start_forwarding(name: impl Into<String>) -> io::Result<Self> {
-        Self::start_with_mode(name, EgressMode::Forward).await
+        Self::start_forwarding_on(name, IpAddr::V4(Ipv4Addr::LOCALHOST)).await
+    }
+
+    /// Start a faithfully forwarding egress on a specific local address family.
+    ///
+    /// # Errors
+    /// Propagates bind failures.
+    pub async fn start_forwarding_on(name: impl Into<String>, bind_ip: IpAddr) -> io::Result<Self> {
+        Self::start_with_mode_on(name, EgressMode::Forward, bind_ip).await
     }
 
     /// Start an egress with an explicit mode.
@@ -96,9 +115,21 @@ impl MockEgress {
     /// # Errors
     /// Propagates bind failures.
     pub async fn start_with_mode(name: impl Into<String>, mode: EgressMode) -> io::Result<Self> {
+        Self::start_with_mode_on(name, mode, IpAddr::V4(Ipv4Addr::LOCALHOST)).await
+    }
+
+    /// Start an egress with an explicit mode and local address family.
+    ///
+    /// # Errors
+    /// Propagates bind failures.
+    pub async fn start_with_mode_on(
+        name: impl Into<String>,
+        mode: EgressMode,
+        bind_ip: IpAddr,
+    ) -> io::Result<Self> {
         let name = name.into();
 
-        let identity_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let identity_listener = TcpListener::bind(SocketAddr::new(bind_ip, 0)).await?;
         let identity_addr = identity_listener.local_addr()?;
         let banner = format!("EGRESS {name}\n");
         let identity_task = tokio::spawn(async move {
@@ -123,7 +154,7 @@ impl MockEgress {
             }
         });
 
-        let socks_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let socks_listener = TcpListener::bind(SocketAddr::new(bind_ip, 0)).await?;
         let socks_addr = socks_listener.local_addr()?;
         let connections = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&connections);
@@ -298,15 +329,29 @@ pub async fn probe_through_socks5(
         ));
     }
 
-    let host = request_host.as_bytes();
-    if host.len() > 255 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "hostname too long",
-        ));
+    let mut request = vec![0x05, 0x01, 0x00];
+    match request_host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => {
+            request.push(0x01);
+            request.extend_from_slice(&address.octets());
+        }
+        Ok(IpAddr::V6(address)) => {
+            request.push(0x04);
+            request.extend_from_slice(&address.octets());
+        }
+        Err(_) => {
+            let host = request_host.as_bytes();
+            if host.len() > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "hostname too long",
+                ));
+            }
+            request.push(0x03);
+            request.push(host.len() as u8);
+            request.extend_from_slice(host);
+        }
     }
-    let mut request = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
-    request.extend_from_slice(host);
     request.extend_from_slice(&request_port.to_be_bytes());
     stream.write_all(&request).await?;
 

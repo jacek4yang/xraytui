@@ -556,8 +556,9 @@ fn generated_rule_order_puts_safety_first_and_catch_all_last() {
 
     assert_eq!(
         order.first().map(String::as_str),
-        Some("rule/system/core-bypass")
+        Some("rule/system/dns-upstream-direct")
     );
+    assert!(index("rule/system/dns-upstream-direct") < index("rule/system/core-bypass"));
     assert!(index("rule/system/dns-intercept") < index("rule/profile/web/inbound"));
     assert!(index("rule/profile/web/inbound") < index("rule/system/private-direct"));
     assert!(index("rule/system/private-direct") < index("rule/user/ads"));
@@ -1006,10 +1007,17 @@ fn disabled_profiles_and_nodes_are_omitted() {
 #[test]
 fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
     let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
     state.profiles.insert(
-        ProfileId::new("web").expect("valid"),
-        profile("web", Target::Direct),
+        profile_id.clone(),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
     );
+    state.default_profile = Some(profile_id);
     let options = CompileOptions {
         tun: Some(TunOptions {
             name: "xraytui0".into(),
@@ -1028,8 +1036,24 @@ fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
     let compiled = compile(&state, &options).expect("compile");
 
     let dns = compiled.config.dns.as_ref().expect("dns block");
-    assert_eq!(dns.tag.as_deref(), Some("inbound/system/dns-query"));
-    assert!(dns.servers.len() >= 3);
+    assert_eq!(dns.tag.as_deref(), Some(tags::DNS_QUERY_DIRECT));
+    assert_eq!(dns.disable_fallback_if_match, Some(true));
+    assert_eq!(
+        dns.servers.len(),
+        2,
+        "direct fallback is fail-closed unless explicitly enabled"
+    );
+    let details: Vec<&DnsServerDetail> = dns
+        .servers
+        .iter()
+        .filter_map(|server| match server {
+            DnsServer::Detailed(detail) => Some(detail.as_ref()),
+            DnsServer::Simple(_) => None,
+        })
+        .collect();
+    assert_eq!(details.len(), 2);
+    assert_eq!(details[0].tag.as_deref(), Some(tags::DNS_QUERY_DIRECT));
+    assert_eq!(details[1].tag.as_deref(), Some(tags::DNS_QUERY_PROXY));
 
     let routing = compiled.config.routing.as_ref().expect("routing");
     let intercept = routing
@@ -1052,6 +1076,257 @@ fn dns_configuration_intercepts_port_53_and_tags_its_own_queries() {
             .iter()
             .any(|o| o.tag == "control/dns")
     );
+    let direct = routing
+        .rules
+        .iter()
+        .find(|rule| rule.rule_tag.as_deref() == Some("rule/system/dns-upstream-direct"))
+        .expect("direct nameserver route");
+    assert_eq!(direct.outbound_tag.as_deref(), Some(tags::CONTROL_DIRECT));
+    let proxied = routing
+        .rules
+        .iter()
+        .find(|rule| rule.rule_tag.as_deref() == Some("rule/system/dns-upstream-proxy"))
+        .expect("proxied nameserver route");
+    assert_eq!(
+        proxied.balancer_tag.as_deref(),
+        Some("profile/web/selector")
+    );
+}
+
+#[test]
+fn proxied_dns_without_a_default_profile_is_refused_instead_of_going_direct() {
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&base_state(), &options).expect_err("route is unresolved");
+    assert!(error.to_string().contains("default profile"), "{error}");
+}
+
+#[test]
+fn enabled_dns_without_any_resolver_is_refused_instead_of_using_the_system_resolver() {
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: Vec::new(),
+            proxy_servers: Vec::new(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&base_state(), &options).expect_err("resolver must be explicit");
+    let message = error.to_string();
+    assert!(
+        message.contains("no direct_servers or proxy_servers"),
+        "{message}"
+    );
+    assert!(message.contains("implicit system fallback"), "{message}");
+}
+
+#[test]
+fn direct_domains_without_a_direct_resolver_are_refused() {
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: Vec::new(),
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            direct_domains: vec!["full:internal.example".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&base_state(), &options).expect_err("direct scope must not cross routes");
+    let message = error.to_string();
+    assert!(message.contains("direct_domains"), "{message}");
+    assert!(message.contains("direct_servers is empty"), "{message}");
+}
+
+#[test]
+fn direct_dns_fallback_without_a_direct_resolver_is_refused() {
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: Vec::new(),
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            allow_direct_fallback: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&base_state(), &options).expect_err("fallback needs a resolver");
+    let message = error.to_string();
+    assert!(
+        message.contains("proxy_failure_policy is 'direct'"),
+        "{message}"
+    );
+    assert!(message.contains("direct_servers is empty"), "{message}");
+}
+
+#[test]
+fn proxied_dns_through_a_direct_default_profile_is_refused() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    state
+        .profiles
+        .insert(profile_id.clone(), profile("web", Target::Direct));
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&state, &options).expect_err("proxy route must remain proxied");
+    let message = error.to_string();
+    assert!(message.contains("profile 'web'"), "{message}");
+    assert!(message.contains("can select direct traffic"), "{message}");
+}
+
+#[test]
+fn proxied_dns_through_a_profile_with_a_direct_fallback_is_refused() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    let mut web = profile(
+        "web",
+        Target::Node {
+            id: NodeId::new("hk-01").expect("valid"),
+        },
+    );
+    web.fallback = Some(Target::Direct);
+    web.kill_switch = KillSwitch::FallbackOnly;
+    state.profiles.insert(profile_id.clone(), web);
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&state, &options).expect_err("profile fallback must fail closed");
+    assert!(
+        error.to_string().contains("can select direct traffic"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_blocked_profile_fallback_cannot_make_proxied_dns_direct() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    let mut web = profile(
+        "web",
+        Target::Node {
+            id: NodeId::new("hk-01").expect("valid"),
+        },
+    );
+    web.fallback = Some(Target::Direct);
+    web.kill_switch = KillSwitch::Block;
+    state.profiles.insert(profile_id.clone(), web);
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let compiled = compile(&state, &options).expect("kill switch replaces fallback with block");
+    let selector = find_balancer(&compiled, "profile/web/selector");
+    assert_eq!(selector.fallback_tag.as_deref(), Some(tags::CONTROL_BLOCK));
+}
+
+#[test]
+fn proxied_dns_through_a_group_with_a_direct_fallback_is_refused() {
+    let mut state = base_state();
+    let group_id = GroupId::new("proxy").expect("valid");
+    state.groups.insert(
+        group_id.clone(),
+        Group {
+            id: group_id.clone(),
+            name: "Proxy".into(),
+            strategy: GroupStrategy::Random,
+            membership: GroupMembership {
+                nodes: vec![NodeId::new("hk-01").expect("valid")],
+                ..Default::default()
+            },
+            manual_selection: None,
+            fallback: Some(Target::Direct),
+        },
+    );
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile("web", Target::Group { id: group_id }),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = compile(&state, &options).expect_err("group fallback must fail closed");
+    assert!(
+        error.to_string().contains("can select direct traffic"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_unimplemented_per_profile_dns_policy_is_refused_instead_of_ignored() {
+    let mut state = base_state();
+    let mut web = profile("web", Target::Direct);
+    web.dns_policy = Some(xraytui_domain::ProfileDnsPolicy::Proxied);
+    state.profiles.insert(web.id.clone(), web);
+    let error = compile(&state, &CompileOptions::default()).expect_err("must not ignore policy");
+    let message = error.to_string();
+    assert!(message.contains("profile 'web'"), "{message}");
+    assert!(message.contains("not implemented"), "{message}");
+}
+
+#[test]
+fn direct_fallback_after_proxied_dns_failure_requires_explicit_opt_in() {
+    let mut state = base_state();
+    let profile_id = ProfileId::new("web").expect("valid");
+    state.profiles.insert(
+        profile_id.clone(),
+        profile(
+            "web",
+            Target::Node {
+                id: NodeId::new("hk-01").expect("valid"),
+            },
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: vec!["127.0.0.53".into()],
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            allow_direct_fallback: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let compiled = compile(&state, &options).expect("explicit fallback");
+    let dns = compiled.config.dns.as_ref().expect("dns");
+    assert!(dns.servers.iter().any(|server| {
+        matches!(server, DnsServer::Detailed(detail)
+            if detail.address == "127.0.0.53"
+                && detail.domains.is_empty()
+                && detail.tag.as_deref() == Some(tags::DNS_QUERY_DIRECT))
+    }));
 }
 
 #[test]

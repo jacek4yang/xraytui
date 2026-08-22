@@ -22,6 +22,24 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN="$ROOT/target/release"
 [ -x "$BIN/xraytui" ] || BIN="$ROOT/target/debug"
+
+# Match the real-Xray test suites: an explicit binary is authoritative and is
+# added to PATH because the production daemon deliberately does not understand
+# test-only environment variables. Without this check, a missing core produces
+# dozens of misleading downstream socket failures.
+if [ -n "${XRAYTUI_TEST_XRAY:-}" ]; then
+    if [ ! -x "$XRAYTUI_TEST_XRAY" ]; then
+        echo "release-smoke: XRAYTUI_TEST_XRAY is not executable: $XRAYTUI_TEST_XRAY" >&2
+        exit 1
+    fi
+    PATH=$(dirname "$XRAYTUI_TEST_XRAY"):$PATH
+    export PATH
+fi
+if ! command -v xray >/dev/null 2>&1; then
+    echo "release-smoke: no Xray-core binary on PATH; set XRAYTUI_TEST_XRAY" >&2
+    exit 1
+fi
+
 WORK=$(mktemp -d)
 FAILURES=0
 DAEMON=""

@@ -311,7 +311,19 @@ impl Engine {
             return Err(ControllerError::Invalid(errors.join("; ")));
         }
 
-        match self.plan(&next) {
+        let plan = self.plan(&next);
+        if matches!(plan, ChangePlan::Selectors(_)) {
+            // Selector-only mutations do not rebuild the core, but they can
+            // still change safety semantics. In particular, repointing the
+            // default profile can turn a proxied DNS route into a direct one.
+            // Compile the candidate before the first runtime API mutation so
+            // compiler policy checks cannot be bypassed by the hot path.
+            let mut options = self.config.compile.clone();
+            options.api_listen = self.config.api_endpoint.xray_listen();
+            compile(&next, &options)?;
+        }
+
+        match plan {
             ChangePlan::NoChange => {
                 self.desired = next;
                 Ok(ApplyOutcome::Unchanged)
@@ -897,6 +909,46 @@ mod tests {
             }
             other => panic!("expected an API switch, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_hot_switch_cannot_turn_proxied_dns_into_direct_traffic() {
+        let mut state = two_profile_state();
+        let web = ProfileId::from_text("web");
+        state.default_profile = Some(web.clone());
+
+        let mut config = EngineConfig::default();
+        config.compile.dns = xraytui_xray_compiler::DnsOptions {
+            enabled: true,
+            proxy_servers: vec!["https://resolver.example/dns-query".into()],
+            ..Default::default()
+        };
+        let mut engine = Engine::new(config, info())
+            .unwrap_or_else(|_| unreachable!("the fixture version is above the minimum"));
+        let compiled = compile(&state, &engine.config.compile)
+            .unwrap_or_else(|_| unreachable!("the initial proxy route is valid"));
+        engine.compiled = Some(compiled);
+        engine.desired = state;
+
+        let error = engine
+            .set_profile_target(&web, Target::Direct)
+            .await
+            .expect_err("the selector fast path must run compiler policy checks");
+        assert!(
+            error.to_string().contains("can select direct traffic"),
+            "{error}"
+        );
+        assert!(
+            matches!(
+                engine
+                    .desired()
+                    .profiles
+                    .get(&web)
+                    .map(|profile| &profile.target),
+                Some(Target::Node { .. })
+            ),
+            "the rejected candidate must not mutate desired state"
+        );
     }
 
     #[test]

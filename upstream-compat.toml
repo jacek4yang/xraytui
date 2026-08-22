@@ -11,6 +11,11 @@ preview_tag = "v26.7.28"
 preview_commit = "5ca6f4b7d4dc20a881d4330e498892697627ec0c"
 
 [core.stable_files]
+"app/dns/config.proto" = "835ebd41795c068ca02002edb0aa476c60175d26a6147ae5fd6ae7d8b5e88ec5"
+"app/dns/dns.go" = "b1782986b2af1ccab6be20ce5e33c70649252690144b457d339cd0287a779c39"
+"app/dns/nameserver.go" = "895a4f59456af1a96a8ce30ab3dbfe6a7957834034e9c28e3e44dfba37658f84"
+"app/dns/nameserver_tcp.go" = "81abdbe2fe95b30e972eddfde291916ab75886a370ef20d5a4c7051509e960eb"
+"infra/conf/dns.go" = "d8f115c405d62d4bf732fa7fb4d172bda5f7718ab2309a553511ec4d884a4229"
 "infra/conf/freedom.go" = "f6d91aa70f5827e656db11121c495924320c3495f2f57240ab5be4177767d558"
 "infra/conf/transport_internet.go" = "c8e1b9ff4abe28183b1641f37f611955c6fcf228161c10e0f3a5e80d37bcbd4f"
 "infra/conf/vless.go" = "6a010b31bb7e681efa4dae2e93e3ba545bae95035b187f7e388c81f43b2a8070"
@@ -29,6 +34,11 @@ preview_commit = "5ca6f4b7d4dc20a881d4330e498892697627ec0c"
 "transport/internet/splithttp/config.proto" = "aeee5abff1431782bfbc14ea0450115e3b56ece6f21446eef17e852720aad9f7"
 
 [core.preview_files]
+"app/dns/config.proto" = "055b946a720a1bc839a98700bab970bef6a89eaa092171c3febaa9455fabca5c"
+"app/dns/dns.go" = "dbf6f72f6007f5e777d5a40e23e3e1d402594a4b0f187a143302d326355025ea"
+"app/dns/nameserver.go" = "08357d41eee26fcb8e8345cffe608339369d9093a542e6cf444c3bda3ff78a14"
+"app/dns/nameserver_tcp.go" = "0c6cd445ace96944fe04fcddfdd4e64b9553eb3802c6003504ac7880dcbf7765"
+"infra/conf/dns.go" = "568cb6b81ffed73d3ef1f084e81a0a9287b0844a4b6d7f598b951fea83e0d4d6"
 "infra/conf/freedom.go" = "a56aca8c577b8d6d6cb1fdd0c91dcf178599853d183e0acc3ff11603dff860d2"
 "infra/conf/transport_finalmask.go" = "2d82e2cea9e6c621933590ff27b094cfc9d01571fb5b214db9fb2600b287e335"
 "infra/conf/transport_internet.go" = "b2f0b2285c794cdae97b1b508eccbe604321d4ea00c05e04cda35645c0ef56d1"

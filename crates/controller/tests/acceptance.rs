@@ -15,7 +15,7 @@
 //!
 //! Skipped, loudly, when no Xray binary is present.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -28,8 +28,11 @@ use xraytui_domain::{
     Node, NodeId, NodeSource, ProfileId, ProtocolSettings, Target, Transport, VlessSettings,
 };
 use xraytui_secrets::Secret;
-use xraytui_test_support::{MockEgress, fixtures, free_port, probe_through_socks5};
+use xraytui_test_support::{
+    DnsRecordType, MockEgress, TcpDnsFixture, fixtures, free_port, probe_through_socks5, query_dns,
+};
 use xraytui_xray_api::ApiEndpoint;
+use xraytui_xray_compiler::{CompileOptions, DnsOptions};
 
 /// Locate an Xray binary, or `None` to skip.
 fn xray_path() -> Option<std::path::PathBuf> {
@@ -56,11 +59,20 @@ macro_rules! require_xray {
 
 /// An engine wired to a temporary directory and a free loopback API port.
 async fn engine_for(state: DesiredState, dir: &std::path::Path) -> Engine {
+    engine_for_with_compile(state, dir, CompileOptions::default()).await
+}
+
+async fn engine_for_with_compile(
+    state: DesiredState,
+    dir: &std::path::Path,
+    compile: CompileOptions,
+) -> Engine {
     let binary = xray_path().expect("checked by require_xray!");
     let info = probe_binary(&binary, None).await.expect("probe the binary");
 
     let api_port = free_port().expect("free port");
     let config = EngineConfig {
+        compile,
         api_endpoint: ApiEndpoint::loopback(api_port),
         generated_config: dir.join("generated-xray.json"),
         last_good_config: dir.join("last-good-xray.json"),
@@ -77,6 +89,34 @@ async fn engine_for(state: DesiredState, dir: &std::path::Path) -> Engine {
     engine
 }
 
+fn free_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .and_then(|socket| socket.local_addr())
+        .expect("free UDP port")
+        .port()
+}
+
+async fn dns_answer(server: SocketAddr, name: &str, record_type: DnsRecordType) -> IpAddr {
+    let mut last_error = None;
+    for _ in 0..20 {
+        match tokio::time::timeout(
+            Duration::from_millis(500),
+            query_dns(server, name, record_type),
+        )
+        .await
+        {
+            Ok(Ok(answer)) => return answer,
+            Ok(Err(error)) => last_error = Some(error.to_string()),
+            Err(_) => last_error = Some("query timed out".to_owned()),
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "DNS query for {name} through {server} did not succeed: {}",
+        last_error.unwrap_or_else(|| "no attempt".to_owned())
+    );
+}
+
 /// Read the egress banner through a profile's SOCKS listener.
 async fn egress_reached(port: u16) -> String {
     let address = format!("127.0.0.1:{port}")
@@ -85,6 +125,24 @@ async fn egress_reached(port: u16) -> String {
     probe_through_socks5(address, "probe.invalid", 80)
         .await
         .unwrap_or_else(|error| panic!("probe through 127.0.0.1:{port} failed: {error}"))
+}
+
+async fn ipv6_egress(name: &'static str, forwarding: bool) -> Option<MockEgress> {
+    let result = if forwarding {
+        MockEgress::start_forwarding_on(name, IpAddr::V6(Ipv6Addr::LOCALHOST)).await
+    } else {
+        MockEgress::start_on(name, IpAddr::V6(Ipv6Addr::LOCALHOST)).await
+    };
+    match result {
+        Ok(egress) => Some(egress),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+            eprintln!(
+                "SKIPPED IPv6 acceptance: ::1 is unavailable in this network namespace: {error}"
+            );
+            None
+        }
+        Err(error) => panic!("start IPv6 egress: {error}"),
+    }
 }
 
 /// A second real Xray process used as a deterministic loopback protocol peer.
@@ -468,6 +526,322 @@ async fn scenario_e_a_two_hop_chain_reaches_the_exit_through_the_first_hop() {
         "the non-chain profile used the transit hop"
     );
 
+    engine.stop_core().await;
+}
+
+// ------------------------------------------------------------ IPv6 data path
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ipv6_proxy_endpoint_reaches_an_ipv6_exit_through_real_xray() {
+    let _binary = require_xray!("IPv6 proxy endpoint");
+    let Some(egress) = ipv6_egress("ipv6-exit", false).await else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let port = free_port().expect("port");
+
+    let mut state = DesiredState::default();
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("ipv6-exit", "IPv6 exit", egress.socks_addr()),
+    );
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks(
+            "ipv6",
+            Target::Node {
+                id: NodeId::new("ipv6-exit").expect("valid"),
+            },
+            port,
+        ),
+    );
+
+    let mut engine = engine_for(state, dir.path()).await;
+    engine.rebuild_and_start().await.expect("start real Xray");
+    let answer = egress_reached(port).await;
+    assert!(answer.contains("EGRESS ipv6-exit"), "{answer:?}");
+    assert_eq!(egress.connection_count(), 1);
+    assert!(egress.socks_addr().is_ipv6());
+    engine.stop_core().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dual_stack_profiles_reach_distinct_ipv4_and_ipv6_exits_concurrently() {
+    let _binary = require_xray!("dual-stack proxy endpoints");
+    let ipv4 = MockEgress::start("dual-v4")
+        .await
+        .expect("start IPv4 egress");
+    let Some(ipv6) = ipv6_egress("dual-v6", false).await else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ipv4_port = free_port().expect("port");
+    let ipv6_port = free_port().expect("port");
+
+    let mut state = DesiredState::default();
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("dual-v4", "Dual IPv4", ipv4.socks_addr()),
+    );
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("dual-v6", "Dual IPv6", ipv6.socks_addr()),
+    );
+    for (profile, node, port) in [
+        ("dual-v4", "dual-v4", ipv4_port),
+        ("dual-v6", "dual-v6", ipv6_port),
+    ] {
+        fixtures::add_profile(
+            &mut state,
+            fixtures::profile_with_socks(
+                profile,
+                Target::Node {
+                    id: NodeId::new(node).expect("valid"),
+                },
+                port,
+            ),
+        );
+    }
+
+    let mut engine = engine_for(state, dir.path()).await;
+    engine.rebuild_and_start().await.expect("start real Xray");
+    let (answer4, answer6) = tokio::join!(egress_reached(ipv4_port), egress_reached(ipv6_port));
+    assert!(answer4.contains("EGRESS dual-v4"), "{answer4:?}");
+    assert!(answer6.contains("EGRESS dual-v6"), "{answer6:?}");
+    assert_eq!(ipv4.connection_count(), 1);
+    assert_eq!(ipv6.connection_count(), 1);
+    engine.stop_core().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_two_hop_ipv6_chain_reaches_its_exit_through_the_ipv6_transit() {
+    let _binary = require_xray!("IPv6 chain");
+    let Some(transit) = ipv6_egress("ipv6-transit", true).await else {
+        return;
+    };
+    let Some(exit) = ipv6_egress("ipv6-chain-exit", false).await else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let port = free_port().expect("port");
+
+    let mut transit_node =
+        fixtures::socks_node("ipv6-transit", "IPv6 transit", transit.socks_addr());
+    transit_node.protocol =
+        xraytui_domain::ProtocolSettings::Socks(xraytui_domain::SocksSettings {
+            username: None,
+            password: None,
+            udp: true,
+        });
+    let mut state = DesiredState::default();
+    fixtures::add_node(&mut state, transit_node);
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("ipv6-chain-exit", "IPv6 chain exit", exit.socks_addr()),
+    );
+    let chain_id = ChainId::new("ipv6-chain").expect("valid");
+    state.chains.insert(
+        chain_id.clone(),
+        Chain {
+            id: chain_id.clone(),
+            name: "IPv6 transit to IPv6 exit".into(),
+            hops: vec![
+                NodeId::new("ipv6-transit").expect("valid"),
+                NodeId::new("ipv6-chain-exit").expect("valid"),
+            ],
+            enabled: true,
+        },
+    );
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks("ipv6-chain", Target::Chain { id: chain_id }, port),
+    );
+
+    let mut engine = engine_for(state, dir.path()).await;
+    engine.rebuild_and_start().await.expect("start real Xray");
+    let answer = egress_reached(port).await;
+    assert!(answer.contains("EGRESS ipv6-chain-exit"), "{answer:?}");
+    assert_eq!(transit.connection_count(), 1);
+    assert_eq!(exit.connection_count(), 1);
+    engine.stop_core().await;
+}
+
+// ---------------------------------------------------------- DNS route proof
+
+#[tokio::test(flavor = "multi_thread")]
+async fn split_dns_uses_direct_and_proxied_ipv6_chain_paths_without_crossing_them() {
+    let _binary = require_xray!("split DNS through an IPv6 chain");
+    let Some(first_hop) = ipv6_egress("dns-chain-first", true).await else {
+        return;
+    };
+    let Some(second_hop) = ipv6_egress("dns-chain-second", true).await else {
+        return;
+    };
+    let proxied_answer: IpAddr = "2001:db8::53".parse().expect("proxied answer");
+    let direct_answer: IpAddr = "2001:db8::54".parse().expect("direct answer");
+    let proxied_dns = TcpDnsFixture::start_on(IpAddr::V6(Ipv6Addr::LOCALHOST), proxied_answer)
+        .await
+        .expect("proxied IPv6 DNS fixture");
+    let direct_dns =
+        TcpDnsFixture::start_on("127.0.0.1".parse().expect("IPv4 loopback"), direct_answer)
+            .await
+            .expect("direct DNS fixture");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let profile_port = free_port().expect("profile port");
+    let dns_listen = SocketAddr::from(([127, 0, 0, 1], free_udp_port()));
+
+    let mut first_node =
+        fixtures::socks_node("dns-first", "DNS chain first", first_hop.socks_addr());
+    first_node.protocol = xraytui_domain::ProtocolSettings::Socks(xraytui_domain::SocksSettings {
+        username: None,
+        password: None,
+        udp: true,
+    });
+    let mut state = DesiredState::default();
+    fixtures::add_node(&mut state, first_node);
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("dns-second", "DNS chain second", second_hop.socks_addr()),
+    );
+    let chain_id = ChainId::new("dns-ipv6-chain").expect("chain id");
+    state.chains.insert(
+        chain_id.clone(),
+        Chain {
+            id: chain_id.clone(),
+            name: "DNS IPv6 chain".into(),
+            hops: vec![
+                NodeId::new("dns-first").expect("node id"),
+                NodeId::new("dns-second").expect("node id"),
+            ],
+            enabled: true,
+        },
+    );
+    let profile_id = ProfileId::new("dns-proxy").expect("profile id");
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks("dns-proxy", Target::Chain { id: chain_id }, profile_port),
+    );
+    state.default_profile = Some(profile_id);
+
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: vec![format!("tcp://{}", direct_dns.address())],
+            proxy_servers: vec![format!("tcp://{}", proxied_dns.address())],
+            direct_domains: vec!["full:direct.test".into()],
+            query_strategy: "UseIPv6".into(),
+            listen: Some(dns_listen),
+            allow_direct_fallback: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut engine = engine_for_with_compile(state, dir.path(), options).await;
+    engine.rebuild_and_start().await.expect("start real Xray");
+
+    assert_eq!(
+        dns_answer(dns_listen, "proxy.test", DnsRecordType::Aaaa).await,
+        proxied_answer
+    );
+    assert!(proxied_dns.query_count() >= 1);
+    assert_eq!(direct_dns.query_count(), 0);
+    assert!(first_hop.connection_count() >= 1);
+    assert!(second_hop.connection_count() >= 1);
+    let first_after_proxy = first_hop.connection_count();
+    let second_after_proxy = second_hop.connection_count();
+
+    assert_eq!(
+        dns_answer(dns_listen, "direct.test", DnsRecordType::Aaaa).await,
+        direct_answer
+    );
+    assert!(direct_dns.query_count() >= 1);
+    assert_eq!(
+        first_hop.connection_count(),
+        first_after_proxy,
+        "direct-domain DNS escaped through the proxy chain"
+    );
+    assert_eq!(
+        second_hop.connection_count(),
+        second_after_proxy,
+        "direct-domain DNS escaped through the proxy chain"
+    );
+    engine.stop_core().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_proxied_dns_does_not_fall_back_to_a_direct_resolver() {
+    let _binary = require_xray!("fail-closed proxied DNS");
+    let Some(proxy) = ipv6_egress("dns-failure-proxy", true).await else {
+        return;
+    };
+    let direct_dns = TcpDnsFixture::start_on(
+        "127.0.0.1".parse().expect("IPv4 loopback"),
+        "2001:db8::99".parse().expect("direct answer"),
+    )
+    .await
+    .expect("direct DNS fixture");
+    let unavailable = tokio::net::TcpListener::bind("[::1]:0")
+        .await
+        .expect("reserve unavailable address")
+        .local_addr()
+        .expect("reserved address");
+    // Dropping the listener makes the failure deterministic: the routed TCP
+    // connect receives ECONNREFUSED rather than waiting on the public network.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let profile_port = free_port().expect("profile port");
+    let dns_listen = SocketAddr::from(([127, 0, 0, 1], free_udp_port()));
+
+    let mut state = DesiredState::default();
+    fixtures::add_node(
+        &mut state,
+        fixtures::socks_node("dns-failure-proxy", "DNS failure proxy", proxy.socks_addr()),
+    );
+    let profile_id = ProfileId::new("dns-failure").expect("profile id");
+    fixtures::add_profile(
+        &mut state,
+        fixtures::profile_with_socks(
+            "dns-failure",
+            Target::Node {
+                id: NodeId::new("dns-failure-proxy").expect("node id"),
+            },
+            profile_port,
+        ),
+    );
+    state.default_profile = Some(profile_id);
+    let options = CompileOptions {
+        dns: DnsOptions {
+            enabled: true,
+            direct_servers: vec![format!("tcp://{}", direct_dns.address())],
+            proxy_servers: vec![format!("tcp://{unavailable}")],
+            direct_domains: Vec::new(),
+            query_strategy: "UseIPv6".into(),
+            listen: Some(dns_listen),
+            allow_direct_fallback: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut engine = engine_for_with_compile(state, dir.path(), options).await;
+    engine.rebuild_and_start().await.expect("start real Xray");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(8),
+        query_dns(dns_listen, "must-not-leak.test", DnsRecordType::Aaaa),
+    )
+    .await;
+    assert!(
+        !matches!(outcome, Ok(Ok(_))),
+        "a failed proxied resolver unexpectedly produced a direct answer"
+    );
+    assert_eq!(
+        direct_dns.query_count(),
+        0,
+        "proxied DNS failure leaked to the configured direct resolver"
+    );
+    assert!(
+        proxy.connection_count() >= 1,
+        "Xray did not attempt the configured proxied route"
+    );
     engine.stop_core().await;
 }
 
