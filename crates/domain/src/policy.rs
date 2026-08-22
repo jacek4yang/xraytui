@@ -368,7 +368,8 @@ pub struct EgressProfile {
     /// Dedicated HTTP CONNECT listener.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<ListenerSpec>,
-    /// Per-profile DNS override; `None` inherits the global policy.
+    /// Reserved per-profile DNS override. The current compiler refuses a value
+    /// rather than silently claiming semantics it cannot yet enforce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns_policy: Option<ProfileDnsPolicy>,
     /// Behaviour when the target is unhealthy.

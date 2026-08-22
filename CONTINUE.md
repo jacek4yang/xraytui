@@ -7,7 +7,9 @@
   `2eb98ba87093a1e2b88d16c50666c717d8e7890f`
 * Release PR: <https://github.com/jacek4yang/xraytui/pull/3>
 * Release page: <https://github.com/jacek4yang/xraytui/releases/tag/v1.1.0>
-* Development branch after release: `main`
+* Merged dual-stack kernel branch: PR #5, commit
+  `2f13f4144516b27f4a9745ee701eb91af24df84e`
+* Current development branch: `feature/ipv6-xray-e2e`
 * Official Xray stable under test: `v26.3.27`
 * Explicit preview under test: `v26.7.28`
 
@@ -67,11 +69,15 @@ These results include the merged commit and retrieved public artifact.
 
 ## Required next steps
 
-1. Keep IPv6 experimental until deterministic real-Xray IPv6-only and dual-stack
-   transport, DNS, chain/group, systemd-resolved and failure-injection suites
-   complement the now-passing kernel route/blackhole/kill-switch namespace
-   matrix.
-2. Add an automatic redacted diagnostic-bundle exporter without including
+1. Open and merge the current candidate only after mandatory GitHub jobs
+   reproduce the local result. Stable/preview workspaces, real Xray acceptance,
+   privileged namespaces, the TUN validator, strict CI, upstream compatibility,
+   dependency policy, release build and release smoke are all locally green;
+   exact evidence is in `STATUS.md`.
+2. Keep IPv6 experimental until IPv6 group selection, combined TUN +
+   systemd-resolved + proxied-upstream DNS, bootstrap dependency-cycle detection
+   and broader failure injection execute deterministically.
+3. Add an automatic redacted diagnostic-bundle exporter without including
    policy, generated Xray JSON, share links, QR images or subscription secrets.
 
 Never record an unexecuted gate as passing. `STATUS.md` remains the authoritative

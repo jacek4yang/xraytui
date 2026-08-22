@@ -198,6 +198,14 @@ pub struct DnsConfig {
         rename = "disableFallback"
     )]
     pub disable_fallback: Option<bool>,
+    /// Once a domain matched a server-specific rule, do not query unrelated
+    /// fallback servers if that resolver fails.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "disableFallbackIfMatch"
+    )]
+    pub disable_fallback_if_match: Option<bool>,
 }
 
 /// A DNS server entry. Serialised as a bare string when only `address` is set.
@@ -817,5 +825,16 @@ mod tests {
             serde_json::from_str(r#"{"address":"1.1.1.1","domains":["geosite:cn"]}"#)
                 .expect("parse");
         assert!(matches!(detailed, DnsServer::Detailed(_)));
+    }
+
+    #[test]
+    fn dns_match_fallback_guard_uses_the_upstream_field_name() {
+        let dns = DnsConfig {
+            disable_fallback_if_match: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&dns).expect("serialise");
+        assert_eq!(json["disableFallbackIfMatch"], true);
+        assert!(json.get("disable_fallback_if_match").is_none());
     }
 }

@@ -39,22 +39,29 @@ keep usable direct IPv4 and IPv6 defaults present while proving:
   the direct device, nftables rejects one real UDP packet per family and the
   project guard's counter advances from zero to two.
 
-This closes the kernel routing and kill-switch coverage gap. It does **not** yet
-promote IPv6 to production-ready: end-to-end IPv6-only Xray transport, proxied
-DNS, chain/group traffic, systemd-resolved and failure-injection coverage still
-need deterministic execution.
+This closes the kernel routing and kill-switch coverage gap. The next candidate
+increment also executes real Xray over an IPv6 proxy endpoint, concurrent IPv4
+and IPv6 profiles, a two-hop IPv6 chain, and split AAAA DNS through a two-hop
+IPv6 chain. Proxied-resolver failure attempts the configured profile but makes
+zero connections to the available direct resolver. Compile-time and live
+selector checks additionally refuse implicit resolvers or any supposedly
+proxied DNS profile/group path that can select direct traffic. IPv6 is still not
+promoted: IPv6 group selection, the combined TUN + DNS + systemd-resolved path,
+bootstrap DNS-cycle detection and broader failure injection remain unexecuted.
 
 | Candidate gate | 2026-08-22 result |
 |---|---|
-| stable v26.3.27 workspace | **pass**: 815 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
-| preview v26.7.28 workspace | **pass**: 815 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
+| stable v26.3.27 workspace | **pass**: 837 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
+| preview v26.7.28 workspace | **pass**: 837 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
 | ignored TUN/DNS Xray validator | **pass separately** with `CAP_NET_ADMIN` against stable and preview; `xraytui0` absent before and after |
 | privileged namespaces | **pass twice**: 21 kernel/network scenarios plus one real CLI/helper/Xray exact-instance scenario with stable and preview; no skip |
-| `cargo xtask ci` | **pass** after the lease-migration fix: fmt, check, strict Clippy, workspace build/test and rustdoc |
+| real-Xray controller acceptance | **pass twice**: 13/13 with stable and 13/13 with preview; includes IPv6 endpoint, concurrent dual-stack profiles, two-hop IPv6 data and DNS chains, split direct/proxy DNS, and fail-closed resolver failure |
+| `cargo xtask ci` | **pass** after the final DNS hot-path/no-leak review: fmt, check, strict Clippy, workspace build/test and rustdoc |
 | `cargo xtask upstream-check` | **pass** against live Xray release/tag/source state and reviewed v2rayN/v2rayNG serializer snapshots |
 | `cargo deny check` | **pass**: advisories, bans, licenses and sources |
 | `cargo audit --no-fetch` | **pass** after manually fast-forwarding the database to RustSec commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
-| release workspace build | **pass** with all features after the final migration regression fix |
+| release workspace build | **pass** with all features after the final DNS policy hardening |
+| `scripts/release-smoke.sh` | **pass** against stable Xray: first run, mutations, subscriptions, concurrent exits, hot switching, sharing, supervision, restart, persistence and staged install/uninstall |
 
 ## Published 1.1.0 sharing evidence
 
@@ -135,7 +142,7 @@ SHA-256 matched its official `.dgst` file before use.
 | A | two profiles, two SOCKS ports and two exits simultaneously | **passing** in controller acceptance tests and release smoke |
 | B | hot-switch one profile; other profile and core PID unchanged | **passing** against real Xray gRPC |
 | C | shared TUN rule mode and per-app routing | **passing** in the disposable network namespace; kernel route lookup is the oracle |
-| D | concurrent applications and DNS following policy | **passing across integration boundaries**: A/M prove concurrent classification, compiler tests prove DNS interception, and the real resolve1 test proves apply/revert; there is no single monolithic test |
+| D | concurrent applications and DNS following policy | **passing across integration boundaries**: A/M prove concurrent classification; real stable/preview Xray sends split AAAA queries through the observed direct path or every hop of the selected IPv6 chain; the real resolve1 test proves apply/revert. The combined TUN + resolve1 + proxied-upstream scenario remains unexecuted |
 | E | two-hop chain reaches the terminal through hop one | **passing** with an observed transit connection |
 | F | import valid, malformed and unsupported node representations | **passing**, including property tests over arbitrary input |
 | G | subscription add/change/remove, diff and rollback | **passing** against a real local HTTP fixture |
@@ -169,15 +176,21 @@ SHA-256 matched its official `.dgst` file before use.
 
 ## Remaining limitations
 
-1. **IPv6 end-to-end coverage.** The post-release candidate now proves
-   IPv4-only, IPv6-only, dual-stack and broken-route kernel behavior with usable
-   direct fallbacks present. It does not yet prove the complete real Xray/DNS/
-   chain/systemd-resolved matrix. IPv6 stays off by default and experimental.
-2. **Untrusted local users.** Upstream Xray commander traffic uses
+1. **IPv6 end-to-end coverage.** The post-release candidate proves IPv4-only,
+   IPv6-only, dual-stack and broken-route kernel behavior plus real Xray IPv6
+   endpoints, chains and split/failing DNS. IPv6 group selection and the
+   combined TUN + systemd-resolved + proxied-upstream path remain unexecuted, so
+   IPv6 stays off by default and experimental.
+2. **DNS bootstrap cycles and per-profile overrides.** Proxied upstream DNS
+   requires the default profile and fails closed, but automatic detection of a
+   hostname-based first hop depending on the same resolver is not implemented.
+   Keep an independent bootstrap resolver or use an IP-literal first hop. The
+   reserved per-profile `dns_policy` field is explicitly refused, not ignored.
+3. **Untrusted local users.** Upstream Xray commander traffic uses
    unauthenticated loopback TCP. A random local port is not a security boundary.
-3. **Architecture.** The package and binary archive are verified only for
+4. **Architecture.** The package and binary archive are verified only for
    `x86_64`; no `aarch64` artifact is claimed.
-4. **Diagnostic bundles.** There is no automatic bundle exporter yet. Bug
+5. **Diagnostic bundles.** There is no automatic bundle exporter yet. Bug
    reports must use `doctor`, `status` and manually reviewed log excerpts; never
    attach generated JSON, policy files, share exports or QR images.
 

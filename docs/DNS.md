@@ -49,33 +49,46 @@ Objects emitted:
 |---|---|---|
 | DNS outbound | `control/dns` | `{"protocol":"dns","settings":{"nonIPQuery":"<drop\|skip\|reject>"}}` |
 | Local listener inbound | `inbound/system/dns` | `dokodemo-door` bound to `[dns] listen`, forwarding to `127.0.0.1:53` over `tcp,udp`. Emitted only when `listen` is set. |
-| DNS module tag | `inbound/system/dns-query` | `dns.tag`; Xray stamps it on queries the module itself emits, so they can be routed explicitly. |
+| Direct resolver tag | `inbound/system/dns-query/direct` | Per-nameserver `tag` (and the global `dns.tag`); routes that resolver's sockets to `control/direct`. |
+| Proxied resolver tag | `inbound/system/dns-query/proxy` | Per-nameserver `tag`; routes that resolver's sockets to the default profile selector. |
 
 Server list construction, in the order the compiler emits it:
 
 1. If `direct_domains` is non-empty, one **detailed** server per entry of
    `direct_servers`, each carrying `domains: direct_domains` and
-   `skipFallback: true`.
-2. Every entry of `proxy_servers`, as a plain address.
-3. Every entry of `direct_servers`, as a plain address.
-4. If that produced nothing at all, a single `localhost` server, so the block is
-   never empty.
+   `skipFallback: true`, the direct tag, and global
+   `disableFallbackIfMatch: true`.
+2. Every entry of `proxy_servers`, as a detailed server carrying the proxied
+   tag.
+3. Every entry of `direct_servers`, carrying the direct tag, only when no
+   proxied resolver exists or `proxy_failure_policy = "direct"` explicitly
+   permits direct fallback.
+
+The compiler refuses to synthesize a resolver. Enabling DNS with both server
+lists empty is an actionable error. It also refuses `direct_domains` without a
+`direct_servers` entry and refuses `proxy_failure_policy = "direct"` when there
+is no explicit direct resolver to receive that fallback.
 
 `queryStrategy` comes from `[dns] query_strategy` (`UseIP`, `UseIPv4`,
-`UseIPv6`). `hosts` is emitted empty; cache and fallback are left at Xray's
-defaults.
+`UseIPv6`). `hosts` is emitted empty and cache remains at Xray's default;
+fallback is governed explicitly as described below.
 
-Two routing rules complete the picture, at positions 2a and 2b of the generated
-rule table (see `docs/XRAY-INTEGRATION.md`):
+Three routing rules complete the picture (see `docs/XRAY-INTEGRATION.md`):
 
 ```text
+rule/system/dns-upstream-direct
+                            inboundTag: [inbound/system/dns-query/direct]
+                                                               -> control/direct
+rule/system/dns-upstream-proxy
+                            inboundTag: [inbound/system/dns-query/proxy]
+                                                               -> profile/<default>/selector
 rule/system/dns-intercept   inboundTag: [inbound/system/tun, inbound/system/dns]
                             port: "53", network: "tcp,udp"      -> control/dns
-rule/system/dns-direct      inboundTag: [inbound/system/dns-query] -> control/direct
 ```
 
-The intercept rule is placed before anything else can claim port 53, so a later,
-broader rule cannot capture DNS by accident.
+The two exact upstream rules are placed before the broad `self/` direct bypass;
+otherwise Xray's own resolver sockets would all go direct. The intercept rule is
+placed before ordinary traffic rules can claim port 53.
 
 ## Split DNS
 
@@ -85,12 +98,25 @@ The split is expressed by the two server lists plus `direct_domains`:
 |---|---|---|
 | `direct_servers` | without a proxy | the host's own resolver, or a LAN resolver that knows internal names |
 | `proxy_servers` | through the default profile | a public resolver you want queried from the proxy's vantage point, so the answer matches where the connection will come from |
-| `direct_domains` | forced onto `direct_servers` regardless of list order, with `skipFallback: true` | `geosite:private` by default; add internal zones and any `geosite:` set that must resolve locally |
+| `proxy_failure_policy` | `block` returns failure; `direct` permits the generic direct resolver list | keep `block` unless exposing a failed proxied query directly is an intentional availability tradeoff |
+| `direct_domains` | forced onto `direct_servers` regardless of list order, with `skipFallback` and `disableFallbackIfMatch` | `geosite:private` by default; add internal zones and any `geosite:` set that must resolve locally |
 
-`skipFallback: true` on the detailed entries is what makes the split
-deterministic: a domain in `direct_domains` is answered by a direct server or not
-at all, rather than quietly falling through to a proxied resolver and leaking the
-name.
+The two fallback controls are intentionally paired. In Xray,
+`skipFallback: true` means that a server is excluded when constructing the
+generic fallback set; it does **not** stop fallback after that server matched a
+domain. `disableFallbackIfMatch: true` supplies that second guarantee. A domain
+in `direct_domains` is therefore answered by a matching direct server or not at
+all, rather than quietly crossing to the proxied resolver. Conversely, an
+ordinary proxied query cannot reach a generic direct resolver unless the user
+selected `proxy_failure_policy = "direct"`.
+
+Configuring `proxy_servers` requires an enabled default profile whose target and
+effective profile/group fallbacks cannot select `direct`. Compilation refuses a
+missing, disabled or direct-capable profile with an actionable DNS policy error;
+it does not reinterpret the resolver as direct. The check also runs before a
+live profile/group selector override, not only when Xray restarts. Since a
+profile target can be a chain, proxied DNS can use the same multi-hop composition
+as ordinary traffic.
 
 Resolving through the proxy matters when a destination is geographically
 load-balanced. Resolving directly matters when a name only exists on your LAN, or
@@ -98,10 +124,12 @@ when the answer must be a local address. Getting this wrong does not usually
 break connectivity, so it will not announce itself — it shows up as unexpectedly
 distant CDN endpoints or as internal names that stop resolving.
 
-Per-profile overrides exist for the same reason. A profile's `dns_policy` may be
-`proxied` (resolve through that profile's own egress), `direct` (use the direct
-resolvers) or `remote` (let the SOCKS client send the hostname, `socks5h`
-semantics, so the exit resolves it). Leaving it unset inherits the global policy.
+The persisted profile model reserves a future `dns_policy` field, but the
+current compiler refuses any value instead of silently ignoring it. Today,
+proxied upstream DNS uses the default profile; a client using a profile's SOCKS
+listener may still request remote hostname resolution using ordinary SOCKS5
+domain-address semantics. Per-profile direct/proxied resolver selection remains
+a tracked limitation.
 
 ## Loop prevention
 
@@ -111,8 +139,8 @@ Three separate mechanisms prevent it.
 
 | Mechanism | Where | Prevents |
 |---|---|---|
-| `rule/system/core-bypass` with `process: ["self/"]`, emitted **first** | generated rule table | The core's own traffic — including its resolver queries and its uplink — being captured by its own TUN. Without this the core dials through itself. |
-| `rule/system/dns-direct` matching `inboundTag: [inbound/system/dns-query]` | generated rule table | Queries the DNS module itself emits from re-entering routing and being proxied, which would recurse. |
+| Exact direct/proxied DNS upstream rules, emitted before the self bypass | generated rule table | Resolver sockets taking a broader route than the selected per-server policy. |
+| `rule/system/core-bypass` with `process: ["self/"]`, emitted immediately afterward | generated rule table | Other core traffic — especially its uplink — being captured by its own TUN. Without this the core dials through itself. |
 | `nonIPQuery` set to a deterministic value (`drop` by default) | `control/dns` outbound | Non-A/AAAA queries taking an undefined path. |
 
 One loop the software cannot prevent for you: setting `direct_servers =
@@ -122,6 +150,16 @@ now the core. Symptom: every name times out and the DNS listener shows continuou
 traffic. When `[dns] manager` points the host at `[dns] listen`, set
 `direct_servers` to a concrete address — the upstream resolver the host used
 before, or a public one — never `localhost`.
+
+A second bootstrap dependency deserves explicit attention. The first proxy hop
+may itself have a hostname. Xray's transport dialer can consult the host resolver
+unless the node's socket `domainStrategy` requests Xray DNS; pointing the host
+resolver at xraytui while the only proxied DNS route needs that hostname can
+therefore create a cycle. The deterministic acceptance fixtures use IP-literal
+chain endpoints. For a hostname-based bootstrap profile, keep an independent
+host resolver available or give the first hop a stable IP literal. Automatic
+bootstrap-DNS cycle detection is not yet implemented; this limitation is tracked
+in `STATUS.md` and is not hidden behind a fallback.
 
 ## Leak diagnostics
 
@@ -147,15 +185,21 @@ resolvectl query example.com         # which link and which resolver answered
 
 Then confirm the path xraytui believes in:
 
-- The TUI's per-profile view shows the profile's DNS policy and the result of
-  the `dns-resolve` probe kind, which resolves *through* the profile rather than
-  through the host stack.
+- `xraytui show-config` shows the effective per-nameserver tags and the exact
+  `dns-upstream-direct` / `dns-upstream-proxy` routing targets. The latter must
+  name the default profile selector. Per-profile DNS overrides and a dedicated
+  `dns-resolve` health probe are not implemented; the compiler refuses an
+  override instead of displaying or silently ignoring it.
 - With TUN active, port 53 arriving on `inbound/system/tun` is intercepted by
   `rule/system/dns-intercept`. If queries are still reaching an external resolver
   directly, the traffic is not entering the TUN at all — that is a routing
   problem, not a DNS one, and `docs/NETWORKING.md` is the right document.
 - `direct_domains` entries are answered by direct servers **by design**. A name
   in `geosite:private` resolving locally is correct behaviour, not a leak.
+- With proxied DNS configured, a failure should not increment a direct-resolver
+  connection counter under the default `block` policy. The real-Xray acceptance
+  test exercises that exact failure. If `proxy_failure_policy = "direct"`, the
+  direct query is intentional and should be reported as such.
 - Application-level DNS bypasses xraytui entirely. A browser with DNS-over-HTTPS
   enabled resolves inside the browser over port 443; it will not appear as port
   53 traffic and no DNS setting in xraytui affects it. Disable it in the browser

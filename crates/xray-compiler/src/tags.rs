@@ -30,6 +30,10 @@ pub const INBOUND_API: &str = "inbound/system/api";
 pub const INBOUND_DNS: &str = "inbound/system/dns";
 /// Inbound tag of the shared system TUN.
 pub const INBOUND_TUN: &str = "inbound/system/tun";
+/// Inbound tag stamped on traffic emitted by a direct DNS nameserver client.
+pub const DNS_QUERY_DIRECT: &str = "inbound/system/dns-query/direct";
+/// Inbound tag stamped on traffic emitted by a proxied DNS nameserver client.
+pub const DNS_QUERY_PROXY: &str = "inbound/system/dns-query/proxy";
 
 /// First path segments that are reserved by the generator.
 pub const RESERVED_ROOTS: &[&str] = &[

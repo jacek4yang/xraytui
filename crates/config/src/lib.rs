@@ -20,13 +20,13 @@ use std::path::{Path, PathBuf};
 
 pub use paths::{Paths, ensure_private_dir, write_private_atomic};
 pub use schema::{
-    ConfigFile, CoreSection, DisabledFamilyPolicy, DnsManager, DnsSection, FailurePolicy,
-    HealthSection, ReleaseChannel, RuntimeSection, SubscriptionSection, TunSection, UiSection,
-    is_valid_interface_name,
+    ConfigFile, CoreSection, DisabledFamilyPolicy, DnsManager, DnsProxyFailurePolicy, DnsSection,
+    FailurePolicy, HealthSection, ReleaseChannel, RuntimeSection, SubscriptionSection, TunSection,
+    UiSection, is_valid_interface_name,
 };
 
 /// Current schema version of `config.toml` and the policy files.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Configuration failures.
 #[derive(Debug, thiserror::Error)]
@@ -158,7 +158,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("s.toml");
         let sample = Sample {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             value: "x".into(),
         };
         store_toml(&path, &sample).expect("store");
@@ -177,7 +177,7 @@ mod tests {
                 error,
                 ConfigError::SchemaTooNew {
                     found: 99,
-                    supported: 1,
+                    supported: SCHEMA_VERSION,
                     ..
                 }
             ),

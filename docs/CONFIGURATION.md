@@ -135,9 +135,16 @@ forbids direct marked egress.
 | `listen` | socket address | unset | Local address the DNS listener binds, when one is needed, for example `"127.0.0.53:5353"`. |
 | `direct_servers` | array of string | `["localhost"]` | Resolvers reached without a proxy. |
 | `proxy_servers` | array of string | `[]` | Resolvers reached through the default profile. |
+| `proxy_failure_policy` | `"block"` \| `"direct"` | `"block"` | Whether failure of every proxied resolver returns a DNS failure or may fall back to `direct_servers`. Direct fallback is never implicit. |
 | `direct_domains` | array of string | `["geosite:private"]` | Domains always resolved by `direct_servers`, regardless of order. |
 | `query_strategy` | `"UseIP"` \| `"UseIPv4"` \| `"UseIPv6"` | `"UseIP"` | Address families the DNS module will return. |
 | `non_ip_query` | `"drop"` \| `"skip"` \| `"reject"` | `"drop"` | Deterministic handling of non-A/AAAA queries. |
+
+When DNS is enabled, at least one resolver must be explicit. `direct_domains`
+requires a non-empty `direct_servers` list, and `proxy_failure_policy = "direct"`
+also requires that list. A proxied resolver additionally requires an enabled
+default profile with no effective direct target or fallback; unsafe candidates
+are refused during both full compilation and hot target switching.
 
 ### `[health]`
 
@@ -203,6 +210,7 @@ problem is reported together** rather than one at a time:
 | `tun.name` matches the interface pattern | `[tun] name … must match ^xraytui[0-9a-z]{0,8}$` |
 | `health.concurrency` within `1..=64` | `[health] concurrency … must be between 1 and 64` |
 | `health.timeout_ms` at least 200 | `[health] timeout_ms must be at least 200` |
+| canonical DNS strategy and non-IP tokens | `[dns] query_strategy …`; `[dns] non_ip_query …` |
 | `health.test_url` is `http`/`https` | `[health] test_url must be an http or https URL` |
 | `subscription.max_response_bytes` non-zero | `[subscription] max_response_bytes must be non-zero` |
 | `subscription.max_nodes` non-zero | `[subscription] max_nodes must be non-zero` |
@@ -255,7 +263,7 @@ than as an unknown kind, so `node:UPPER` says what is actually wrong.
 ## Worked example
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [core]
 binary = "/usr/bin/xray"
@@ -299,8 +307,9 @@ manager = "systemd-resolved"
 manual_acknowledged = false
 enabled = true
 listen = "127.0.0.53:5353"
-direct_servers = ["localhost"]
+direct_servers = ["9.9.9.9"]
 proxy_servers = ["1.1.1.1", "8.8.8.8"]
+proxy_failure_policy = "block"   # never expose failed proxied queries directly
 direct_domains = ["geosite:private", "geosite:cn"]
 query_strategy = "UseIPv4"
 non_ip_query = "drop"
@@ -344,9 +353,13 @@ their targets are written using exactly the token syntax above.
 
 Migrations are versioned functions from schema `n` to `n + 1`, applied in a
 contiguous ladder that a test asserts has no gaps and reaches the current
-version. At schema version 1 the ladder is deliberately empty: the machinery
-exists so that the first real migration is a data change rather than an
-infrastructure change.
+version. Schema 1 → 2 writes `dns.proxy_failure_policy = "block"`, making the
+safe behavior explicit. Version 1 files are backed up before that rewrite; a
+version 1 binary refuses the resulting version 2 file instead of ignoring the
+new safety policy. Every candidate transformation must render successfully
+before the first policy file is replaced; replacements are private and atomic,
+and the whole pre-migration TOML set remains available in the uniquely named
+backup directory for recovery from an I/O interruption.
 
 | Property | Behaviour |
 |---|---|

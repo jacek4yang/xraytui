@@ -84,6 +84,22 @@ async fn run(cli: Cli) -> Result<()> {
         .ensure()
         .context("cannot create the xraytui directories")?;
 
+    // Lock before migration: two daemon starts must never rewrite the same
+    // policy directory concurrently. `--check` also migrates because loading a
+    // safety-sensitive old schema without advancing it would let a later
+    // downgrade silently recover the old behavior.
+    let _lock = lock::acquire(&paths.daemon_lock())
+        .context("another xraytuid is already running for this user")?;
+    let migration = xraytui_config::migrate::run(&paths.config)
+        .context("cannot migrate the configuration directory")?;
+    if !migration.is_empty() {
+        tracing::info!(
+            files = migration.steps.len(),
+            backup = %migration.backup_dir.display(),
+            "configuration schema migrated"
+        );
+    }
+
     let config = xraytui_config::load_toml::<xraytui_config::ConfigFile>(&paths.config_file())
         .context("cannot read config.toml")?
         .unwrap_or_default();
@@ -119,12 +135,6 @@ async fn run(cli: Cli) -> Result<()> {
         println!("configuration is valid");
         return Ok(());
     }
-
-    // One daemon per user. The lock is held for the process lifetime and
-    // released by the kernel if the process dies, so a crash does not need
-    // manual cleanup.
-    let _lock = lock::acquire(&paths.daemon_lock())
-        .context("another xraytuid is already running for this user")?;
 
     let daemon = daemon::Daemon::new(paths.clone(), config, state).await?;
     daemon.run(!cli.no_start).await

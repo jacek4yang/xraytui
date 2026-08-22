@@ -60,6 +60,11 @@ which Xray-core releases each version is tested against.
 * **A member of the `xraytui` group can create project-owned TUN devices and
   routes for their own UID.** That is the grant the administrator made by adding
   them to the group.
+* **A hostname-based proxied-DNS bootstrap can form a dependency cycle.** The
+  default failure policy blocks rather than querying a direct fallback, but
+  automatic cycle detection is not implemented yet. Keep an independent host
+  resolver for the first proxy hop or use an IP literal; see `docs/DNS.md`.
+
 ## Out of scope
 
 A compromised proxy endpoint, a malicious Xray-core binary installed by the
