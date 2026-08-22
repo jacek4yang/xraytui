@@ -135,6 +135,7 @@ forbids direct marked egress.
 | `listen` | socket address | unset | Local address the DNS listener binds, when one is needed, for example `"127.0.0.53:5353"`. |
 | `direct_servers` | array of string | `["localhost"]` | Resolvers reached without a proxy. |
 | `proxy_servers` | array of string | `[]` | Resolvers reached through the default profile. |
+| `bootstrap_servers` | array of string | `[]` | Independent direct resolvers used only for exact hostname-based first hops required to establish the proxied-DNS route. Use a bare IP or an IP-hosted Xray resolver URL using `tcp`, `tcp+local`, `https`, `https+local`, `h2c`, `h2c+local`, or `quic+local`. |
 | `proxy_failure_policy` | `"block"` \| `"direct"` | `"block"` | Whether failure of every proxied resolver returns a DNS failure or may fall back to `direct_servers`. Direct fallback is never implicit. |
 | `direct_domains` | array of string | `["geosite:private"]` | Domains always resolved by `direct_servers`, regardless of order. |
 | `query_strategy` | `"UseIP"` \| `"UseIPv4"` \| `"UseIPv6"` | `"UseIP"` | Address families the DNS module will return. |
@@ -144,7 +145,11 @@ When DNS is enabled, at least one resolver must be explicit. `direct_domains`
 requires a non-empty `direct_servers` list, and `proxy_failure_policy = "direct"`
 also requires that list. A proxied resolver additionally requires an enabled
 default profile with no effective direct target or fallback; unsafe candidates
-are refused during both full compilation and hot target switching.
+are refused during both full compilation and hot target switching. If any
+possible first hop is a hostname, `bootstrap_servers` must name at least one
+independent IP-literal resolver. `localhost`, hostname-valued resolver URLs and
+the configured xraytui DNS listener are refused; an unavailable bootstrap route
+fails closed. See `docs/DNS.md` for chain/group expansion and exact Xray fields.
 
 ### `[health]`
 
@@ -263,7 +268,7 @@ than as an unknown kind, so `node:UPPER` says what is actually wrong.
 ## Worked example
 
 ```toml
-schema_version = 2
+schema_version = 3
 
 [core]
 binary = "/usr/bin/xray"
@@ -309,6 +314,7 @@ enabled = true
 listen = "127.0.0.53:5353"
 direct_servers = ["9.9.9.9"]
 proxy_servers = ["1.1.1.1", "8.8.8.8"]
+bootstrap_servers = ["9.9.9.9"] # exact hostname-based first hops only; direct
 proxy_failure_policy = "block"   # never expose failed proxied queries directly
 direct_domains = ["geosite:private", "geosite:cn"]
 query_strategy = "UseIPv4"
@@ -354,9 +360,12 @@ their targets are written using exactly the token syntax above.
 Migrations are versioned functions from schema `n` to `n + 1`, applied in a
 contiguous ladder that a test asserts has no gaps and reaches the current
 version. Schema 1 → 2 writes `dns.proxy_failure_policy = "block"`, making the
-safe behavior explicit. Version 1 files are backed up before that rewrite; a
-version 1 binary refuses the resulting version 2 file instead of ignoring the
-new safety policy. Every candidate transformation must render successfully
+safe behavior explicit. Schema 2 → 3 writes an explicit empty
+`dns.bootstrap_servers` into an existing `[dns]` table; an omitted DNS section
+retains the same empty default. Hostname-based proxied-DNS routes then require
+the user to name an independent IP-literal resolver rather than inheriting an
+unsafe fallback. Older binaries refuse schema 3 instead of ignoring the new safety
+policy. Every candidate transformation must render successfully
 before the first policy file is replaced; replacements are private and atomic,
 and the whole pre-migration TOML set remains available in the uniquely named
 backup directory for recovery from an I/O interruption.

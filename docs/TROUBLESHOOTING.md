@@ -268,12 +268,13 @@ DNS also refuses to start when both resolver lists are empty, when
 without one. These errors prevent a scoped query from silently crossing routes
 or inheriting the host resolver by accident.
 
-If the default profile's first proxy hop is a hostname and the host resolver has
-also been pointed at xraytui, the proxy route may depend on the query it is meant
-to carry. Use an IP-literal bootstrap hop or retain an independent host resolver.
-Automatic detection of that dependency cycle is a documented remaining
-limitation; repeated retry or an unannounced direct route is not used as a
-fallback.
+If the default profile's first proxy hop is a hostname, configure an independent
+IP-literal resolver in `dns.bootstrap_servers`. The compiler reports every
+hostname dependency and refuses an empty list, `localhost`, a hostname-valued
+bootstrap resolver, or the xraytui DNS listener itself. Alternatively, use an
+IP-literal first-hop endpoint; TLS/REALITY `server_name` remains a hostname and
+is not changed. Bootstrap lookup failure is fail-closed and never crosses into
+ordinary `direct_servers`, even when `direct_domains` also matches the name.
 
 ---
 

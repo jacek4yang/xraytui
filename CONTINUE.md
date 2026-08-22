@@ -11,7 +11,7 @@
   `2f13f4144516b27f4a9745ee701eb91af24df84e`
 * Merged real-Xray IPv6 and DNS branch: PR #6, commit
   `cb8ba42628964795bfd7c9d0393ccd8ba07b9c05`
-* Current development branch: `main`
+* Current development branch: `feat/dns-bootstrap-safety`
 * Official Xray stable under test: `v26.3.27`
 * Explicit preview under test: `v26.7.28`
 
@@ -28,6 +28,25 @@ are implemented. `docs/SHARING.md` is the behavioral specification.
 `cargo xtask upstream-check` is no longer a placeholder. It checks live release
 channels and tag commits, Xray source snapshots, the vendored protobuf closure,
 and current v2rayN/v2rayNG serializer paths against `upstream-compat.toml`.
+
+## Unreleased hostname-bootstrap increment
+
+`feat/dns-bootstrap-safety` adds explicit `dns.bootstrap_servers` and schema 3.
+The compiler resolves every possible hostname-based first hop through exact,
+direct, IP-hosted bootstrap resolvers and converts only that locally dialled
+outbound copy to the matching Xray `ForceIP*` strategy. Nodes, chain hop 1,
+group candidates, WireGuard peer endpoints, and permitted profile/group
+fallbacks are covered; later `dialerProxy` hops retain remote DNS semantics.
+Missing, hostname-valued, unsupported-scheme, self-listening, and unavailable
+bootstrap routes fail closed.
+
+Stable v26.3.27 and preview v26.7.28 each pass 852 ordinary workspace tests,
+five doctests, 15 real-Xray controller cases, the isolated privileged TUN/DNS
+validator, and 21+1 disposable-namespace scenarios. The real fixtures observe
+direct bootstrap DNS followed by proxied DNS, then separately prove that failed
+bootstrap makes zero ordinary-direct, proxy, and proxied-resolver connections.
+`cargo xtask ci`, live 55-snapshot upstream checking, dependency policy,
+RustSec audit, release build, and stable release smoke all pass.
 
 ## Final release evidence executed
 
@@ -72,8 +91,9 @@ These results include the merged commit and retrieved public artifact.
 ## Required next steps
 
 1. Keep IPv6 experimental until IPv6 group selection, combined TUN +
-   systemd-resolved + proxied-upstream DNS, bootstrap dependency-cycle detection
-   and broader failure injection execute deterministically.
+   systemd-resolved + proxied-upstream DNS, and broader failure injection execute
+   deterministically. Hostname bootstrap dependency detection is implemented on
+   `feat/dns-bootstrap-safety` with stable/preview real-Xray evidence.
 2. Add an automatic redacted diagnostic-bundle exporter without including
    policy, generated Xray JSON, share links, QR images or subscription secrets.
 

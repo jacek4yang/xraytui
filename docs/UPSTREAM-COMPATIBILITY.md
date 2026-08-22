@@ -6,7 +6,7 @@ not from memory.
 
 | Field | Value |
 |---|---|
-| Date upstream behaviour was checked | **2026-08-21** |
+| Date upstream behaviour was checked | **2026-08-22** |
 | Default supported Xray stable release | **v26.3.27** (published 2026-03-27, `prerelease: false`) |
 | Commit the release was built from | `d2758a023cd7f4174a5a5fa4ff66e487d4342ba0` |
 | Protobuf source tag | `v26.3.27` (same commit) |
@@ -115,6 +115,38 @@ through another outbound while keeping its own transport and TLS/REALITY setting
 intact. For `Local -> A -> B -> C -> Internet`, C carries
 `dialerProxy = B`, B carries `dialerProxy = A`, and the chain terminal that
 routing points at is **C**. (The deprecated `proxySettings.tag` form is not used.)
+
+### Endpoint DNS and bootstrap failure (`transport/internet/dialer.go`)
+
+Stable v26.3.27 and preview v26.7.28 have the same ordering in `DialSystem`:
+
+1. when `sockopt.domainStrategy` has an IP strategy and the destination is a
+   domain, call the process-wide Xray DNS client;
+2. replace the destination when lookup succeeds;
+3. on lookup failure, return only for a `ForceIP*` strategy — `UseIP*` continues
+   with the unresolved hostname;
+4. only then apply `sockopt.dialerProxy`, if present; otherwise call the system
+   dialer.
+
+That ordering is why xraytui forces only the locally dialled first-hop outbound
+copy and never later chain hops. A later hostname with `dialerProxy` and `AsIs`
+is handed to the preceding proxy; forcing it locally would change chain DNS
+semantics and disclose the hop name. WireGuard is separate: its client calls the
+same Xray DNS feature for peer hostnames, and its JSON loader accepts only
+`ForceIP*` strategies (default `ForceIP`).
+
+The DNS client sources establish the other half of the guarantee. A
+nameserver's `tag` becomes a synthetic inbound tag for routing; priority-domain
+matches are ordered; `disableFallbackIfMatch` omits generic fallback clients;
+and `finalQuery` stops the priority set at that client. `LookupIP` removes one
+trailing root dot but does not lowercase its input, while the `full` matcher is
+an exact string-key lookup; bootstrap rules must therefore preserve the endpoint
+hostname's case. xraytui consequently
+emits exact `full:` first-hop rules on explicit direct bootstrap resolvers, sets
+`skipFallback` on each, `finalQuery` on the last resolver, and
+`disableFallbackIfMatch` globally. This was checked in `app/dns/dns.go`,
+`app/dns/nameserver.go`, `infra/conf/dns.go`, the normal transport dialer and the
+WireGuard client/loader at both tested commits.
 
 ### Share/export-relevant connection fields
 
@@ -372,8 +404,9 @@ live core, and the results are cached per Xray binary hash in the state store.
 
 1. fetch the GitHub release list, separate draft/stable/preview, compare numeric
    latest tags and resolve each tag to its exact commit;
-2. compare SHA-256 for 33 reviewed stable/preview source files covering stream
-   settings, protocols, REALITY, XHTTP, Hysteria, WireGuard and Freedom routing;
+2. compare SHA-256 for 55 reviewed stable/preview source snapshots (27 stable,
+   28 preview) covering stream settings, endpoint/DNS dial ordering, protocols,
+   REALITY, XHTTP, Hysteria, WireGuard and Freedom routing;
 3. byte-compare all eight vendored command-API protobuf files with the stable
    commit;
 4. resolve the active v2rayN/v2rayNG branches and hash the sixteen watched

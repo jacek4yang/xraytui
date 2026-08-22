@@ -39,29 +39,37 @@ keep usable direct IPv4 and IPv6 defaults present while proving:
   the direct device, nftables rejects one real UDP packet per family and the
   project guard's counter advances from zero to two.
 
-This closes the kernel routing and kill-switch coverage gap. The next candidate
-increment also executes real Xray over an IPv6 proxy endpoint, concurrent IPv4
-and IPv6 profiles, a two-hop IPv6 chain, and split AAAA DNS through a two-hop
-IPv6 chain. Proxied-resolver failure attempts the configured profile but makes
-zero connections to the available direct resolver. Compile-time and live
+This closes the kernel routing and kill-switch coverage gap. Subsequent
+candidate increments execute real Xray over an IPv6 proxy endpoint, concurrent
+IPv4 and IPv6 profiles, a two-hop IPv6 chain, and split AAAA DNS through a
+two-hop IPv6 chain. Proxied-resolver failure attempts the configured profile but
+makes zero connections to the available direct resolver. Compile-time and live
 selector checks additionally refuse implicit resolvers or any supposedly
-proxied DNS profile/group path that can select direct traffic. IPv6 is still not
-promoted: IPv6 group selection, the combined TUN + DNS + systemd-resolved path,
-bootstrap DNS-cycle detection and broader failure injection remain unexecuted.
+proxied DNS profile/group path that can select direct traffic.
+
+Hostname bootstrap is now explicit and fail-closed too. The compiler expands
+nodes, the first hop of chains, every group candidate, and permitted fallbacks;
+requires an IP-literal `dns.bootstrap_servers` resolver when any such endpoint
+is a hostname; and applies Xray `ForceIP*` only to the locally dialled outbound
+copy. Real-Xray fixtures independently observe direct bootstrap DNS followed by
+proxied DNS, while unavailable bootstrap DNS produces zero ordinary-direct,
+proxy, and proxied-resolver connections. IPv6 is still not promoted: IPv6 group
+selection, the combined TUN + DNS + systemd-resolved path, and broader failure
+injection remain unexecuted.
 
 | Candidate gate | 2026-08-22 result |
 |---|---|
-| stable v26.3.27 workspace | **pass**: 837 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
-| preview v26.7.28 workspace | **pass**: 837 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
-| ignored TUN/DNS Xray validator | **pass separately** with `CAP_NET_ADMIN` against stable and preview; `xraytui0` absent before and after |
+| stable v26.3.27 workspace | **pass**: 852 passed, 0 failed, 1 privilege-gated ignored across 45 result sets; 5 doctests passed |
+| preview v26.7.28 workspace | **pass**: 852 passed, 0 failed, 1 privilege-gated ignored across 45 result sets; 5 doctests passed |
+| ignored TUN/DNS Xray validator | **pass separately** in an isolated user/network namespace with `CAP_NET_ADMIN` against stable and preview; `xraytui0` absent afterward |
 | privileged namespaces | **pass twice**: 21 kernel/network scenarios plus one real CLI/helper/Xray exact-instance scenario with stable and preview; no skip |
-| real-Xray controller acceptance | **pass twice**: 13/13 with stable and 13/13 with preview; includes IPv6 endpoint, concurrent dual-stack profiles, two-hop IPv6 data and DNS chains, split direct/proxy DNS, and fail-closed resolver failure |
-| `cargo xtask ci` | **pass** after the final DNS hot-path/no-leak review: fmt, check, strict Clippy, workspace build/test and rustdoc |
-| `cargo xtask upstream-check` | **pass** against live Xray release/tag/source state and reviewed v2rayN/v2rayNG serializer snapshots |
+| real-Xray controller acceptance | **pass twice**: 15/15 with stable and 15/15 with preview; includes IPv6 endpoint, concurrent dual-stack profiles, two-hop IPv6 data and DNS chains, split direct/proxy DNS, direct hostname bootstrap, and fail-closed bootstrap/proxied-resolver failure |
+| `cargo xtask ci` | **pass** after the hostname-bootstrap review: fmt, all-target/all-feature check, strict Clippy, workspace build/test and rustdoc |
+| `cargo xtask upstream-check` | **pass** against live Xray release/tag/source state, 55 stable/preview Xray snapshots, eight protobuf files and reviewed v2rayN/v2rayNG serializer snapshots |
 | `cargo deny check` | **pass**: advisories, bans, licenses and sources |
 | `cargo audit --no-fetch` | **pass** after manually fast-forwarding the database to RustSec commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
-| release workspace build | **pass** with all features after the final DNS policy hardening |
-| `scripts/release-smoke.sh` | **pass** against stable Xray: first run, mutations, subscriptions, concurrent exits, hot switching, sharing, supervision, restart, persistence and staged install/uninstall |
+| release workspace build | **pass** with all features after the hostname-bootstrap policy hardening |
+| `scripts/release-smoke.sh` | **pass** against stable Xray after schema 3 and bootstrap changes: first run, mutations, subscriptions, concurrent exits, hot switching, sharing, supervision, restart, persistence and staged install/uninstall |
 | PR/CI/merge | PR [#6](https://github.com/jacek4yang/xraytui/pull/6) **passed and merged** as `cb8ba42628964795bfd7c9d0393ccd8ba07b9c05`; replacement CI run [32591713629](https://github.com/jacek4yang/xraytui/actions/runs/32591713629) passed Rust quality, dependency policy and clean Arch package jobs. Its first run exposed `ETXTBSY` while executing a generated fake-`resolvconf`; commit `a8edb020d693e9f3f56c8da19820c89b6dfa7844` removed deterministic path reuse and made the PR rerun green, but post-merge `main` run [32592576152](https://github.com/jacek4yang/xraytui/actions/runs/32592576152) reproduced the error on the unique inode. Follow-up PR [#7](https://github.com/jacek4yang/xraytui/pull/7) removes generated-file execution entirely: tests execute stable `/bin/sh` and pass the unique recorder as script input. The focused suite, no-production-shell policy, 1,000 repeated fixture executions and complete all-feature Rust gates pass locally; required CI run [32592971946](https://github.com/jacek4yang/xraytui/actions/runs/32592971946) passed Rust quality, dependency policy and clean Arch packaging. PR #7 is merged only after any later head change passes the same required gates. |
 
 ## Published 1.1.0 sharing evidence
@@ -182,11 +190,9 @@ SHA-256 matched its official `.dgst` file before use.
    endpoints, chains and split/failing DNS. IPv6 group selection and the
    combined TUN + systemd-resolved + proxied-upstream path remain unexecuted, so
    IPv6 stays off by default and experimental.
-2. **DNS bootstrap cycles and per-profile overrides.** Proxied upstream DNS
-   requires the default profile and fails closed, but automatic detection of a
-   hostname-based first hop depending on the same resolver is not implemented.
-   Keep an independent bootstrap resolver or use an IP-literal first hop. The
-   reserved per-profile `dns_policy` field is explicitly refused, not ignored.
+2. **Per-profile DNS overrides.** Proxied upstream DNS and hostname bootstrap
+   are fail-closed through the default profile. The reserved per-profile
+   `dns_policy` field is still explicitly refused, not ignored.
 3. **Untrusted local users.** Upstream Xray commander traffic uses
    unauthenticated loopback TCP. A random local port is not a security boundary.
 4. **Architecture.** The package and binary archive are verified only for

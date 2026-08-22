@@ -438,3 +438,35 @@ configuration. A synthetic AAAA resolver is reached through every hop of a
 two-hop IPv6 chain; an independent direct resolver handles only its scoped
 domain; a closed proxied resolver causes failure with zero direct-resolver
 connections.
+
+---
+
+## D-023 — Hostname bootstrap DNS is explicit, scoped and forced-IP
+
+**Context.** A proxied resolver cannot carry traffic until the default profile's
+first proxy hop is connected. If that hop is a hostname and the host resolver
+points back to xraytui, relying on the system dialer creates a dependency cycle.
+Upstream Xray resolves a `sockopt.domainStrategy` before applying
+`dialerProxy`; importantly, `UseIP*` continues with the unresolved hostname when
+internal DNS fails, while `ForceIP*` returns the error.
+
+**Decision.** `dns.bootstrap_servers` is a separate direct control-plane route.
+Its resolver hosts must be IP literals and must not point back to xraytui's DNS
+listener. The compiler expands the default profile, all possible group members
+and permitted fallbacks, but only treats chain hop 1 as locally dialled. Exact
+`full:` matches use the bootstrap resolver set, `skipFallback`, a terminal
+`finalQuery`, and global `disableFallbackIfMatch`. The affected first-hop
+outbound copy receives the forced equivalent of its node/global family strategy;
+later chain hops and unused standalone copies retain their original semantics.
+
+**Migration and failure policy.** Schema 2 advances to 3 and records an empty
+bootstrap list in existing `[dns]` tables. A hostname dependency with an empty
+list is an actionable compile error; an IP-literal first hop needs no new
+setting. There is no fallback to ordinary direct DNS, proxied DNS, or the
+unresolved system-dialer path.
+
+**Evidence.** Unit tests cover missing/recursive/hostname resolvers, IP-literal
+routes, chain scoping and generated fields. Real-Xray fixtures independently
+observe a direct bootstrap lookup followed by a proxied DNS query, and a closed
+bootstrap resolver with an overlapping `direct_domains` rule produces no direct
+resolver, proxy, or proxied-resolver connection.
