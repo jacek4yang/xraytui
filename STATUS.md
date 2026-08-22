@@ -17,9 +17,9 @@ recorded as passing.
 
 ## Unreleased dual-stack candidate evidence
 
-This section describes the post-1.1.0 branch, not the published artifact. On
-2026-08-22, `./scripts/netns-test.sh` executed 21 privileged kernel scenarios
-plus the real CLI/helper/Xray exact-instance scenario with no skip, once with
+This section describes unreleased `main` after PRs #5 and #6, not the published
+artifact. On 2026-08-22, `./scripts/netns-test.sh` executed 21 privileged kernel
+scenarios plus the real CLI/helper/Xray exact-instance scenario with no skip, once with
 `XRAYTUI_TEST_XRAY=/tmp/xray-bin-stable/xray` (v26.3.27) and again with
 `XRAYTUI_TEST_XRAY=/tmp/xray-bin-preview/xray` (v26.7.28). The new scenarios
 keep usable direct IPv4 and IPv6 defaults present while proving:
@@ -62,6 +62,7 @@ bootstrap DNS-cycle detection and broader failure injection remain unexecuted.
 | `cargo audit --no-fetch` | **pass** after manually fast-forwarding the database to RustSec commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
 | release workspace build | **pass** with all features after the final DNS policy hardening |
 | `scripts/release-smoke.sh` | **pass** against stable Xray: first run, mutations, subscriptions, concurrent exits, hot switching, sharing, supervision, restart, persistence and staged install/uninstall |
+| PR/CI/merge | **pass**: PR [#6](https://github.com/jacek4yang/xraytui/pull/6) merged as `cb8ba42628964795bfd7c9d0393ccd8ba07b9c05`; replacement CI run [32591713629](https://github.com/jacek4yang/xraytui/actions/runs/32591713629) passed Rust quality, dependency policy and clean Arch package jobs. The first run exposed an Arch `ETXTBSY` race in a deterministic fake-`resolvconf` test path; commit `a8edb020d693e9f3f56c8da19820c89b6dfa7844` changed it to an owned unique directory and a closed, atomically published executable, then 1,000 focused local executions and the clean package rerun passed. |
 
 ## Published 1.1.0 sharing evidence
 
