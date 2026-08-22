@@ -11,7 +11,9 @@
   `2f13f4144516b27f4a9745ee701eb91af24df84e`
 * Merged real-Xray IPv6 and DNS branch: PR #6, commit
   `cb8ba42628964795bfd7c9d0393ccd8ba07b9c05`
-* Current development branch: `feat/dns-bootstrap-safety`
+* Hostname-bootstrap implementation: PR
+  [#8](https://github.com/jacek4yang/xraytui/pull/8), branch
+  `feat/dns-bootstrap-safety`
 * Official Xray stable under test: `v26.3.27`
 * Explicit preview under test: `v26.7.28`
 
@@ -92,8 +94,8 @@ These results include the merged commit and retrieved public artifact.
 
 1. Keep IPv6 experimental until IPv6 group selection, combined TUN +
    systemd-resolved + proxied-upstream DNS, and broader failure injection execute
-   deterministically. Hostname bootstrap dependency detection is implemented on
-   `feat/dns-bootstrap-safety` with stable/preview real-Xray evidence.
+   deterministically. Hostname bootstrap dependency detection is implemented by
+   PR #8 with stable/preview real-Xray evidence.
 2. Add an automatic redacted diagnostic-bundle exporter without including
    policy, generated Xray JSON, share links, QR images or subscription secrets.
 
