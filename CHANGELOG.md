@@ -5,6 +5,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* Pull-request package builds now use the disposable checked-out source
+  archive's checksum without changing the committed PKGBUILD, which remains
+  pinned to the immutable published release artifact.
+
 ## [1.1.0] - 2026-08-21
 
 ### Added
