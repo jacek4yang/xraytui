@@ -88,10 +88,12 @@ the user explicitly opts in. See [docs/SHARING.md](docs/SHARING.md).
 ## Status
 
 Version 1.1.0 adds first-class interoperable sharing for a trusted single-user
-Linux workstation. `STATUS.md` separates verified candidate evidence from
-post-publication evidence. IPv4 is the supported and fully exercised path. IPv6
-remains experimental and disabled by default until its runtime path receives the
-same coverage. Shared machines with mutually untrusted local users are outside
+Linux workstation. Post-release development now exercises deterministic
+IPv4-only, IPv6-only, dual-stack and no-leak kernel paths, while `STATUS.md`
+keeps published evidence separate from candidate evidence. IPv6 remains
+experimental and disabled by default until the real Xray data path, DNS and
+failure matrix receive equivalent coverage. Shared machines with mutually
+untrusted local users are outside
 the support boundary because Xray's loopback commander has no authentication.
 
 `STATUS.md` is the authoritative, evidence-backed feature and test matrix;

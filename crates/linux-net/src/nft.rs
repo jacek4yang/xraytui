@@ -350,7 +350,10 @@ pub fn user_ruleset(
         script.push_hex(fwmark);
         script.push_literal(" oifname != ");
         script.push_quoted(interface)?;
-        script.push_literal(" drop").newline();
+        // The counter makes a triggered kill switch observable without packet
+        // capture or logging any destination. The privileged namespace suite
+        // uses it to prove that a broken route was stopped.
+        script.push_literal(" counter drop").newline();
     }
 
     Ok(script)
@@ -701,7 +704,7 @@ mod tests {
             .expect("a guard rule");
         assert!(line.contains("meta mark 0x72610000"), "{line}");
         assert!(line.contains("oifname != \"xraytui1000\""), "{line}");
-        assert!(line.ends_with("drop"), "{line}");
+        assert!(line.ends_with("counter drop"), "{line}");
     }
 
     #[test]

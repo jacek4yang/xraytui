@@ -108,7 +108,8 @@ empty `config.toml` is exactly equivalent to the defaults below.
 | `name` | string | `"xraytui0"` | Interface name. Must match `^xraytui[0-9a-z]{0,8}$` so the helper can prove ownership from the name alone. |
 | `mtu` | integer | `1500` | Device MTU. Must be within `576..=9000`. |
 | `ipv4` | boolean | `true` | Carry IPv4 inside the tunnel. |
-| `ipv6` | boolean | `false` | Carry IPv6 inside the tunnel. When false, IPv6 is explicitly blackholed rather than left to leak. |
+| `ipv6` | boolean | `false` | Carry IPv6 inside the tunnel. |
+| `disabled_family_policy` | `"block"` \| `"direct"` | `"block"` | What to do with a disabled family. `block` installs a default blackhole; `direct` explicitly permits the host route. |
 | `ipv4_address` | string | `"198.18.0.1/15"` | Address assigned to the device, CIDR form. |
 | `ipv6_address` | string | `"fdfe:dcba:9876::1/126"` | IPv6 address assigned to the device, CIDR form. |
 | `bypass_private_networks` | boolean | `true` | Send RFC1918 and link-local traffic straight out; compiles to a `geoip:private` direct rule. |
@@ -118,7 +119,11 @@ empty `config.toml` is exactly equivalent to the defaults below.
 | `fwmark` | integer | `29281` (`0x7261`) | Firewall mark. Probed for conflicts before use. |
 | `rule_priority` | integer | `17000` | Priority of the policy-routing rule. |
 
-At least one of `ipv4` and `ipv6` must be enabled.
+At least one of `ipv4` and `ipv6` must be enabled. A disabled family is
+fail-closed by default. `disabled_family_policy = "direct"` is the explicit
+opt-in for combinations such as proxied IPv4 plus direct IPv6; it is refused
+with `runtime.failure_policy = "block"`, whose live kill switch deliberately
+forbids direct marked egress.
 
 ### `[dns]`
 
@@ -194,6 +199,7 @@ problem is reported together** rather than one at a time:
 |---|---|
 | `tun.mtu` within `576..=9000` | `[tun] mtu … is outside the usable range` |
 | at least one of `tun.ipv4`, `tun.ipv6` | `[tun] at least one of ipv4 or ipv6` |
+| direct disabled-family policy is not combined with the global kill switch | `[tun] disabled_family_policy = "direct" conflicts with [runtime] failure_policy = "block"` |
 | `tun.name` matches the interface pattern | `[tun] name … must match ^xraytui[0-9a-z]{0,8}$` |
 | `health.concurrency` within `1..=64` | `[health] concurrency … must be between 1 and 64` |
 | `health.timeout_ms` at least 200 | `[health] timeout_ms must be at least 200` |
@@ -278,6 +284,7 @@ name = "xraytui0"
 mtu = 1500
 ipv4 = true
 ipv6 = false
+disabled_family_policy = "block"
 ipv4_address = "198.18.0.1/15"
 ipv6_address = "fdfe:dcba:9876::1/126"
 bypass_private_networks = true

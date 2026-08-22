@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
-use xraytui_config::{ConfigFile, DnsManager};
+use xraytui_config::{ConfigFile, DisabledFamilyPolicy, DnsManager};
 use xraytui_domain::DesiredState;
 use xraytui_linux_net::transport::{NetdClient, TransportError};
 use xraytui_netd_protocol::{
@@ -244,6 +244,9 @@ pub fn plan_request(
     state: &DesiredState,
     endpoints: Vec<std::net::IpAddr>,
 ) -> Result<PlanRequest, NetdError> {
+    config
+        .validate()
+        .map_err(|error| NetdError::Invalid(error.to_string()))?;
     let uid = rustix::process::getuid().as_raw();
     let interface = xraytui_netd_protocol::interface_for_uid(uid);
     if config.tun.name != interface {
@@ -270,6 +273,18 @@ pub fn plan_request(
     for text in &config.tun.include_cidrs {
         include.push(parse_prefix("tun.include_cidrs", text)?);
     }
+    if let Some(prefix) = include.iter().find(|prefix| {
+        (prefix.addr().is_ipv4() && ipv4.is_none()) || (prefix.addr().is_ipv6() && ipv6.is_none())
+    }) {
+        return Err(NetdError::Invalid(format!(
+            "[tun] include_cidrs contains {prefix}, but {} is disabled; enable that family or remove the prefix",
+            if prefix.addr().is_ipv4() {
+                "ipv4"
+            } else {
+                "ipv6"
+            }
+        )));
+    }
     let mut exclude = Vec::with_capacity(config.tun.exclude_cidrs.len());
     for text in &config.tun.exclude_cidrs {
         exclude.push(parse_prefix("tun.exclude_cidrs", text)?);
@@ -291,10 +306,16 @@ pub fn plan_request(
             exclude,
             bypass_endpoints: endpoints,
             bypass_private: config.tun.bypass_private_networks,
+            // Disabled families are blackholed explicitly. Otherwise a policy
+            // lookup with no route would continue to the main table and turn
+            // an IPv6-only configuration into a direct IPv4 leak.
+            blackhole_ipv4: !config.tun.ipv4
+                && config.tun.disabled_family_policy == DisabledFamilyPolicy::Block,
             // IPv6 that the tunnel does not carry must be discarded rather than
             // left to find its own way out; that is a leak nobody notices until
             // it matters.
-            blackhole_ipv6: !config.tun.ipv6,
+            blackhole_ipv6: !config.tun.ipv6
+                && config.tun.disabled_family_policy == DisabledFamilyPolicy::Block,
         },
         firewall: FirewallRequest {
             cgroup_marks,
@@ -560,18 +581,57 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_is_blackholed_exactly_when_the_tunnel_does_not_carry_it() {
+    fn disabled_families_are_blackholed_exactly_when_the_tunnel_does_not_carry_them() {
         let mut settings = config();
         settings.tun.ipv6 = false;
         let request =
             plan_request(&settings, &DesiredState::default(), Vec::new()).expect("request");
+        assert!(!request.routing.blackhole_ipv4);
         assert!(request.routing.blackhole_ipv6);
         assert!(request.tun.ipv6.is_none());
 
         settings.tun.ipv6 = true;
+        settings.tun.ipv4 = false;
         let request =
             plan_request(&settings, &DesiredState::default(), Vec::new()).expect("request");
+        assert!(request.routing.blackhole_ipv4);
         assert!(!request.routing.blackhole_ipv6);
+        assert!(request.tun.ipv4.is_none());
+        assert!(request.tun.ipv6.is_some());
+    }
+
+    #[test]
+    fn an_include_prefix_for_a_disabled_family_is_actionable() {
+        let mut settings = config();
+        settings.tun.ipv6 = false;
+        settings.tun.include_cidrs = vec!["2001:db8::/32".into()];
+        let error = plan_request(&settings, &DesiredState::default(), Vec::new())
+            .expect_err("must refuse the contradictory policy");
+        let text = error.to_string();
+        assert!(text.contains("ipv6 is disabled"), "{text}");
+        assert!(text.contains("enable that family"), "{text}");
+    }
+
+    #[test]
+    fn explicit_direct_policy_leaves_only_the_disabled_family_direct() {
+        let mut settings = config();
+        settings.tun.ipv4 = true;
+        settings.tun.ipv6 = false;
+        settings.tun.disabled_family_policy = DisabledFamilyPolicy::Direct;
+        let request =
+            plan_request(&settings, &DesiredState::default(), Vec::new()).expect("request");
+        assert!(!request.routing.blackhole_ipv4);
+        assert!(!request.routing.blackhole_ipv6);
+        assert!(request.tun.ipv4.is_some());
+        assert!(request.tun.ipv6.is_none());
+
+        settings.tun.ipv4 = false;
+        settings.tun.ipv6 = true;
+        let request =
+            plan_request(&settings, &DesiredState::default(), Vec::new()).expect("request");
+        assert!(!request.routing.blackhole_ipv4);
+        assert!(!request.routing.blackhole_ipv6);
+        assert!(request.tun.ipv4.is_none());
         assert!(request.tun.ipv6.is_some());
     }
 

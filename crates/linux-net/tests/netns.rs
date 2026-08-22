@@ -23,6 +23,14 @@
 //! | `repeated_enable_and_disable_leaves_no_residue` | K |
 //! | `a_process_is_classified_by_its_pidfd` | M |
 //! | `the_firewall_marks_only_the_named_cgroup` | M |
+//! | `dual_stack_routes_both_families_into_the_tunnel` | IPv4 + IPv6, both proxied |
+//! | `a_legacy_lease_recovers_families_from_the_live_tun` | in-place v1 lease migration |
+//! | `ipv4_only_blackholes_ipv6_despite_a_direct_route` | IPv4-only + IPv6 no-leak |
+//! | `ipv6_only_blackholes_ipv4_despite_a_direct_route` | IPv6-only + IPv4 no-leak |
+//! | `mixed_family_policy_can_proxy_ipv4_and_leave_ipv6_direct` | proxy IPv4 + direct IPv6 |
+//! | `mixed_family_policy_can_proxy_ipv6_and_leave_ipv4_direct` | proxy IPv6 + direct IPv4 |
+//! | `a_broken_tun_cannot_leak_either_family_past_the_kill_switch` | broken route + kill switch |
+//! | `ipv6_disabled_kernel_refuses_ipv6_tun_but_keeps_ipv4_fail_closed` | kernel IPv6 disabled |
 //! | `state_this_project_did_not_create_is_left_alone` | the safety property under all of them |
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -31,7 +39,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use xraytui_linux_net::netlink::Netlink;
-use xraytui_linux_net::netlink::message::{AF_INET, RTN_BLACKHOLE, RTN_THROW, RTPROT_XRAYTUI};
+use xraytui_linux_net::netlink::message::{
+    AF_INET, AF_INET6, RTN_BLACKHOLE, RTN_THROW, RTPROT_XRAYTUI,
+};
 use xraytui_linux_net::nft::Nft;
 use xraytui_linux_net::{Engine, EngineOptions, routing};
 use xraytui_netd_protocol::{
@@ -69,7 +79,7 @@ fn assert_disposable_namespace() {
 
 struct Fixture {
     engine: Engine,
-    _state: tempfile::TempDir,
+    state: tempfile::TempDir,
     cgroup_root: Option<PathBuf>,
 }
 
@@ -89,7 +99,7 @@ impl Fixture {
         let engine = Engine::new(options).expect("engine");
         Self {
             engine,
-            _state: state,
+            state,
             cgroup_root,
         }
     }
@@ -106,6 +116,10 @@ impl Fixture {
 
     fn table(&self) -> u32 {
         xraytui_netd_protocol::table_for_uid(UID)
+    }
+
+    fn lease_path(&self) -> PathBuf {
+        self.state.path().join(format!("state/u{UID}.json"))
     }
 }
 
@@ -133,7 +147,30 @@ fn routing_request() -> RoutingRequest {
         exclude: vec!["198.51.100.0/24".parse().expect("prefix")],
         bypass_endpoints: vec!["203.0.113.7".parse().expect("address")],
         bypass_private: true,
+        blackhole_ipv4: false,
         blackhole_ipv6: true,
+    }
+}
+
+fn family_tun(ipv4: bool, ipv6: bool, failure_policy: FailurePolicy) -> TunRequest {
+    TunRequest {
+        interface: xraytui_netd_protocol::interface_for_uid(UID),
+        mtu: 1400,
+        ipv4: ipv4.then(|| "198.18.0.1/15".parse().expect("IPv4 TUN prefix")),
+        ipv6: ipv6.then(|| "fdfe:dcba:9876::1/126".parse().expect("IPv6 TUN prefix")),
+        lease_ttl_secs: 30,
+        failure_policy,
+    }
+}
+
+fn family_routing(blackhole_ipv4: bool, blackhole_ipv6: bool) -> RoutingRequest {
+    RoutingRequest {
+        include: Vec::new(),
+        exclude: Vec::new(),
+        bypass_endpoints: Vec::new(),
+        bypass_private: false,
+        blackhole_ipv4,
+        blackhole_ipv6,
     }
 }
 
@@ -291,6 +328,411 @@ fn traffic_reaches_the_tunnel_through_the_mark() {
     assert!(
         !endpoint.contains(&interface),
         "the proxy endpoint must never be routed into the tunnel it feeds: {endpoint}"
+    );
+}
+
+#[test]
+fn a_contradictory_family_update_preserves_the_working_routes() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            false,
+            FailurePolicy::Restore,
+        )))
+        .expect("create IPv4-only TUN");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, true)))
+        .expect("install working policy");
+
+    let netlink = Netlink::open().expect("netlink");
+    let before = netlink
+        .routes_in_table(fixture.table())
+        .expect("working routes");
+    let error = fixture
+        .apply(Operation::ApplyRouting(RoutingRequest {
+            include: vec!["2001:db8:1234::/48".parse().expect("IPv6 prefix")],
+            exclude: Vec::new(),
+            bypass_endpoints: Vec::new(),
+            bypass_private: false,
+            blackhole_ipv4: false,
+            blackhole_ipv6: true,
+        }))
+        .expect_err("the TUN has no IPv6 family");
+    assert!(
+        error.to_string().contains("not configured for IPv6"),
+        "{error}"
+    );
+    let after = netlink
+        .routes_in_table(fixture.table())
+        .expect("routes after refusal");
+    assert_eq!(
+        after, before,
+        "candidate validation must happen before the working table is flushed"
+    );
+}
+
+#[test]
+fn dual_stack_routes_both_families_into_the_tunnel() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let direct = DirectEgress::start();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            true,
+            FailurePolicy::Restore,
+        )))
+        .expect("create dual-stack TUN");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, false)))
+        .expect("route both families");
+
+    assert_marked_route("198.51.100.9", &fixture.interface(), &direct.interface);
+    assert_marked_route("2001:db8:ffff::9", &fixture.interface(), &direct.interface);
+    assert_eq!(
+        marked_udp_source("198.51.100.9").as_deref(),
+        Some("198.18.0.1")
+    );
+    assert_eq!(
+        marked_udp_source("2001:db8:ffff::9").as_deref(),
+        Some("fdfe:dcba:9876::1")
+    );
+
+    let netlink = Netlink::open().expect("netlink");
+    let routes = netlink
+        .routes_in_table(fixture.table())
+        .expect("dual-stack routes");
+    for family in [AF_INET, AF_INET6] {
+        assert!(
+            routes.iter().any(|route| {
+                route.family == family && route.destination.is_none() && route.kind != RTN_BLACKHOLE
+            }),
+            "family {family} has no tunnel default: {routes:?}"
+        );
+        assert!(
+            netlink
+                .rules(family)
+                .expect("policy rules")
+                .iter()
+                .any(|rule| rule.priority == routing::rule_priority(UID)),
+            "family {family} has no policy rule"
+        );
+    }
+}
+
+#[test]
+fn a_legacy_lease_recovers_families_from_the_live_tun() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            true,
+            FailurePolicy::Restore,
+        )))
+        .expect("create dual-stack TUN");
+
+    let lease_path = fixture.lease_path();
+    let mut lease: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lease_path).expect("read current lease"))
+            .expect("decode current lease");
+    let object = lease.as_object_mut().expect("lease object");
+    object.remove("ipv4");
+    object.remove("ipv6");
+    std::fs::write(
+        &lease_path,
+        serde_json::to_vec_pretty(&lease).expect("encode legacy lease"),
+    )
+    .expect("install legacy lease fixture");
+
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, false)))
+        .expect("recover both families from live TUN addresses");
+
+    let netlink = Netlink::open().expect("netlink");
+    let index = netlink.link_index(&fixture.interface()).expect("TUN index");
+    let addresses = netlink.addresses_on_link(index).expect("TUN addresses");
+    assert!(
+        addresses.iter().any(|prefix| prefix.addr().is_ipv4()),
+        "IPv4 address missing from netlink dump: {addresses:?}"
+    );
+    assert!(
+        addresses.iter().any(|prefix| prefix.addr().is_ipv6()),
+        "IPv6 address missing from netlink dump: {addresses:?}"
+    );
+    let routes = netlink
+        .routes_in_table(fixture.table())
+        .expect("recovered routes");
+    for family in [AF_INET, AF_INET6] {
+        assert!(
+            routes.iter().any(|route| {
+                route.family == family && route.destination.is_none() && route.oif == Some(index)
+            }),
+            "legacy lease did not recover family {family}: {routes:?}"
+        );
+    }
+}
+
+#[test]
+fn ipv4_only_blackholes_ipv6_despite_a_direct_route() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let direct = DirectEgress::start();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            false,
+            FailurePolicy::Restore,
+        )))
+        .expect("create IPv4-only TUN");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, true)))
+        .expect("route IPv4 and block IPv6");
+
+    assert_marked_route("198.51.100.9", &fixture.interface(), &direct.interface);
+    assert_marked_blackhole("2001:db8:ffff::9", &direct.interface);
+    assert_eq!(
+        marked_udp_source("198.51.100.9").as_deref(),
+        Some("198.18.0.1")
+    );
+    assert!(
+        marked_udp_source("2001:db8:ffff::9").is_none(),
+        "marked IPv6 must fail rather than use the direct route"
+    );
+    assert_eq!(
+        udp_source("2001:db8:ffff::9").as_deref(),
+        Some("2001:db8:1::1"),
+        "the host's direct IPv6 route must be usable so the no-leak assertion is meaningful"
+    );
+}
+
+#[test]
+fn ipv6_only_blackholes_ipv4_despite_a_direct_route() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let direct = DirectEgress::start();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            false,
+            true,
+            FailurePolicy::Restore,
+        )))
+        .expect("create IPv6-only TUN");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(true, false)))
+        .expect("route IPv6 and block IPv4");
+
+    assert_marked_blackhole("198.51.100.9", &direct.interface);
+    assert_marked_route("2001:db8:ffff::9", &fixture.interface(), &direct.interface);
+    assert!(
+        marked_udp_source("198.51.100.9").is_none(),
+        "marked IPv4 must fail rather than use the direct route"
+    );
+    assert_eq!(
+        marked_udp_source("2001:db8:ffff::9").as_deref(),
+        Some("fdfe:dcba:9876::1")
+    );
+    assert_eq!(
+        udp_source("198.51.100.9").as_deref(),
+        Some("192.0.2.1"),
+        "the host's direct IPv4 route must be usable so the no-leak assertion is meaningful"
+    );
+}
+
+#[test]
+fn mixed_family_policy_can_proxy_ipv4_and_leave_ipv6_direct() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let direct = DirectEgress::start();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            false,
+            FailurePolicy::Restore,
+        )))
+        .expect("create IPv4-only TUN");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, false)))
+        .expect("proxy IPv4 and leave IPv6 direct");
+
+    assert_marked_route("198.51.100.9", &fixture.interface(), &direct.interface);
+    assert_marked_route("2001:db8:ffff::9", &direct.interface, &fixture.interface());
+    assert_eq!(
+        marked_udp_source("2001:db8:ffff::9").as_deref(),
+        Some("2001:db8:1::1")
+    );
+}
+
+#[test]
+fn mixed_family_policy_can_proxy_ipv6_and_leave_ipv4_direct() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let direct = DirectEgress::start();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            false,
+            true,
+            FailurePolicy::Restore,
+        )))
+        .expect("create IPv6-only TUN");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, false)))
+        .expect("proxy IPv6 and leave IPv4 direct");
+
+    assert_marked_route("198.51.100.9", &direct.interface, &fixture.interface());
+    assert_marked_route("2001:db8:ffff::9", &fixture.interface(), &direct.interface);
+    assert_eq!(
+        marked_udp_source("198.51.100.9").as_deref(),
+        Some("192.0.2.1")
+    );
+}
+
+#[test]
+fn a_broken_tun_cannot_leak_either_family_past_the_kill_switch() {
+    if !enabled() {
+        return;
+    }
+    let nft = Nft::new("nft");
+    if !nft.available() {
+        eprintln!("skipping: nft is not installed");
+        return;
+    }
+    let fixture = Fixture::new();
+    let direct = DirectEgress::start();
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            true,
+            FailurePolicy::Block,
+        )))
+        .expect("create dual-stack TUN");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, false)))
+        .expect("route both families");
+    fixture
+        .apply(Operation::ApplyFirewall(FirewallRequest {
+            cgroup_marks: Vec::new(),
+            kill_switch: true,
+            bypass_uid: false,
+        }))
+        .expect("install kill switch");
+
+    let interface = fixture.interface();
+    ip(&["link", "delete", &interface]);
+    // Deleting the route's device makes the kernel discard its routes. The
+    // remaining marked lookup now resolves to the ordinary direct path: this
+    // is the exact transient in which a kill switch has to do real work.
+    assert_marked_route("198.51.100.9", &direct.interface, &interface);
+    assert_marked_route("2001:db8:ffff::9", &direct.interface, &interface);
+    assert_eq!(guard_packets(), 0, "the counter must start clean");
+
+    assert_marked_udp_blocked("198.51.100.9");
+    assert_marked_udp_blocked("2001:db8:ffff::9");
+    assert_eq!(
+        guard_packets(),
+        2,
+        "one IPv4 and one IPv6 packet must be stopped before direct egress"
+    );
+}
+
+#[test]
+fn ipv6_disabled_kernel_refuses_ipv6_tun_but_keeps_ipv4_fail_closed() {
+    if !enabled() {
+        return;
+    }
+    const INNER: &str = "XRAYTUI_IPV6_DISABLED_INNER";
+    if std::env::var_os(INNER).is_none() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let output = Command::new("unshare")
+            .args(["--net", "--fork", "--"])
+            .arg(executable)
+            .args([
+                "--exact",
+                "ipv6_disabled_kernel_refuses_ipv6_tun_but_keeps_ipv4_fail_closed",
+                "--nocapture",
+            ])
+            .env(INNER, "1")
+            .output()
+            .expect("run the disabled-IPv6 child namespace");
+        assert!(
+            output.status.success(),
+            "disabled-IPv6 child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    ip(&["link", "set", "lo", "up"]);
+    for path in [
+        "/proc/sys/net/ipv6/conf/default/disable_ipv6",
+        "/proc/sys/net/ipv6/conf/all/disable_ipv6",
+    ] {
+        std::fs::write(path, "1\n").expect("disable IPv6 inside disposable namespace");
+    }
+    assert!(
+        std::path::Path::new("/proc/net/if_inet6").exists(),
+        "the proc file remains present under sysctl disablement"
+    );
+    assert!(
+        !xraytui_linux_net::capabilities::ipv6_tun_available(),
+        "the capability probe must inspect the sysctls, not only file presence"
+    );
+
+    let fixture = Fixture::new();
+    let error = fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            true,
+            FailurePolicy::Restore,
+        )))
+        .expect_err("an IPv6 TUN must be refused before mutation");
+    let text = error.to_string();
+    assert!(text.contains("IPv6 TUN routing is unavailable"), "{text}");
+    assert!(text.contains("IPv4 remains available"), "{text}");
+    assert!(
+        Netlink::open()
+            .expect("netlink")
+            .link_index(&fixture.interface())
+            .is_err(),
+        "the refused dual-stack request must leave no device"
+    );
+
+    fixture
+        .apply(Operation::CreateTun(family_tun(
+            true,
+            false,
+            FailurePolicy::Restore,
+        )))
+        .expect("IPv4 must remain available");
+    fixture
+        .apply(Operation::ApplyRouting(family_routing(false, true)))
+        .expect("IPv4 route plus IPv6 blackhole must remain usable");
+    let routes = Netlink::open()
+        .expect("netlink")
+        .routes_in_table(fixture.table())
+        .expect("routes");
+    assert!(
+        routes.iter().any(|route| {
+            route.family == AF_INET6 && route.kind == RTN_BLACKHOLE && route.destination.is_none()
+        }),
+        "IPv6 must remain fail-closed even when address configuration is disabled: {routes:?}"
     );
 }
 
@@ -707,6 +1149,7 @@ fn two_instances_of_one_program_reach_two_different_listeners() {
             exclude: Vec::new(),
             bypass_endpoints: Vec::new(),
             bypass_private: false,
+            blackhole_ipv4: false,
             blackhole_ipv6: true,
         }))
         .expect("apply routing");
@@ -863,6 +1306,178 @@ fn dns_is_left_alone_when_the_backend_is_none() {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+/// A deterministic stand-in for the machine's ordinary physical uplink.
+///
+/// Both defaults are intentionally usable. A fail-closed test that observes a
+/// blackhole therefore proves policy beat an available direct route rather
+/// than merely observing that a fresh namespace had no Internet path.
+struct DirectEgress {
+    interface: String,
+}
+
+impl DirectEgress {
+    fn start() -> Self {
+        let interface = "direct0".to_owned();
+        ip(&["link", "add", &interface, "type", "dummy"]);
+        ip(&["addr", "add", "192.0.2.1/24", "dev", &interface]);
+        ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:1::1/64",
+            "dev",
+            &interface,
+            "nodad",
+        ]);
+        ip(&["link", "set", &interface, "up"]);
+        ip(&["route", "add", "default", "dev", &interface]);
+        ip(&["-6", "route", "add", "default", "dev", &interface]);
+        Self { interface }
+    }
+}
+
+impl Drop for DirectEgress {
+    fn drop(&mut self) {
+        let _ = ip_allow_failure(&["link", "delete", &self.interface]);
+    }
+}
+
+fn marked_route(destination: &str) -> String {
+    let mark = format!("{:#x}", xraytui_netd_protocol::fwmark_for_uid(UID));
+    if destination.contains(':') {
+        ip_allow_failure(&["-6", "route", "get", destination, "mark", &mark])
+    } else {
+        ip_allow_failure(&["route", "get", destination, "mark", &mark])
+    }
+}
+
+fn assert_marked_route(destination: &str, expected: &str, forbidden: &str) {
+    let route = marked_route(destination);
+    assert!(
+        route.contains(&format!("dev {expected}")),
+        "marked route to {destination} must use {expected}: {route}"
+    );
+    assert!(
+        !route.contains(&format!("dev {forbidden}")),
+        "marked route to {destination} must not use {forbidden}: {route}"
+    );
+}
+
+fn assert_marked_blackhole(destination: &str, direct: &str) {
+    let route = marked_route(destination);
+    assert!(
+        route.contains("blackhole")
+            || route.contains("unreachable")
+            || route.contains("Invalid argument"),
+        "marked route to {destination} must be rejected: {route}"
+    );
+    assert!(
+        !route.contains(&format!("dev {direct}")),
+        "marked route to {destination} leaked to {direct}: {route}"
+    );
+}
+
+/// Ask the kernel to select a source address for a UDP socket.
+///
+/// `mark` is set before `connect`, so the same policy rule used by actual
+/// traffic participates. A blackhole returns `None`; a usable TUN or direct
+/// route returns its selected source address.
+fn udp_source_with_mark(destination: &str, mark: u32) -> Option<String> {
+    let program = concat!(
+        "import socket,sys\n",
+        "host=sys.argv[1]\n",
+        "mark=int(sys.argv[2])\n",
+        "family=socket.AF_INET6 if ':' in host else socket.AF_INET\n",
+        "target=(host,9,0,0) if family==socket.AF_INET6 else (host,9)\n",
+        "s=socket.socket(family,socket.SOCK_DGRAM)\n",
+        "s.setsockopt(socket.SOL_SOCKET,36,mark)\n",
+        "try:\n",
+        "    s.connect(target)\n",
+        "    print(s.getsockname()[0])\n",
+        "except OSError:\n",
+        "    print('')\n",
+    );
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(program)
+        .arg(destination)
+        .arg(mark.to_string())
+        .output()
+        .expect("select a UDP route");
+    assert!(
+        output.status.success(),
+        "UDP route probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let source = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!source.is_empty()).then_some(source)
+}
+
+fn marked_udp_source(destination: &str) -> Option<String> {
+    udp_source_with_mark(destination, xraytui_netd_protocol::fwmark_for_uid(UID))
+}
+
+fn udp_source(destination: &str) -> Option<String> {
+    udp_source_with_mark(destination, 0)
+}
+
+fn assert_marked_udp_blocked(destination: &str) {
+    let program = concat!(
+        "import socket,sys\n",
+        "host=sys.argv[1]\n",
+        "mark=int(sys.argv[2])\n",
+        "family=socket.AF_INET6 if ':' in host else socket.AF_INET\n",
+        "target=(host,9,0,0) if family==socket.AF_INET6 else (host,9)\n",
+        "s=socket.socket(family,socket.SOCK_DGRAM)\n",
+        "s.setsockopt(socket.SOL_SOCKET,36,mark)\n",
+        "try:\n",
+        "    s.sendto(b'xraytui-kill-switch-probe',target)\n",
+        "    print('sent')\n",
+        "except OSError as error:\n",
+        "    print('blocked:%d'%error.errno)\n",
+    );
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(program)
+        .arg(destination)
+        .arg(xraytui_netd_protocol::fwmark_for_uid(UID).to_string())
+        .output()
+        .expect("send marked UDP probe");
+    assert!(
+        output.status.success(),
+        "marked UDP probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answer = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        answer.trim().starts_with("blocked:"),
+        "kill switch allowed marked UDP to {destination}: {answer}"
+    );
+}
+
+fn guard_packets() -> u64 {
+    let chain = format!("u{UID}-guard");
+    let output = Command::new("nft")
+        .args(["list", "chain", "inet", "xraytui", &chain])
+        .output()
+        .expect("list kill-switch chain");
+    assert!(
+        output.status.success(),
+        "cannot inspect kill-switch counter: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words
+        .windows(2)
+        .find_map(|pair| {
+            (pair[0] == "packets")
+                .then(|| pair[1].parse::<u64>().ok())
+                .flatten()
+        })
+        .expect("a packets counter in the guard chain")
+}
 
 /// A stand-in for Xray's transparent inbound.
 ///

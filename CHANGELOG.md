@@ -5,8 +5,33 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+* Symmetric IPv4/IPv6 TUN family policy. A disabled family is blackholed by
+  default; experts may explicitly choose `disabled_family_policy = "direct"`
+  with restore-on-failure semantics. Contradictory include prefixes are refused
+  before the working route table is touched.
+* Deterministic privileged coverage for IPv4-only, IPv6-only, dual-stack, both
+  mixed direct/proxy directions, kernel IPv6 disablement, and a broken dual-stack
+  TUN. The tests install usable direct routes, query the kernel, exercise marked
+  sockets and prove kill-switch drops with an nftables counter.
+* `doctor` now reports whether IPv6 is enabled for newly created TUN interfaces
+  and names the relevant proc/sysctl evidence when it is not.
+
 ### Fixed
 
+* The v2rayN serializer watch has been reviewed and advanced to current master;
+  the only watched change removes an unused C# import and does not alter share
+  link semantics.
+* IPv6-only TUN configurations no longer acquire an implicit IPv4 tunnel route;
+  disabled IPv4 is now blackholed just like disabled IPv6, preventing a missing
+  family from falling through to the main table.
+* The IPv6 capability check no longer mistakes the mere presence of
+  `/proc/net/if_inet6` for usable IPv6 when namespace sysctls disable address
+  assignment.
+* Lease files written before explicit family tracking recover IPv4/IPv6 from
+  the live TUN addresses, so an in-place helper upgrade cannot misclassify an
+  active tunnel and erase its working routes.
 * Pull-request package builds now use the disposable checked-out source
   archive's checksum without changing the committed PKGBUILD, which remains
   pinned to the immutable published release artifact.

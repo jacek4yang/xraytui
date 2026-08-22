@@ -150,6 +150,20 @@ single policy rule matching the user's firewall mark. Inside:
   multicast space become **`throw`** routes, which abandon the table and let the
   next rule take over, i.e. the machine's ordinary routing.
 
+Family policy is symmetric. `tun.ipv4` and `tun.ipv6` say which families the
+TUN carries. For every disabled family, `tun.disabled_family_policy = "block"`
+(the default) installs a blackhole default in the marked table; a usable default
+in the main table cannot become a silent fallback. `"direct"` deliberately
+omits that blackhole and is how an expert asks for proxied IPv4/direct IPv6 or
+proxied IPv6/direct IPv4. It is incompatible with
+`runtime.failure_policy = "block"`: that policy's live nftables guard is
+specifically a promise that marked traffic never leaves by another interface.
+
+An `include_cidrs` entry for a family the TUN does not carry is contradictory
+and is refused before the working route table is flushed. The helper records the
+configured families in its credential-owned lease rather than inferring them
+from presentation fields or an automatically assigned link-local address.
+
 `throw` is used rather than copying the main table's routes because a copy goes
 stale the moment the physical link changes. The proxy endpoints matter most:
 without those host routes the core's own connection to its proxy would be routed
@@ -171,6 +185,15 @@ a value outside that set is refused and no ruleset is produced at all.
 
 Routes, rules, links and addresses are programmed over **netlink**, not by
 shelling out to `ip(8)`.
+
+The privileged namespace suite supplies independent direct IPv4 and IPv6
+defaults, then proves all family outcomes through `ip route get` and marked UDP
+source selection. Its broken-TUN scenario deletes the live interface, observes
+that both marked lookups would otherwise fall through to the direct device, and
+then sends one packet per family; the nftables guard rejects both and its packet
+counter advances by two. A nested namespace separately sets both IPv6 disable
+sysctls, verifies that a dual-stack request is refused before creating a device,
+and verifies that IPv4 plus the IPv6 blackhole still applies.
 
 ## Failure policy: restore or block
 

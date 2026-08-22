@@ -275,6 +275,13 @@ impl Engine {
                 "xraytui-netd is running without CAP_NET_ADMIN".into(),
             ));
         }
+        if request.ipv6.is_some() && !crate::capabilities::ipv6_tun_available() {
+            return Err(unsupported(
+                "IPv6 TUN routing is unavailable because the host kernel has IPv6 disabled. \
+                 IPv4 remains available. Check /proc/net/if_inet6 and \
+                 /proc/sys/net/ipv6/conf/{all,default}/disable_ipv6",
+            ));
+        }
 
         let device = tun::create(&request.interface, uid).map_err(|error| match error {
             tun::TunError::Conflict(resource) => NetdError::Conflict { resource },
@@ -317,6 +324,8 @@ impl Engine {
             request.failure_policy,
             crate::lease::now(),
         );
+        lease.ipv4 = Some(request.ipv4.is_some());
+        lease.ipv6 = Some(request.ipv6.is_some());
         // Preserve anything an earlier lease knew about, so a re-created device
         // does not orphan the cgroups the user already has.
         if let Some(previous) = self.leases.get(uid) {
@@ -362,19 +371,44 @@ impl Engine {
             .link_index(&lease.interface)
             .map_err(|error| refuse(format!("the tunnel is not up: {error}")))?;
 
-        // Recompute from scratch every time: the table is ours alone, so
-        // emptying it and rebuilding is both simpler and more predictable than
-        // diffing, and it makes repeated application idempotent.
-        netlink.flush_owned_routes(lease.table).map_err(internal)?;
-
-        let has_v4 = request.include.iter().any(|prefix| prefix.addr().is_ipv4())
-            || request.include.is_empty();
+        // v1 lease files predate the explicit family flags. Recover their
+        // meaning from the live device instead of interpreting a missing field
+        // as `false`, which would break an active tunnel during an upgrade.
+        let detected_addresses = if lease.ipv4.is_none() || lease.ipv6.is_none() {
+            netlink.addresses_on_link(index).map_err(internal)?
+        } else {
+            Vec::new()
+        };
+        let has_v4 = lease.ipv4.unwrap_or_else(|| {
+            detected_addresses
+                .iter()
+                .any(|prefix| prefix.addr().is_ipv4())
+        });
         // A kernel with no IPv6 rejects every AF_INET6 message; asking it
         // anyway would turn an ordinary configuration into a rollback.
         let has_v6 = ipv6_supported()
-            && (request.include.iter().any(|prefix| prefix.addr().is_ipv6())
-                || (request.include.is_empty() && lease_has_v6(&netlink, index)));
+            && lease.ipv6.unwrap_or_else(|| {
+                detected_addresses.iter().any(|prefix| {
+                    matches!(prefix.addr(), std::net::IpAddr::V6(address) if !address.is_unicast_link_local())
+                })
+            });
 
+        if let Some(prefix) = request.include.iter().find(|prefix| {
+            (prefix.addr().is_ipv4() && !has_v4) || (prefix.addr().is_ipv6() && !has_v6)
+        }) {
+            return Err(refuse(format!(
+                "cannot route included prefix {prefix}: the TUN was not configured for {}",
+                if prefix.addr().is_ipv4() {
+                    "IPv4"
+                } else {
+                    "IPv6"
+                }
+            )));
+        }
+
+        // Validate and compute the entire candidate before touching the live
+        // table. A contradictory family include must not erase the working
+        // routes merely because it was discovered during an update.
         let mut computed = routing::compute(request, has_v4, has_v6);
         if !ipv6_supported() {
             let before = computed.routes.len();
@@ -388,6 +422,11 @@ impl Engine {
                 );
             }
         }
+
+        // Recompute from scratch every time: the table is ours alone, so
+        // emptying it and rebuilding is both simpler and more predictable than
+        // diffing, and it makes repeated application idempotent.
+        netlink.flush_owned_routes(lease.table).map_err(internal)?;
         for action in &computed.routes {
             let result = match action {
                 RouteAction::Tunnel(prefix) => netlink.route_add(lease.table, *prefix, index, true),
@@ -766,19 +805,6 @@ fn add_address_idempotently(
     }
 }
 
-/// Whether the device carries an IPv6 address, which decides whether an IPv6
-/// default route can point at it.
-fn lease_has_v6(netlink: &Netlink, index: u32) -> bool {
-    // A dump of addresses is more work than it is worth here; the tunnel gets
-    // IPv6 routes only when the caller asked for an IPv6 address, which
-    // `create_tun` recorded by assigning one. Asking the kernel keeps the two
-    // from drifting when a device is adopted.
-    netlink
-        .routes_in_table(254)
-        .map(|routes| routes.iter().any(|route| route.oif == Some(index)))
-        .unwrap_or(false)
-}
-
 fn unreachable_handled() -> Result<Response, NetdError> {
     Err(internal(
         "a read-only operation reached the mutating path; this is a bug",
@@ -850,6 +876,7 @@ mod tests {
                 exclude: Vec::new(),
                 bypass_endpoints: Vec::new(),
                 bypass_private: false,
+                blackhole_ipv4: false,
                 blackhole_ipv6: false,
             }),
             Operation::ApplyFirewall(FirewallRequest {
@@ -885,6 +912,7 @@ mod tests {
                 exclude: Vec::new(),
                 bypass_endpoints: Vec::new(),
                 bypass_private: true,
+                blackhole_ipv4: false,
                 blackhole_ipv6: false,
             },
             firewall: FirewallRequest {

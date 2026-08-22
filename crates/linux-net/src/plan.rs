@@ -175,6 +175,7 @@ mod tests {
                 exclude: Vec::new(),
                 bypass_endpoints: vec!["203.0.113.7".parse().expect("address")],
                 bypass_private: true,
+                blackhole_ipv4: false,
                 blackhole_ipv6: true,
             },
             firewall: FirewallRequest {

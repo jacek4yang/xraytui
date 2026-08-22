@@ -88,3 +88,11 @@ before decoding.
 A vulnerability in a production dependency blocks a release unless it is
 removed or upgraded; an exception requires a new, evidence-backed security
 decision and is not part of this release.
+
+TUN family fallback is fail-closed by default for both IPv4 and IPv6. Setting
+`tun.disabled_family_policy = "direct"` is an explicit authorization for the
+disabled family to use the host route; configuration validation refuses that
+choice together with the global block-on-failure policy. The privileged
+namespace suite keeps usable direct routes present while it proves blackholes
+and broken-route nftables drops, so absence of a test network cannot masquerade
+as leak prevention.

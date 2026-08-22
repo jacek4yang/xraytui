@@ -15,6 +15,47 @@ has no authentication.
 Last published-release verification: 2026-08-21. An unexecuted test is never
 recorded as passing.
 
+## Unreleased dual-stack candidate evidence
+
+This section describes the post-1.1.0 branch, not the published artifact. On
+2026-08-22, `./scripts/netns-test.sh` executed 21 privileged kernel scenarios
+plus the real CLI/helper/Xray exact-instance scenario with no skip, once with
+`XRAYTUI_TEST_XRAY=/tmp/xray-bin-stable/xray` (v26.3.27) and again with
+`XRAYTUI_TEST_XRAY=/tmp/xray-bin-preview/xray` (v26.7.28). The new scenarios
+keep usable direct IPv4 and IPv6 defaults present while proving:
+
+* dual-stack marked sockets select the TUN address in both families;
+* IPv4-only and IPv6-only policies blackhole the disabled family instead of
+  falling through to those direct defaults;
+* explicit proxied-IPv4/direct-IPv6 and proxied-IPv6/direct-IPv4 policies select
+  the intended source address;
+* a contradictory family update is refused before changing the working route
+  table;
+* a lease written before the family flags existed recovers both families from
+  the live TUN addresses during an in-place upgrade;
+* a nested namespace with both IPv6 disable sysctls set refuses an IPv6 TUN
+  before mutation, while IPv4 plus an IPv6 blackhole remains available;
+* after deletion of a dual-stack TUN makes both marked kernel lookups resolve to
+  the direct device, nftables rejects one real UDP packet per family and the
+  project guard's counter advances from zero to two.
+
+This closes the kernel routing and kill-switch coverage gap. It does **not** yet
+promote IPv6 to production-ready: end-to-end IPv6-only Xray transport, proxied
+DNS, chain/group traffic, systemd-resolved and failure-injection coverage still
+need deterministic execution.
+
+| Candidate gate | 2026-08-22 result |
+|---|---|
+| stable v26.3.27 workspace | **pass**: 815 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
+| preview v26.7.28 workspace | **pass**: 815 passed, 0 failed, 1 privilege-gated ignored across 45 result sets |
+| ignored TUN/DNS Xray validator | **pass separately** with `CAP_NET_ADMIN` against stable and preview; `xraytui0` absent before and after |
+| privileged namespaces | **pass twice**: 21 kernel/network scenarios plus one real CLI/helper/Xray exact-instance scenario with stable and preview; no skip |
+| `cargo xtask ci` | **pass** after the lease-migration fix: fmt, check, strict Clippy, workspace build/test and rustdoc |
+| `cargo xtask upstream-check` | **pass** against live Xray release/tag/source state and reviewed v2rayN/v2rayNG serializer snapshots |
+| `cargo deny check` | **pass**: advisories, bans, licenses and sources |
+| `cargo audit --no-fetch` | **pass** after manually fast-forwarding the database to RustSec commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
+| release workspace build | **pass** with all features after the final migration regression fix |
+
 ## Published 1.1.0 sharing evidence
 
 | Capability | Release evidence |
@@ -128,9 +169,10 @@ SHA-256 matched its official `.dgst` file before use.
 
 ## Remaining limitations
 
-1. **IPv6 runtime coverage.** The code has IPv6 validation, routing and
-   fail-closed behaviour, but the release's privileged scenarios intentionally
-   use IPv4. IPv6 stays off by default and outside the 1.0 support promise.
+1. **IPv6 end-to-end coverage.** The post-release candidate now proves
+   IPv4-only, IPv6-only, dual-stack and broken-route kernel behavior with usable
+   direct fallbacks present. It does not yet prove the complete real Xray/DNS/
+   chain/systemd-resolved matrix. IPv6 stays off by default and experimental.
 2. **Untrusted local users.** Upstream Xray commander traffic uses
    unauthenticated loopback TCP. A random local port is not a security boundary.
 3. **Architecture.** The package and binary archive are verified only for

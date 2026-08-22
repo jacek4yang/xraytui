@@ -130,7 +130,7 @@ pub fn compute(request: &RoutingRequest, has_v4: bool, has_v6: bool) -> RoutingP
     // The tunnel's own destinations first, so that the throw routes below are
     // strictly more specific and therefore win.
     if request.include.is_empty() {
-        if has_v4 {
+        if has_v4 && !request.blackhole_ipv4 {
             routes.push(RouteAction::Tunnel(default_v4()));
         }
         if has_v6 && !request.blackhole_ipv6 {
@@ -138,14 +138,20 @@ pub fn compute(request: &RoutingRequest, has_v4: bool, has_v6: bool) -> RoutingP
         }
     } else {
         for prefix in &request.include {
-            if (prefix.addr().is_ipv4() && has_v4) || (prefix.addr().is_ipv6() && has_v6) {
+            if (prefix.addr().is_ipv4() && has_v4 && !request.blackhole_ipv4)
+                || (prefix.addr().is_ipv6() && has_v6 && !request.blackhole_ipv6)
+            {
                 routes.push(RouteAction::Tunnel(*prefix));
             }
         }
     }
 
-    // IPv6 that is not carried must be discarded rather than left to find its
-    // own way out, which would be a leak that is invisible until it matters.
+    // A family that policy says the tunnel does not carry must be discarded
+    // rather than left to find its own way out, which would be a leak that is
+    // invisible until it matters.
+    if request.blackhole_ipv4 && !routes.iter().any(|route| route.prefix().addr().is_ipv4()) {
+        routes.push(RouteAction::Blackhole(default_v4()));
+    }
     if request.blackhole_ipv6 && !routes.iter().any(|route| route.prefix().addr().is_ipv6()) {
         routes.push(RouteAction::Blackhole(default_v6()));
     }
@@ -248,6 +254,7 @@ mod tests {
             exclude: Vec::new(),
             bypass_endpoints: Vec::new(),
             bypass_private: false,
+            blackhole_ipv4: false,
             blackhole_ipv6: false,
         }
     }
@@ -324,6 +331,21 @@ mod tests {
         assert!(
             !plan.tunnelled().contains(&default_v6()),
             "IPv6 cannot be both blackholed and tunnelled"
+        );
+    }
+
+    #[test]
+    fn unwanted_ipv4_is_blackholed_rather_than_left_to_leak() {
+        let mut spec = request();
+        spec.blackhole_ipv4 = true;
+        let plan = compute(&spec, true, true);
+        assert!(
+            plan.routes.contains(&RouteAction::Blackhole(default_v4())),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.tunnelled().contains(&default_v4()),
+            "IPv4 cannot be both blackholed and tunnelled"
         );
     }
 

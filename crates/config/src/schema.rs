@@ -88,6 +88,17 @@ impl ConfigFile {
         if !self.tun.ipv4 && !self.tun.ipv6 {
             problems.push("[tun] at least one of ipv4 or ipv6 must be enabled".to_owned());
         }
+        if self.tun.disabled_family_policy == DisabledFamilyPolicy::Direct
+            && (!self.tun.ipv4 || !self.tun.ipv6)
+            && self.runtime.failure_policy == FailurePolicy::Block
+        {
+            problems.push(
+                "[tun] disabled_family_policy = \"direct\" conflicts with \
+                 [runtime] failure_policy = \"block\"; use failure_policy = \"restore\" \
+                 or keep disabled families blocked"
+                    .to_owned(),
+            );
+        }
         if !is_valid_interface_name(&self.tun.name) {
             problems.push(format!(
                 "[tun] name {:?} must match ^xraytui[0-9a-z]{{0,8}}$ so the helper can prove ownership",
@@ -285,6 +296,17 @@ impl Default for RuntimeSection {
     }
 }
 
+/// What happens to a disabled address family while TUN mode is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisabledFamilyPolicy {
+    /// Refuse Internet traffic in that family so it cannot bypass the proxy.
+    #[default]
+    Block,
+    /// Deliberately leave that family on the host's ordinary route.
+    Direct,
+}
+
 /// `[tun]`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TunSection {
@@ -301,10 +323,11 @@ pub struct TunSection {
     #[serde(default = "crate::schema::default_true")]
     pub ipv4: bool,
     /// Enable IPv6 inside the tunnel.
-    ///
-    /// When false, IPv6 is explicitly blackholed rather than left to leak.
     #[serde(default)]
     pub ipv6: bool,
+    /// Policy for a family whose `ipv4` or `ipv6` switch is false.
+    #[serde(default)]
+    pub disabled_family_policy: DisabledFamilyPolicy,
     /// IPv4 address assigned to the device, CIDR form.
     #[serde(default = "default_tun_ipv4")]
     pub ipv4_address: String,
@@ -361,6 +384,7 @@ impl Default for TunSection {
             mtu: default_mtu(),
             ipv4: true,
             ipv6: false,
+            disabled_family_policy: DisabledFamilyPolicy::default(),
             ipv4_address: default_tun_ipv4(),
             ipv6_address: default_tun_ipv6(),
             bypass_private_networks: true,
@@ -670,6 +694,21 @@ mod tests {
         config.tun.ipv6 = false;
         let error = config.validate().expect_err("must refuse");
         assert!(error.to_string().contains("ipv4 or ipv6"), "{error}");
+    }
+
+    #[test]
+    fn an_explicit_direct_family_cannot_be_hidden_behind_the_global_kill_switch() {
+        let mut config = ConfigFile::default();
+        config.tun.disabled_family_policy = DisabledFamilyPolicy::Direct;
+        config.runtime.failure_policy = FailurePolicy::Block;
+        let error = config.validate().expect_err("policies conflict");
+        assert!(
+            error.to_string().contains("disabled_family_policy"),
+            "{error}"
+        );
+
+        config.runtime.failure_policy = FailurePolicy::Restore;
+        config.validate().expect("explicit direct mode is allowed");
     }
 
     #[test]

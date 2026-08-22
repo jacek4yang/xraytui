@@ -67,8 +67,10 @@ These results include the merged commit and retrieved public artifact.
 
 ## Required next steps
 
-1. Keep IPv6 experimental until the deterministic IPv6-only, dual-stack and
-   leak suites execute with evidence equivalent to the IPv4 namespace suite.
+1. Keep IPv6 experimental until deterministic real-Xray IPv6-only and dual-stack
+   transport, DNS, chain/group, systemd-resolved and failure-injection suites
+   complement the now-passing kernel route/blackhole/kill-switch namespace
+   matrix.
 2. Add an automatic redacted diagnostic-bundle exporter without including
    policy, generated Xray JSON, share links, QR images or subscription secrets.
 
