@@ -71,6 +71,8 @@ pub enum DnsError {
 pub struct DnsManager {
     bus: PathBuf,
     resolvconf: PathBuf,
+    #[cfg(test)]
+    resolvconf_prefix: Vec<PathBuf>,
 }
 
 impl Default for DnsManager {
@@ -78,6 +80,8 @@ impl Default for DnsManager {
         Self {
             bus: crate::dbus::system_bus_path(),
             resolvconf: PathBuf::from("resolvconf"),
+            #[cfg(test)]
+            resolvconf_prefix: Vec::new(),
         }
     }
 }
@@ -89,6 +93,8 @@ impl DnsManager {
         Self {
             bus: bus.into(),
             resolvconf: resolvconf.into(),
+            #[cfg(test)]
+            resolvconf_prefix: Vec::new(),
         }
     }
 
@@ -237,6 +243,8 @@ impl DnsManager {
             return Err(DnsError::Unavailable("resolvconf"));
         };
         let mut command = program::command(&resolved);
+        #[cfg(test)]
+        command.args(&self.resolvconf_prefix);
         command
             .args(args)
             .stdin(if stdin.is_some() {
@@ -321,7 +329,7 @@ mod tests {
     #[test]
     fn resolvconf_receives_one_nameserver_line_per_server() {
         let fixture = FakeResolvconf::new();
-        let manager = DnsManager::new("/nonexistent/bus", &fixture.program);
+        let manager = fixture.manager();
         let spec = DnsRequest {
             backend: DnsBackend::Resolvconf,
             servers: vec![
@@ -343,7 +351,7 @@ mod tests {
     #[test]
     fn reverting_resolvconf_deletes_the_interface_record() {
         let fixture = FakeResolvconf::new();
-        let manager = DnsManager::new("/nonexistent/bus", &fixture.program);
+        let manager = fixture.manager();
         manager
             .revert("xraytui1000", 3, DnsBackend::Resolvconf)
             .expect("revert");
@@ -359,11 +367,11 @@ mod tests {
 
     /// A stand-in for `resolvconf` that records its argv and stdin.
     ///
-    /// Each fixture owns a unique directory for its entire lifetime. The old
-    /// process/thread-derived pathname could be reused after PID reuse and was
-    /// written directly at its executable name. Preparing a private draft and
-    /// renaming it only after the writer closes prevents both collisions and
-    /// `ETXTBSY` when the test immediately spawns it.
+    /// Each fixture owns a unique directory for its entire lifetime. The
+    /// generated file is deliberately *input* to the stable system shell, not a
+    /// newly written executable: GitHub-hosted filesystems have intermittently
+    /// returned `ETXTBSY` even after a generated script was closed and renamed.
+    /// This test-only prefix does not exist in production builds.
     struct FakeResolvconf {
         _directory: tempfile::TempDir,
         program: PathBuf,
@@ -372,36 +380,28 @@ mod tests {
 
     impl FakeResolvconf {
         fn new() -> Self {
-            use std::fs::OpenOptions;
-            use std::os::unix::fs::PermissionsExt as _;
-
             let directory = tempfile::tempdir().expect("temp dir");
             let log = directory.path().join("log");
-            let draft = directory.path().join("resolvconf.draft");
-            let program = directory.path().join("resolvconf");
+            let program = directory.path().join("resolvconf.fixture");
             let body = format!(
                 "#!/bin/sh\nexec >>'{}' 2>&1\necho \"argv: $*\"\ncat\n",
                 log.display()
             );
-
-            {
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&draft)
-                    .expect("create script");
-                file.write_all(body.as_bytes()).expect("write script");
-                file.set_permissions(std::fs::Permissions::from_mode(0o755))
-                    .expect("chmod script");
-                file.sync_all().expect("sync script");
-            }
-            std::fs::rename(&draft, &program).expect("publish script");
+            std::fs::write(&program, body).expect("write script");
             std::fs::write(&log, "").expect("create log");
 
             Self {
                 _directory: directory,
                 program,
                 log,
+            }
+        }
+
+        fn manager(&self) -> DnsManager {
+            DnsManager {
+                bus: PathBuf::from("/nonexistent/bus"),
+                resolvconf: PathBuf::from("/bin/sh"),
+                resolvconf_prefix: vec![self.program.clone()],
             }
         }
     }
