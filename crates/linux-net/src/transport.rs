@@ -1,12 +1,8 @@
 //! The helper socket: framed CBOR with file descriptors attached.
 //!
 //! The user-facing control socket (`xraytui-ipc`) carries no descriptors, so it
-//! can use ordinary reads and writes. The helper socket must carry two:
-//!
-//! * the **TUN descriptor**, returned to the daemon as a liveness handle — when
-//!   the daemon dies the kernel closes it, and that is what makes teardown
-//!   automatic rather than dependent on a timeout;
-//! * a **`pidfd`**, sent by the daemon to say *this exact process*, which a
+//! can use ordinary reads and writes. The helper socket carries a **`pidfd`**,
+//! sent by the daemon to say *this exact process*, which a
 //!   process id could not do without a race.
 //!
 //! # Framing

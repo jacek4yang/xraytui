@@ -390,6 +390,7 @@ fn scenario_m_two_instances_of_one_executable_take_two_exits_at_once() {
         // black hole.
         netd.call(xraytui_netd_protocol::Operation::ApplyFirewall(
             xraytui_netd_protocol::FirewallRequest {
+                mark_all: false,
                 cgroup_marks: vec![
                     xraytui_netd_protocol::CgroupMark {
                         profile: "profile-a".into(),

@@ -66,6 +66,11 @@ pub fn render(uid: u32, request: &PlanRequest) -> Vec<String> {
             cgroup::relative_path(uid, cgroup::CORE_PROFILE)
         ));
     }
+    if request.firewall.mark_all {
+        steps.push(format!(
+            "nftables: mark non-loopback traffic owned by uid {uid} with {fwmark:#x}"
+        ));
+    }
     for (index, entry) in request.firewall.cgroup_marks.iter().enumerate() {
         let profile_mark = xraytui_netd_protocol::transparent_mark(uid, index + 1);
         steps.push(format!(
@@ -86,10 +91,16 @@ pub fn render(uid: u32, request: &PlanRequest) -> Vec<String> {
     }
     if request.firewall.kill_switch {
         steps.push(format!(
+            "nftables: mark non-loopback TCP/UDP DNS ports 53 and 853 from service uids with {fwmark:#x}"
+        ));
+        steps.push(format!(
             "nftables: drop traffic marked {fwmark:#x} that does not leave by {interface}"
         ));
     }
-    if !request.firewall.cgroup_marks.is_empty() || request.firewall.kill_switch {
+    if request.firewall.mark_all
+        || !request.firewall.cgroup_marks.is_empty()
+        || request.firewall.kill_switch
+    {
         steps.push(format!(
             "nftables: all of the above inside table {} {} only",
             xraytui_netd_protocol::NFT_FAMILY,
@@ -179,6 +190,7 @@ mod tests {
                 blackhole_ipv6: true,
             },
             firewall: FirewallRequest {
+                mark_all: false,
                 cgroup_marks: vec![CgroupMark {
                     profile: "work".into(),
                     tproxy_port: Some(19001),
@@ -226,7 +238,12 @@ mod tests {
     fn a_block_policy_says_so_in_plain_words() {
         let mut spec = request(1000);
         spec.tun.failure_policy = FailurePolicy::Block;
+        spec.firewall.kill_switch = true;
         let steps = render(1000, &spec);
+        assert!(
+            steps.iter().any(|step| step.contains("ports 53 and 853")),
+            "{steps:?}"
+        );
         assert!(
             steps.last().expect("last").contains("blackhole the table"),
             "{steps:?}"

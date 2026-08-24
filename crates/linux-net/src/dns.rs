@@ -217,6 +217,26 @@ impl DnsManager {
             "SetLinkDefaultRoute",
             &[Argument::Int32(index), Argument::Boolean(default_route)],
         )?;
+
+        // A resolver that was unreachable while Xray restarted may have been
+        // downgraded and replaced by systemd-resolved's public fallback list.
+        // Reapplying the same address alone does not clear that learned state.
+        // These documented manager calls make the newly restored link eligible
+        // immediately and discard answers learned under the previous route.
+        bus.call(
+            RESOLVE1,
+            RESOLVE1_PATH,
+            RESOLVE1_MANAGER,
+            "ResetServerFeatures",
+            &[],
+        )?;
+        bus.call(
+            RESOLVE1,
+            RESOLVE1_PATH,
+            RESOLVE1_MANAGER,
+            "FlushCaches",
+            &[],
+        )?;
         Ok(())
     }
 

@@ -6,7 +6,7 @@ not from memory.
 
 | Field | Value |
 |---|---|
-| Date upstream behaviour was checked | **2026-08-22** |
+| Date upstream behaviour was checked | **2026-08-23** |
 | Default supported Xray stable release | **v26.3.27** (published 2026-03-27, `prerelease: false`) |
 | Commit the release was built from | `d2758a023cd7f4174a5a5fa4ff66e487d4342ba0` |
 | Protobuf source tag | `v26.3.27` (same commit) |
@@ -153,16 +153,21 @@ WireGuard client/loader at both tested commits.
 The official Xray share-link proposal (XTLS/Xray-core discussion 716) and the
 actual v2rayN/v2rayNG serializers were checked together. The reviewed client
 snapshots are v2rayN commit `af0eb9ed14638fa877d11c235e491442ec7ba215`
-and v2rayNG commit `63f557242bdd071214c4037c76c912b66da925c8`.
+and v2rayNG commit `a1b45bbfb2a6b66f57219b25d0683323e5db8d2e`.
 `upstream-compat.toml` watches the exact serializer files on their active master
 branches, so a relevant change fails the compatibility review even when Xray's
 own tag did not move.
 
-The v2rayN snapshot was reviewed again on 2026-08-22. Its only watched-path
+The v2rayN snapshot was reviewed again on 2026-08-23. Its only watched-path
 change since `ebb4bd5daa45478e337a68f0be768fb7045520dc` removes an unused
 `System.Collections.Specialized` import from `BaseFmt.cs`; query parsing and
 serialization behavior are byte-for-byte unchanged after that line. No typed
 model, importer, serializer or fixture change is required.
+
+The v2rayNG branch advanced to
+`a1b45bbfb2a6b66f57219b25d0683323e5db8d2e` on 2026-08-23. All eight watched
+serializer files remain byte-identical to the reviewed snapshot, so no import,
+export or fixture change is required.
 
 Verified modern mappings include:
 
@@ -246,7 +251,15 @@ Consequences that shaped this project:
    calls `unix.Open("/dev/net/tun")` + `TUNSETIFF` itself. The `xray.tun.fd`
    environment flag (`common/platform.TunFdKey`) is only consumed by
    `tun_android.go` and `tun_darwin.go`. See *Fallback implementations* below.
-3. Xray's TUN has **no ICMP support** and reports connect success optimistically,
+3. A non-multiqueue Linux TUN rejects Xray's attach while netd's creation
+   descriptor remains open. Netd must set persistence/ownership and close that
+   descriptor before `xray run -test` or the real process opens the interface.
+4. Preparing the link does not make official Xray unprivileged. Both stable and
+   preview call `LinkSetMTU` in `setup()` and `LinkSetUp` in `Start()`; Linux
+   returns `EPERM` without `CAP_NET_ADMIN` even when netd already configured the
+   same values. The packaged user service currently has no safe capability
+   launch path, so TUN remains experimental.
+5. Xray's TUN has **no ICMP support** and reports connect success optimistically,
    so health checks must be L4/L7 through an outbound, never ICMP ping.
 
 `xray run -test` is not side-effect-free for this inbound. In both tested
@@ -256,6 +269,21 @@ and configures the link. Consequently the real TUN configuration acceptance
 test is explicitly ignored in the unprivileged Rust suite and is executed
 separately with `CAP_NET_ADMIN`. An unprivileged `operation not permitted` is
 not treated as evidence that the generated JSON is invalid.
+
+On 2026-08-23 the official Linux amd64 assets were checksum-verified and run in
+the combined disposable acceptance environment:
+
+| Channel | Tag / commit | Release ZIP SHA-256 | Combined observation |
+|---|---|---|---|
+| stable | `v26.3.27` / `d2758a023cd7f4174a5a5fa4ff66e487d4342ba0` | `23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae` | IPv4 + IPv6 application sockets traversed the real TUN and selected SOCKS outbound; resolved AAAA used a proxied IPv6 DNS fixture; core SIGKILL immediately blackholed both families and recovered; structural/manual restarts recovered; daemon SIGKILL retained block policy; zero direct DNS packets. |
+| preview | `v26.7.28` / `5ca6f4b7d4dc20a881d4330e498892697627ec0c` | `8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40` | The same combined scenario passed without a channel-specific change. |
+
+The environment uses a network-less privileged container and real systemd 261
+`systemd-resolved`. It intentionally proves upstream behavior and packet paths,
+not the unresolved unprivileged package launch described above. The compatibility
+manifest now watches `infra/conf/tun.go`, `proxy/tun/tun.go`,
+`proxy/tun/tun_linux.go` and the upstream TUN README on both channels so attach,
+privilege or lifecycle changes require review.
 
 ### DNS
 
@@ -267,7 +295,7 @@ from a local `dokodemo-door` and the `control/dns` outbound. `nonIPQuery` accept
 `drop` / `skip` / `reject`, which is how non-A/AAAA queries are handled
 deterministically.
 
-The stable and preview source were re-audited on 2026-08-22. `app/dns/dns.go`
+The stable and preview source were re-audited on 2026-08-23. `app/dns/dns.go`
 selects each `NameServer.Tag` over the global `Config.Tag`, and
 `app/dns/nameserver.go` installs that value as `session.Inbound.Tag` before the
 resolver dispatches its socket. A normal routing `inboundTag` rule can therefore
@@ -373,13 +401,10 @@ live core, and the results are cached per Xray binary hash in the state store.
    FD passing to Xray. Upstream Linux Xray cannot consume a passed FD. xraytui
    instead has `xraytui-netd` create a **persistent** TUN device
    (`TUNSETPERSIST`) owned by the requesting UID (`TUNSETOWNER`/`TUNSETGROUP`),
-   configure addresses/MTU/link state over netlink, and *then* let the
-   unprivileged Xray process attach to the existing device. The netd protocol
-   still returns the tun FD over `SCM_RIGHTS` — `xraytuid` holds it as a liveness
-   handle and as proof of ownership — but the data plane FD is opened by Xray.
-   See `docs/NETWORKING.md` for the capability consequences and the
-   `CoreLaunchTun` fallback used when the kernel/`/dev/net/tun` permissions do not
-   allow unprivileged attach.
+   configure it, and close the creation descriptor. The netd protocol returns
+   metadata only; the authenticated connection and lease track liveness while
+   Xray opens the data-path descriptor by name. No `CoreLaunchTun` fallback is
+   implemented. See `docs/NETWORKING.md` for the remaining capability gap.
 2. **gRPC reflection.** Not served; replaced by probe-based capability detection.
 3. **Balancer-of-balancer.** Not supported upstream; replaced by the loopback
    two-stage compilation described above.

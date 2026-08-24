@@ -105,7 +105,7 @@ empty `config.toml` is exactly equivalent to the defaults below.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `mode` | `"off"` \| `"direct"` \| `"global"` \| `"rule"` | `"off"` | Desired system mode at startup. Anything other than `off` requires a TUN device. |
-| `name` | string | `"xraytui0"` | Interface name. Must match `^xraytui[0-9a-z]{0,8}$` so the helper can prove ownership from the name alone. |
+| `name` | string | `"xraytui0"` | Advisory display value. The actual interface is derived from the authenticated uid as `xraytui<uid>` and that derived name is compiled into Xray. |
 | `mtu` | integer | `1500` | Device MTU. Must be within `576..=9000`. |
 | `ipv4` | boolean | `true` | Carry IPv4 inside the tunnel. |
 | `ipv6` | boolean | `false` | Carry IPv6 inside the tunnel. |
@@ -115,15 +115,22 @@ empty `config.toml` is exactly equivalent to the defaults below.
 | `bypass_private_networks` | boolean | `true` | Send RFC1918 and link-local traffic straight out; compiles to a `geoip:private` direct rule. |
 | `include_cidrs` | array of string | `[]` | Extra destination prefixes routed into the tunnel. |
 | `exclude_cidrs` | array of string | `[]` | Destination prefixes never routed into the tunnel. |
-| `route_table` | integer | `29281` (`0x7261`) | Routing table id. Probed for conflicts before use. |
-| `fwmark` | integer | `29281` (`0x7261`) | Firewall mark. Probed for conflicts before use. |
-| `rule_priority` | integer | `17000` | Priority of the policy-routing rule. |
+| `route_table` | integer | `29281` (`0x7261`) | Advisory compatibility field. Netd derives the actual table from the authenticated uid. |
+| `fwmark` | integer | `29281` (`0x7261`) | Advisory compatibility field. Netd derives the actual mark from the authenticated uid. |
+| `rule_priority` | integer | `17000` | Advisory compatibility field. Netd derives the actual priority from the authenticated uid. |
 
 At least one of `ipv4` and `ipv6` must be enabled. A disabled family is
 fail-closed by default. `disabled_family_policy = "direct"` is the explicit
 opt-in for combinations such as proxied IPv4 plus direct IPv6; it is refused
 with `runtime.failure_policy = "block"`, whose live kill switch deliberately
 forbids direct marked egress.
+
+Current official Linux Xray still calls privileged `LinkSetMTU` and
+`LinkSetUp` after attaching to netd's prepared persistent interface. The
+packaged user daemon has no `CAP_NET_ADMIN`, so this configuration is
+experimental and fails with an explicit doctor finding rather than receiving a
+silent privilege escalation. A systemd-resolved-facing listener on port 53 has
+the analogous `CAP_NET_BIND_SERVICE` limitation. See `docs/NETWORKING.md`.
 
 ### `[dns]`
 

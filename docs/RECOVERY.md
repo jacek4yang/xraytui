@@ -2,10 +2,11 @@
 
 What to do if xraytui dies leaving the host's networking modified.
 
-The normal recovery path is automatic: the systemd unit calls recovery after a
-stop, disconnected leases expire, and every resource is tagged so the helper
-removes only project-owned state. This document is the independent manual path
-for an interrupted service or damaged installation.
+The normal recovery path is automatic: an orderly stop sends an explicit
+release, an unexpected final daemon disconnect immediately applies the recorded
+restore/block policy, and lease expiry is the backstop. Every resource is tagged
+so the helper removes only project-owned state. This document is the independent
+manual path for an interrupted service or damaged installation.
 
 ## Everything xraytui may own
 
@@ -149,6 +150,6 @@ sudo nft delete table inet xraytui && sudo ip rule del priority 17000
 
 * `failure_policy = "restore"` is the default and is what you want on a laptop.
 * `xraytui tun plan` prints every intended change before any is made.
-* The helper's lease means an unclean daemon exit is cleaned up automatically
-  once the TTL expires; `[runtime] netd_lease_ttl_secs` controls how long that
-  takes.
+* The helper applies an unclean daemon exit's recorded policy when the final
+  authenticated connection closes. `[runtime] netd_lease_ttl_secs` is the
+  backstop when that disconnect cannot be observed.

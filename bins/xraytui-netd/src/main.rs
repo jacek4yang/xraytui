@@ -10,7 +10,7 @@
 //!
 //! Two things guarantee the machine is left tidy:
 //!
-//! * a connection that closes releases whatever its owner held, immediately;
+//! * a connection that closes applies its owner's restore/block policy immediately;
 //! * a lease that stops being renewed is reaped, which covers the case where
 //!   the helper itself was restarted.
 

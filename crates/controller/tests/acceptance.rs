@@ -1158,10 +1158,13 @@ async fn exported_vless_reality_vision_reimports_and_carries_a_real_connection()
         fixtures::profile_with_socks("shared", Target::Node { id: node_id }, client_port),
     );
     let mut client = engine_for(state, dir.path()).await;
-    client
-        .rebuild_and_start()
-        .await
-        .expect("start compiled REALITY client");
+    client.rebuild_and_start().await.unwrap_or_else(|error| {
+        panic!(
+            "start compiled REALITY client: {error}\nclient log:\n{}\nserver log:\n{}",
+            std::fs::read_to_string(dir.path().join("xray.log")).unwrap_or_default(),
+            server.log_text()
+        )
+    });
 
     let answer = probe_through_socks5(
         SocketAddr::from(([127, 0, 0, 1], client_port)),

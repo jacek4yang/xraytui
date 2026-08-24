@@ -13,6 +13,8 @@ use crate::{dns::DnsManager, tun};
 
 /// `CAP_NET_ADMIN` is capability number 12.
 const CAP_NET_ADMIN_BIT: u64 = 1 << 12;
+/// `CAP_NET_BIND_SERVICE` is capability number 10.
+const CAP_NET_BIND_SERVICE_BIT: u64 = 1 << 10;
 
 /// Probe the system. Performs no change.
 #[must_use]
@@ -61,14 +63,49 @@ fn ipv6_tun_available_under(proc_root: &std::path::Path) -> bool {
 /// operation, because the point of the probe is to be side-effect free.
 #[must_use]
 pub fn has_net_admin() -> bool {
-    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+    has_effective_at(std::path::Path::new("/proc/self/status"), CAP_NET_ADMIN_BIT)
+}
+
+/// Whether the current process can bind a TCP/UDP port below 1024.
+#[must_use]
+pub fn has_net_bind_service() -> bool {
+    has_effective_at(
+        std::path::Path::new("/proc/self/status"),
+        CAP_NET_BIND_SERVICE_BIT,
+    )
+}
+
+/// Whether another live process actually holds `CAP_NET_ADMIN`.
+#[must_use]
+pub fn process_has_net_admin(pid: u32) -> bool {
+    has_effective_at(
+        &std::path::Path::new("/proc")
+            .join(pid.to_string())
+            .join("status"),
+        CAP_NET_ADMIN_BIT,
+    )
+}
+
+/// Whether another live process can bind a TCP/UDP port below 1024.
+#[must_use]
+pub fn process_has_net_bind_service(pid: u32) -> bool {
+    has_effective_at(
+        &std::path::Path::new("/proc")
+            .join(pid.to_string())
+            .join("status"),
+        CAP_NET_BIND_SERVICE_BIT,
+    )
+}
+
+fn has_effective_at(status_path: &std::path::Path, bit: u64) -> bool {
+    let Ok(status) = std::fs::read_to_string(status_path) else {
         return false;
     };
     for line in status.lines() {
         if let Some(value) = line.strip_prefix("CapEff:")
             && let Ok(mask) = u64::from_str_radix(value.trim(), 16)
         {
-            return mask & CAP_NET_ADMIN_BIT != 0;
+            return mask & bit != 0;
         }
     }
     false
@@ -119,6 +156,21 @@ mod tests {
     fn the_capability_bit_is_the_documented_one() {
         // CAP_NET_ADMIN == 12, so the mask is 0x1000.
         assert_eq!(CAP_NET_ADMIN_BIT, 0x1000);
+        // CAP_NET_BIND_SERVICE == 10, so the mask is 0x400.
+        assert_eq!(CAP_NET_BIND_SERVICE_BIT, 0x400);
+    }
+
+    #[test]
+    fn effective_capabilities_are_read_from_the_effective_not_permitted_set() {
+        let directory = tempfile::tempdir().expect("status fixture");
+        let status = directory.path().join("status");
+        std::fs::write(
+            &status,
+            "CapPrm:\t0000000000001000\nCapEff:\t0000000000000400\n",
+        )
+        .expect("write status fixture");
+        assert!(has_effective_at(&status, CAP_NET_BIND_SERVICE_BIT));
+        assert!(!has_effective_at(&status, CAP_NET_ADMIN_BIT));
     }
 
     #[test]

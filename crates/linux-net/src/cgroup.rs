@@ -257,6 +257,57 @@ impl CgroupTree {
         let _ = std::fs::remove_dir(&user_root);
         Ok(removed)
     }
+
+    /// Remove empty project-owned profile/user cgroups left after their last
+    /// process exited.
+    ///
+    /// A controller placed in the core-bypass group cannot remove that group
+    /// during its own orderly shutdown because it is still a member until the
+    /// process exits. The helper's periodic recovery pass calls this afterward.
+    /// Only directories below the fixed [`SLICE`] are considered, and a group
+    /// with any member is always retained.
+    ///
+    /// # Errors
+    /// Reports failure to open the project slice. An unreadable child is kept,
+    /// because inability to prove it empty is never authority to remove it.
+    pub fn remove_empty_owned(&self) -> Result<Vec<String>, CgroupError> {
+        let slice = self.root.join(SLICE);
+        let entries = match std::fs::read_dir(&slice) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(CgroupError::Io {
+                    operation: "read cgroup slice",
+                    path: slice.display().to_string(),
+                    source,
+                });
+            }
+        };
+        let mut removed = Vec::new();
+        for user in entries.flatten().filter(|entry| entry.path().is_dir()) {
+            let user_path = user.path();
+            let profiles = match std::fs::read_dir(&user_path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for profile in profiles.flatten().filter(|entry| entry.path().is_dir()) {
+                let path = profile.path();
+                let members = std::fs::read_to_string(path.join("cgroup.procs"))
+                    .unwrap_or_else(|_| "occupied-or-unreadable".to_owned());
+                if members.trim().is_empty() && std::fs::remove_dir(&path).is_ok() {
+                    removed.push(
+                        path.strip_prefix(&self.root)
+                            .unwrap_or(&path)
+                            .display()
+                            .to_string(),
+                    );
+                }
+            }
+            let _ = std::fs::remove_dir(&user_path);
+        }
+        let _ = std::fs::remove_dir(&slice);
+        Ok(removed)
+    }
 }
 
 /// Resolve a `pidfd` to a process id by reading the kernel's own view of it.

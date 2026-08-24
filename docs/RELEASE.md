@@ -20,6 +20,10 @@
 8. Run the disposable IPv4, IPv6, dual-stack, leak and chain suites. A skipped or
    privilege-blocked suite is recorded as such and blocks the matching readiness
    claim.
+9. Run `scripts/combined-netns-test.sh` against checksum-verified official stable
+   and preview binaries. Record the container/systemd version and remember that
+   this root-in-container result does not prove the packaged unprivileged TUN
+   launch; that requires a separate installed-service acceptance test.
 
 ## Versioning
 

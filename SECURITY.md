@@ -23,8 +23,9 @@ which Xray-core releases each version is tested against.
 * No crash upload, no automatic issue submission, no phone-home version check.
 * No setuid binary is installed. The privileged helper receives capabilities
   from systemd, not from the filesystem.
-* No arbitrary command execution behind a privilege boundary, and no `sh -c`
-  anywhere in the codebase.
+* No arbitrary command execution behind a privilege boundary, and no shell
+  interpretation in any privileged production path. Disposable test and
+  packaging scripts may invoke a shell inside their isolated environments.
 * No plugin loading, no scripting engine, no unsigned native modules.
 * No TLS interception, no CA installation, no packet capture, no payload
   inspection. Runtime observability uses Xray statistics, routing metadata and
@@ -60,6 +61,12 @@ which Xray-core releases each version is tested against.
 * **A member of the `xraytui` group can create project-owned TUN devices and
   routes for their own UID.** That is the grant the administrator made by adding
   them to the group.
+* **The official Linux Xray TUN still needs link-management privilege.** The
+  packaged user daemon/core intentionally receives neither `CAP_NET_ADMIN` nor
+  `CAP_NET_BIND_SERVICE`; doctor reports the link and privileged-DNS-listener
+  gaps. Do not work around them by granting broad capabilities manually. The
+  privileged combined acceptance is evidence for packet semantics, not for the
+  installed privilege boundary.
 * **Hostname bootstrap DNS intentionally reveals the first-hop name to the
   configured direct resolver.** The compiler now detects this dependency,
   requires an independent IP-literal `dns.bootstrap_servers` entry and fails

@@ -28,6 +28,12 @@ The manual backend is last because a global `/etc/resolv.conf` rewrite affects
 every process on the machine, cannot be scoped to a link, and races with whatever
 else manages that file. It exists for hosts that have no resolver manager at all.
 
+When the `systemd-resolved` link is applied or re-applied, netd calls the
+documented `ResetServerFeatures` and `FlushCaches` manager methods after setting
+the link DNS, route-only domains and default-route flag. This matters after a
+core outage: resolved remembers an unreachable server and may otherwise keep it
+downgraded while trying fallback servers even though Xray has recovered.
+
 Observed DNS state is reported as one of four values, visible in the TUI and in
 `xraytui doctor`:
 
@@ -209,6 +215,12 @@ Then confirm the path xraytui believes in:
   `rule/system/dns-intercept`. If queries are still reaching an external resolver
   directly, the traffic is not entering the TUN at all — that is a routing
   problem, not a DNS one, and `docs/NETWORKING.md` is the right document.
+- Under `failure_policy = "block"`, the host nftables route chain marks
+  non-loopback TCP/UDP destination ports 53 and 853 even when the socket belongs
+  to the systemd-resolved service UID. The core's exact bypass cgroup is accepted
+  first so explicitly configured Xray direct/bootstrap resolvers retain their
+  intended route. On core loss the same marking remains while both policy-table
+  defaults are blackholed, preventing resolved fallback from becoming direct.
 - `direct_domains` entries are answered by direct servers **by design**. A name
   in `geosite:private` resolving locally is correct behaviour, not a leak.
 - With proxied DNS configured, a failure should not increment a direct-resolver
@@ -240,6 +252,15 @@ configuration was.
 Restoration is idempotent: running it twice, or running it when nothing was
 changed, is not an error. That is what makes it safe to run from three different
 triggers.
+
+The combined acceptance captures a postrouting counter on an otherwise usable
+direct interface. A real query goes through `127.0.0.53` → systemd-resolved →
+the Xray TUN listener → Xray DNS → an IPv6 DNS-over-TCP fixture through the
+selected SOCKS outbound. It then kills Xray, exercises the restart backoff and
+recovery, performs orderly down/up, kills the daemon, and requires the direct
+DNS counter and configured direct-resolver fixture to remain at zero while the
+recorded block policy survives the final helper disconnect on both official
+stable and preview cores.
 
 If restoration has failed and you need to intervene by hand, `docs/RECOVERY.md`
 gives the exact commands, including `resolvectl revert` for the managed link and
