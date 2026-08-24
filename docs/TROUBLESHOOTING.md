@@ -18,7 +18,7 @@ If networking is already broken and xraytui is not running, go straight to
 | `not all dependencies are resolved` | A `fallbackTag` without an observatory block | Remove the fallback, or use a strategy that supplies liveness |
 | Profile switch has no effect | Traffic is not entering that profile, or overrides were not re-applied | `GetBalancerInfo` via `doctor`; check which inbound the traffic uses |
 | Application rule does not match | The socket is owned by a helper process | Use `xraytui exec --profile` |
-| TUN refuses to come up | netd unreachable, group membership, table/mark conflict, unprivileged attach not permitted | `xraytui tun plan`, then `doctor` |
+| TUN refuses to come up | netd unreachable, group membership, table/mark conflict, or official Xray's privileged link setup | `xraytui tun plan`, then inspect `xray-tun-privilege` in `doctor` |
 | DNS not restored | Backend failed, or the daemon died before teardown | `resolvectl status`, then `doctor --repair` |
 | Proxied DNS will not compile or returns failure | No enabled default profile, the selected route is down, or a hostname-based first hop depends on the same DNS listener | Inspect the default profile; keep the default fail-closed policy and verify bootstrap resolution |
 | Stale nftables or routes after a crash | Lease expired with `failure_policy = "block"`, or netd was also killed | `xraytui-netd --recover` |
@@ -225,7 +225,8 @@ of them, which usually identifies the conflict immediately.
 | Policy rule priority taken | `plan` reports the conflict on `tun.rule_priority` | Same reasoning; default is 17000 |
 | nftables table conflict | `plan` reports `table inet xraytui` already present and not owned by this generation | A previous run left it. `xraytui-netd --recover`, or see `docs/RECOVERY.md` |
 | Interface name rejected | Configuration error naming `^xraytui[0-9a-z]{0,8}$` | The helper derives ownership from the name, so the pattern is mandatory. `xraytui0` is the default |
-| Unprivileged attach not permitted | `doctor` reports the core cannot attach to the persistent device | The device is created persistent and owned by your uid, but the kernel must permit the owner to attach and Xray's link calls must succeed. When they do not, TUN mode is **refused** rather than escalating privileges silently. The documented alternative is the opt-in `CoreLaunchTun` path |
+| Official Xray lacks link privilege | `doctor` reports `xray-tun-privilege` as `FAIL`, or Xray reports `operation not permitted` from TUN setup | Current official Linux Xray calls privileged `LinkSetMTU` and `LinkSetUp` even on netd's prepared device. No safe privileged launcher is implemented. Keep system mode off and use profile SOCKS/HTTP listeners; do not grant broad capabilities to the user daemon manually |
+| Privileged DNS listener cannot bind | `doctor` reports `xray-dns-listen-privilege` as `FAIL`, or Xray reports permission denied on port 53 | systemd-resolved needs the managed link server on port 53, while the packaged daemon/core has no `CAP_NET_BIND_SERVICE`. Keep system DNS management disabled until the same narrow launch gap is resolved |
 | MTU or address family invalid | Configuration error | MTU must be within `576..=9000`; at least one of `tun.ipv4`, `tun.ipv6` must be enabled |
 
 ---
@@ -311,10 +312,10 @@ blackhole so an available host route cannot leak traffic. Set the policy to
 exists, and xraytui is not running.
 
 **Expected behaviour first.** If `runtime.failure_policy = "block"`, a kill
-switch surviving a crash is **working as configured**: it keeps a minimal chain
-that drops non-loopback, non-bypass traffic until an authenticated client clears
-it. That is a deliberate denial of service against your own machine, and it is
-the reason the setting is explicit.
+switch surviving a crash is **working as configured**: it retains UID and
+standard DNS-port marking, the policy rules, and IPv4/IPv6 blackhole defaults
+until an authenticated client clears them. That is a deliberate denial of
+service against your own machine, and it is the reason the setting is explicit.
 
 ```sh
 xraytui-netd --recover            # reconcile recorded generations against the kernel

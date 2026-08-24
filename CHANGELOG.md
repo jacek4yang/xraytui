@@ -24,19 +24,26 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Upstream compatibility watches for Xray's DNS protobuf, JSON loader,
   nameserver selection/tagging and routed DNS-over-TCP implementation on both
   stable and preview. It now also watches normal and WireGuard endpoint
-  resolution plus the `ForceIP*` parser/semantics, bringing the current Xray
-  source watch to 55 stable/preview snapshots.
+  resolution, the `ForceIP*` parser/semantics, and four TUN implementation and
+  configuration files, bringing the current Xray source watch to 63
+  stable/preview snapshots.
 * Explicit `dns.bootstrap_servers` for hostname-based first hops that must be
   established before proxied DNS is usable. The compiler derives dependencies
   across nodes, chains, every group candidate and permitted fallback, emits
   exact scoped resolver rules, and applies a forced-IP family strategy only to
   the locally dialled first-hop outbound copy.
+* A combined privileged acceptance test using real Xray and systemd-resolved,
+  dual-stack application sockets, proxied IPv6 DNS, direct leak sentinels,
+  structural/manual restart, core SIGKILL recovery, orderly down/up and daemon
+  SIGKILL block retention. CI runs it against checksum-pinned official stable
+  and preview assets in a network-less container.
 
 ### Fixed
 
 * The v2rayN serializer watch has been reviewed and advanced to current master;
   the only watched change removes an unused C# import and does not alter share
-  link semantics.
+  link semantics. v2rayNG also advanced; all eight watched serializer files are
+  byte-identical to the reviewed snapshot.
 * IPv6-only TUN configurations no longer acquire an implicit IPv4 tunnel route;
   disabled IPv4 is now blackholed just like disabled IPv6, preventing a missing
   family from falling through to the main table.
@@ -71,6 +78,25 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   failure cannot fall through to an overlapping ordinary direct resolver or an
   unresolved system-dialer attempt. Schema 2 migrates atomically to schema 3;
   existing `[dns]` tables receive the new policy explicitly and empty.
+* System modes now mark all non-loopback sockets owned by the authenticated UID,
+  instead of installing policy routes that ordinary user traffic never entered.
+  The core and daemon enter an exact project bypass cgroup before marking.
+* TUN preparation now happens before Xray validation/start, while routes,
+  nftables and DNS activate only after core health. Netd closes its temporary
+  non-multiqueue TUN descriptor so Xray can attach, and structural/manual/crash
+  restarts use one fail-policy-aware transaction.
+* `failure_policy = "block"` now retains UID/DNS marking and IPv4/IPv6 blackhole
+  defaults after core loss. The daemon reports failure to netd immediately, and
+  the helper applies the same recorded policy when the daemon connection dies.
+  The authenticated connection stays open during core restart so disconnect
+  cleanup cannot erase the retained blackhole. The nft guard runs in
+  postrouting so it observes the route selected after an output-chain mark.
+* systemd-resolved recovery resets learned server features and caches, while
+  standard DNS, DNS-over-TLS and DNS-over-QUIC ports from service UIDs remain
+  fail-closed during a core outage.
+* `doctor` now distinguishes an open TUN device from the privileges current
+  official Xray still needs for link setup and a port-53 DNS listener; stale
+  documentation claiming an implemented privileged core launcher was removed.
 
 ## [1.1.0] - 2026-08-21
 

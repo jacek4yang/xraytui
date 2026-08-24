@@ -17,11 +17,12 @@ recorded as passing.
 
 ## Unreleased dual-stack candidate evidence
 
-This section describes unreleased `main` after PRs #5 and #6, not the published
-artifact. On 2026-08-22, `./scripts/netns-test.sh` executed 21 privileged kernel
-scenarios plus the real CLI/helper/Xray exact-instance scenario with no skip, once with
-`XRAYTUI_TEST_XRAY=/tmp/xray-bin-stable/xray` (v26.3.27) and again with
-`XRAYTUI_TEST_XRAY=/tmp/xray-bin-preview/xray` (v26.7.28). The new scenarios
+This section describes the unreleased combined-network branch based on merged
+PR #8, not the published artifact. On 2026-08-23, `./scripts/netns-test.sh`
+executed 21 privileged kernel scenarios plus the real CLI/helper/Xray
+exact-instance scenario with no skip, once with
+`XRAYTUI_TEST_XRAY=/tmp/xraytui-xray-stable/xray` (v26.3.27) and again with
+`XRAYTUI_TEST_XRAY=/tmp/xraytui-xray-preview/xray` (v26.7.28). The new scenarios
 keep usable direct IPv4 and IPv6 defaults present while proving:
 
 * dual-stack marked sockets select the TUN address in both families;
@@ -53,23 +54,39 @@ requires an IP-literal `dns.bootstrap_servers` resolver when any such endpoint
 is a hostname; and applies Xray `ForceIP*` only to the locally dialled outbound
 copy. Real-Xray fixtures independently observe direct bootstrap DNS followed by
 proxied DNS, while unavailable bootstrap DNS produces zero ordinary-direct,
-proxy, and proxied-resolver connections. IPv6 is still not promoted: IPv6 group
-selection, the combined TUN + DNS + systemd-resolved path, and broader failure
-injection remain unexecuted.
+proxy, and proxied-resolver connections.
 
-| Candidate gate | 2026-08-22 result |
+The combined TUN + systemd-resolved gap is now exercised by a separate
+root-in-container candidate test. With an otherwise usable direct IPv4/IPv6
+interface present, ordinary sockets traverse the real Xray TUN, systemd-resolved
+reaches an IPv6 DNS-over-TCP fixture through the selected SOCKS node, structural
+and explicit restarts recover, and SIGKILL immediately retains UID/DNS marking
+plus blackhole routes. An orderly down/up removes and restores owned state; a
+daemon SIGKILL retains the configured block policy until an authenticated
+release. Direct application and DNS counters remain zero. Stable v26.3.27 and
+preview v26.7.28 both pass the same scenario.
+
+This does **not** promote TUN or IPv6. Current official Linux Xray performs
+`LinkSetMTU`/`LinkSetUp` itself and a resolved-facing listener binds port 53; the
+packaged unprivileged daemon has neither `CAP_NET_ADMIN` nor
+`CAP_NET_BIND_SERVICE`, and no narrow privileged core launcher is implemented.
+IPv6 group selection and broader failure injection also remain incomplete.
+
+| Candidate gate | 2026-08-23 result |
 |---|---|
-| stable v26.3.27 workspace | **pass**: 852 passed, 0 failed, 1 privilege-gated ignored across 45 result sets; 5 doctests passed |
-| preview v26.7.28 workspace | **pass**: 852 passed, 0 failed, 1 privilege-gated ignored across 45 result sets; 5 doctests passed |
+| stable v26.3.27 workspace | **pass**: 858 passed, 0 failed, 1 privilege-gated ignored across 46 result sets; 5 doctests passed |
+| preview v26.7.28 workspace | **pass**: 858 passed, 0 failed, 1 privilege-gated ignored across 46 result sets; 5 doctests passed |
 | ignored TUN/DNS Xray validator | **pass separately** in an isolated user/network namespace with `CAP_NET_ADMIN` against stable and preview; `xraytui0` absent afterward |
 | privileged namespaces | **pass twice**: 21 kernel/network scenarios plus one real CLI/helper/Xray exact-instance scenario with stable and preview; no skip |
+| combined TUN + resolved, stable | **pass**: checksum-pinned official v26.3.27; real dual-stack traffic, proxied IPv6 DNS, structural/manual restart, core SIGKILL block/recovery, daemon SIGKILL block retention, explicit IPv4/IPv6 blackhole-route assertions and explicit cleanup in a network-less systemd 261 container |
+| combined TUN + resolved, preview | **pass**: checksum-pinned official v26.7.28; identical combined scenario and assertions |
 | real-Xray controller acceptance | **pass twice**: 15/15 with stable and 15/15 with preview; includes IPv6 endpoint, concurrent dual-stack profiles, two-hop IPv6 data and DNS chains, split direct/proxy DNS, direct hostname bootstrap, and fail-closed bootstrap/proxied-resolver failure |
-| `cargo xtask ci` | **pass** after the hostname-bootstrap review: fmt, all-target/all-feature check, strict Clippy, workspace build/test and rustdoc |
-| `cargo xtask upstream-check` | **pass** against live Xray release/tag/source state, 55 stable/preview Xray snapshots, eight protobuf files and reviewed v2rayN/v2rayNG serializer snapshots |
+| `cargo xtask ci` | **pass** on the finalized combined-network diff: fmt, all-target/all-feature check, strict Clippy, workspace build/test and rustdoc |
+| `cargo xtask upstream-check` | **pass** against live Xray release/tag/source state, 63 stable/preview Xray snapshots, eight protobuf files and reviewed v2rayN/v2rayNG serializer snapshots |
 | `cargo deny check` | **pass**: advisories, bans, licenses and sources |
-| `cargo audit --no-fetch` | **pass** after manually fast-forwarding the database to RustSec commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings |
-| release workspace build | **pass** with all features after the hostname-bootstrap policy hardening |
-| `scripts/release-smoke.sh` | **pass** against stable Xray after schema 3 and bootstrap changes: first run, mutations, subscriptions, concurrent exits, hot switching, sharing, supervision, restart, persistence and staged install/uninstall |
+| `cargo audit` | **pass** using a fresh advisory-db clone at RustSec commit `bf5c0d245a92671908518d7e765914d437954ed6`: 1,225 advisories, 436 locked dependencies, zero findings; cargo-audit's embedded fetch against the pre-existing dirty cache failed, so the scan used the clean explicit database path with `--no-fetch` |
+| release workspace build | **pass** on the finalized combined-network diff |
+| `scripts/release-smoke.sh` | **pass** against stable Xray on the finalized combined-network diff: first run, mutations, subscriptions, concurrent exits, hot switching, sharing, supervision, restart, persistence and staged install/uninstall |
 | PR/CI/merge | PR [#6](https://github.com/jacek4yang/xraytui/pull/6) **passed and merged** as `cb8ba42628964795bfd7c9d0393ccd8ba07b9c05`; replacement CI run [32591713629](https://github.com/jacek4yang/xraytui/actions/runs/32591713629) passed Rust quality, dependency policy and clean Arch package jobs. Its first run exposed `ETXTBSY` while executing a generated fake-`resolvconf`; commit `a8edb020d693e9f3f56c8da19820c89b6dfa7844` removed deterministic path reuse and made the PR rerun green, but post-merge `main` run [32592576152](https://github.com/jacek4yang/xraytui/actions/runs/32592576152) reproduced the error on the unique inode. Follow-up PR [#7](https://github.com/jacek4yang/xraytui/pull/7) removes generated-file execution entirely: tests execute stable `/bin/sh` and pass the unique recorder as script input. The focused suite, no-production-shell policy, 1,000 repeated fixture executions and complete all-feature Rust gates pass locally; required CI run [32592971946](https://github.com/jacek4yang/xraytui/actions/runs/32592971946) passed Rust quality, dependency policy and clean Arch packaging, and PR #7 merged as `56a79d7eaaa20b9373a8496d2da09d3b9ee1a973`. Hostname-bootstrap PR [#8](https://github.com/jacek4yang/xraytui/pull/8) passed Rust quality, dependency policy and clean Arch packaging in required CI run [32599448855](https://github.com/jacek4yang/xraytui/actions/runs/32599448855). |
 
 ## Published 1.1.0 sharing evidence
@@ -151,13 +168,13 @@ SHA-256 matched its official `.dgst` file before use.
 | A | two profiles, two SOCKS ports and two exits simultaneously | **passing** in controller acceptance tests and release smoke |
 | B | hot-switch one profile; other profile and core PID unchanged | **passing** against real Xray gRPC |
 | C | shared TUN rule mode and per-app routing | **passing** in the disposable network namespace; kernel route lookup is the oracle |
-| D | concurrent applications and DNS following policy | **passing across integration boundaries**: A/M prove concurrent classification; real stable/preview Xray sends split AAAA queries through the observed direct path or every hop of the selected IPv6 chain; the real resolve1 test proves apply/revert. The combined TUN + resolve1 + proxied-upstream scenario remains unexecuted |
+| D | concurrent applications and DNS following policy | **passing in the combined candidate**: stable/preview Xray carries IPv4 and IPv6 sockets through the shared TUN while real systemd-resolved reaches an IPv6 DNS fixture through the selected SOCKS outbound; direct application and DNS sentinels remain unused |
 | E | two-hop chain reaches the terminal through hop one | **passing** with an observed transit connection |
 | F | import valid, malformed and unsupported node representations | **passing**, including property tests over arbitrary input |
 | G | subscription add/change/remove, diff and rollback | **passing** against a real local HTTP fixture |
 | H | terminal and PNG QR round-trip decode | **passing on the 1.1.0 candidate branch**: both a captured terminal module matrix and PNG are decoded by independent `quircs`; **published 1.0.0 remained partial** |
-| I | kill Xray in restore mode | **passing**: listener death, backoff and a new live PID are observed |
-| J | daemon loss while TUN is active; lease cleanup | **passing** for disconnect and expired-lease recovery |
+| I | kill Xray and recover | **passing**: restore-mode listener death/backoff/new PID is observed; the combined block-mode candidate additionally proves immediate UID/DNS marking, dual-stack blackholes and recovered TUN/resolved service |
+| J | daemon loss while TUN is active; lease cleanup | **passing in the combined candidate**: daemon SIGKILL removes the TUN but retains UID/DNS marking and dual-stack blackholes under block policy; expired-lease recovery is also exercised in the kernel namespace suite |
 | K | repeated TUN enable/disable leaves no residue | **passing** over three cycles, checking links, routes, rules, nftables and leases |
 | L | TUI usable at 80x24 and restores the terminal | **passing**; every documented key and byte-exact restoration are tested |
 | M | cgroup v2 exact-instance isolation | **passing** through the real CLI, helper and Xray: two instances of one executable take different exits, then only one hot-switches |
@@ -187,9 +204,12 @@ SHA-256 matched its official `.dgst` file before use.
 
 1. **IPv6 end-to-end coverage.** The post-release candidate proves IPv4-only,
    IPv6-only, dual-stack and broken-route kernel behavior plus real Xray IPv6
-   endpoints, chains and split/failing DNS. IPv6 group selection and the
-   combined TUN + systemd-resolved + proxied-upstream path remain unexecuted, so
-   IPv6 stays off by default and experimental.
+   endpoints, chains, split/failing DNS and a combined TUN + systemd-resolved +
+   proxied-upstream crash/recovery path. IPv6 group selection remains
+   unexecuted. More importantly, the combined path currently requires root:
+   official Xray's link setup and port-53 listener need capabilities the
+   packaged user service intentionally lacks. IPv6 stays off by default and TUN
+   remains experimental.
 2. **Per-profile DNS overrides.** Proxied upstream DNS and hostname bootstrap
    are fail-closed through the default profile. The reserved per-profile
    `dns_policy` field is still explicitly refused, not ignored.

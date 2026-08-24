@@ -9,6 +9,16 @@ The compiler (`crates/xray-compiler`) is a pure function. It performs no I/O,
 reads no environment and never consults the running core, which is what makes
 generation diffing, snapshot testing and last-known-good rollback work.
 
+When `inbound/system/tun` is present, the daemon and helper supply the runtime
+half in two phases. Netd prepares the persistent uid-owned interface and closes
+its creation descriptor before the compiler invokes real `xray run -test`;
+routes, nftables and managed DNS are installed only after the started core passes
+API/listener health and its exact pid enters the bypass cgroup. Structural
+changes stop the old non-multiqueue attachment first and apply the configured
+restore/block policy during handover. Current upstream link-operation privilege
+constraints are recorded in `docs/UPSTREAM-COMPATIBILITY.md` and prevent this
+root-tested path from being labelled packaged-ready.
+
 ## Tag namespace
 
 Every object the compiler emits carries a namespaced tag, so ownership against a

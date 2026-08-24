@@ -19,7 +19,7 @@ and DNS are therefore entirely xraytui's responsibility. That work needs
 subscriptions, or the core itself would be indefensible.
 
 `xraytui-netd` runs as a system service with
-`CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE`, no shell,
+`CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE`, no shell,
 and an IPC surface that is a closed enum of typed operations. There is no setuid
 binary. Everything the helper can do is enumerable by reading one Rust enum in
 `crates/netd-protocol`.
@@ -53,31 +53,39 @@ consumed only by the Android and Darwin implementations. This is recorded as
 The design that replaces it:
 
 ```text
-1. xraytuid asks netd for a TUN, by name, addresses, MTU and generation.
+1. xraytuid asks netd to prepare a TUN before Xray validation or startup.
 2. netd opens /dev/net/tun, TUNSETIFF, then:
      TUNSETPERSIST  — the device survives the creating process exiting
      TUNSETOWNER    — ownership is assigned to the *credential* uid of the caller
 3. netd configures addresses, MTU and link state over netlink.
-4. netd returns the tun fd over SCM_RIGHTS.
-5. xraytuid holds that fd. It is a liveness handle and proof of ownership,
-   not the data path.
-6. The unprivileged xray process attaches to the already-existing, already-
-   configured device by name.
+4. netd closes its creation descriptor before replying. A non-multiqueue TUN
+   cannot also accept Xray's independently opened descriptor.
+5. xraytuid keeps the authenticated helper connection and a bounded lease alive;
+   no TUN descriptor crosses the privilege boundary.
+6. Xray validates, starts, opens the persistent interface by name and passes its
+   API/listener health gate.
+7. Only then does netd install policy routes, classify the core into its bypass
+   cgroup, install nftables marking/guards, and change managed DNS.
 ```
 
-Two consequences follow, and neither is assumed:
+The persistent-device design solves ordering and ownership, but it does **not**
+remove an upstream privilege requirement. Current official Linux Xray calls
+`LinkSetMTU` while constructing the inbound and `LinkSetUp` while starting it;
+the kernel checks `CAP_NET_ADMIN` even when netd already set the same values.
+The packaged `xraytuid.service` deliberately has an empty capability bounding
+set, so packaged unprivileged TUN launch is not production-ready. `doctor`
+reports `xray-tun-privilege` as `FAIL` when a TUN mode is requested without that
+capability. A systemd-resolved link also needs Xray's DNS listener on port 53,
+which separately requires `CAP_NET_BIND_SERVICE`; doctor reports that exact
+configured-listener failure too. Failed candidates are rolled back. Do not add
+broad capabilities to the daemon or core manually; use profile SOCKS/HTTP
+listeners until a narrowly privileged launch mechanism is implemented and
+audited.
 
-- Xray needs no `CAP_NET_ADMIN` in the common case **if** the kernel permits the
-  device's owner to attach and Xray's `LinkSetMTU`/`LinkSetUp` calls succeed on an
-  already-configured link. Whether that holds is **verified at runtime**, not
-  taken on faith.
-- When the attach path fails, `xraytui doctor` reports it and TUN mode is
-  **refused**. Privileges are never escalated silently to make it work.
-
-The documented alternative is `CoreLaunchTun`: netd executes the core itself with
-ambient `CAP_NET_ADMIN` under the caller's uid. It is **opt-in**, because it
-widens netd's mandate from "configure the network" to "start a process", and it
-must be requested explicitly rather than reached by fallback.
+The stable/preview combined acceptance runs the complete path as root in a
+network-less disposable container. That proves Xray/TUN/routing/nftables/
+systemd-resolved semantics and recovery, but deliberately is not recorded as
+proof of the packaged privilege path.
 
 Xray's TUN has no ICMP support and reports connect success optimistically, which
 is why health checks are always L4 or L7 through an outbound and never a ping.
@@ -204,7 +212,7 @@ choice is explicit.
 | Policy | Behaviour on failure | Suits |
 |---|---|---|
 | `restore` (default) | Remove project routes, rules and the `inet xraytui` table; restore the previous DNS state; delete the TUN device. The machine returns to unproxied connectivity. | Workstations where losing connectivity is worse than losing proxying. |
-| `block` | Keep a minimal kill-switch nft chain that drops non-loopback, non-bypass traffic, and keep it until an authenticated client clears it. | Hosts where traffic must never leave unproxied, even briefly. |
+| `block` | Remove the dead TUN, keep the policy rules, replace its table with IPv4/IPv6 blackhole defaults, and retain minimal UID plus standard DNS-port marking. | Hosts where traffic must never leave unproxied, even briefly. |
 
 `block` is a deliberate denial of service against your own machine. It is the
 right answer when unproxied egress is unacceptable, and the wrong answer if you
@@ -225,9 +233,10 @@ client cannot.
 ```text
 xraytuid  --RequestTun(gen)-->  netd   creates a lease for that generation
 xraytuid  --Heartbeat-------->  netd   refreshes the lease
-   (xraytuid dies)
-                                netd   lease expires after runtime.netd_lease_ttl_secs
-                                netd   applies the generation's recorded failure_policy
+   (Xray dies) --CoreFailed---> netd   applies failure_policy immediately
+   (xraytuid dies) --disconnect> netd  applies failure_policy immediately
+   (connection is wedged/helper restarts)
+                                netd   applies policy when the recorded lease expires
 ```
 
 | Property | Value |
@@ -235,7 +244,9 @@ xraytuid  --Heartbeat-------->  netd   refreshes the lease
 | Lease scope | one generation |
 | Default TTL | 30 seconds (`runtime.netd_lease_ttl_secs`) |
 | Refresh | heartbeat from `xraytuid` |
-| On expiry | apply the recorded `failure_policy` for that generation |
+| On observed core failure | apply the recorded policy immediately; do not wait for TTL |
+| On final authenticated disconnect | apply the recorded policy immediately; an orderly daemon sends `Release` first |
+| On expiry | backstop when disconnect cannot be observed, including helper restart |
 | Durable record | `/run/xraytui/state/`, 0700 root, atomic rename, never credentials |
 
 Because the recovery record is durable, a netd restart reconciles rather than
@@ -402,7 +413,8 @@ an implicit network action in the share command.
   false`), because it inspects the first bytes of a connection to recover a
   destination name. When enabled it can be restricted to route-only, so a sniffed
   name informs routing but never rewrites the destination.
-- No `sh -c` anywhere in the codebase; a test enforces this.
+- No `sh -c` anywhere in shipping Rust code; a test enforces this. Disposable
+  acceptance and packaging scripts may use their isolated shell environment.
 
 ## Manual recovery, in short
 

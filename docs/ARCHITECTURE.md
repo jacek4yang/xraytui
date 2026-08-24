@@ -25,8 +25,8 @@ xraytui  ──CBOR over $XDG_RUNTIME_DIR/xraytui/control.sock──>  xraytuid
 |---|---|---|---|
 | `xraytui` | user | Render state, collect intent, format output (`dmenu`, JSON, `dwmblocks`). | Mutate networking; talk to Xray; hold the desired state. |
 | `xraytuid` | user | Own the desired state, compile it, supervise the core, drive the gRPC API, serve the control socket, run health probes. | Anything requiring `CAP_NET_ADMIN`. |
-| `xraytui-netd` | system service with `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_NET_BIND_SERVICE` | TUN devices, addresses, routes, policy rules, `table inet xraytui`, cgroup classification, DNS backends. | Parse subscriptions, perform network I/O, see node credentials, run a shell. |
-| `xray` | user | Carry traffic. | Configure the host; it is handed a finished JSON document and an already-configured TUN. |
+| `xraytui-netd` | system service with `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_DAC_OVERRIDE` | TUN devices, addresses, routes, policy rules, `table inet xraytui`, cgroup classification, DNS backends. | Parse subscriptions, perform network I/O, see node credentials, run a shell. |
+| `xray` | user for supported SOCKS/HTTP operation | Carry traffic. | Configure host routes, firewall or DNS. Current official Linux TUN additionally performs privileged link setup itself; the packaged user service cannot yet launch that path. |
 
 There is no setuid binary. The privilege boundary is the netd socket, and
 everything crossing it is a typed, validated, allowlisted operation from a closed
@@ -76,12 +76,38 @@ concurrency limits, bounded event channels and idle timeouts live. The netd
 socket is a real privilege boundary: the PID from `SO_PEERCRED` is used for
 logging only, never for authorisation, because PIDs are reusable.
 
-Netd protocol version 2 carries independent IPv4 and IPv6 blackhole decisions.
+Netd protocol version 3 carries independent IPv4 and IPv6 blackhole decisions,
+system-mode UID marking and an immediate `CoreFailed` transition. `CreateTun`
+returns metadata only: netd drops its temporary creation descriptor so official
+Xray can attach to the non-multiqueue persistent interface by name. The
+authenticated connection and bounded lease provide liveness. A core failure
+tears down the unusable device without closing that owner connection; an
+unexpected final disconnect applies the recorded restore/block policy rather
+than silently treating a daemon crash as an orderly release.
 The helper records the configured TUN families in its credential-owned lease;
 it never infers them from include prefixes. A plan that includes a prefix from a
 disabled family is rejected during candidate validation, before live routes are
 flushed. When reading a lease written before protocol v2, it recovers the
 missing flags from the live interface's netlink address records.
+
+For TUN topology changes the cross-component transaction is:
+
+```text
+stop old Xray (when attached)
+ -> apply restore/block policy immediately
+ -> netd prepares persistent TUN and core-bypass cgroup
+ -> compile and run real `xray run -test`
+ -> start and health-gate Xray
+ -> classify the exact Xray pid
+ -> install routes, nftables and DNS
+ -> persist desired and observed state
+```
+
+The split between prepare and activate prevents both failure modes seen with the
+opposite order: Xray cannot validate a missing interface, while host traffic must
+not be routed into a core that has not passed its health gate. A structural
+change relinquishes the old non-multiqueue attachment before validation and
+retains blackhole policy during the handover when `failure_policy = "block"`.
 
 ## One core, many balancers
 

@@ -188,10 +188,14 @@ visible in `xraytui doctor`.
 blackholes forever or silently leaves the machine unproxied.
 
 *Mitigations.* netd holds a **lease** per generation, refreshed by a heartbeat.
-On lease expiry, netd applies the generation's recorded `failure_policy`:
+Loss of the final authenticated daemon connection immediately applies the
+generation's recorded `failure_policy`:
 `restore` (remove project routes/rules/nft table, restore DNS, delete TUN) or
-`block` (keep a minimal kill-switch nft chain that drops non-loopback,
-non-bypass traffic, and keep it until an authenticated client clears it).
+`block` (retain UID and standard DNS-port marking, policy rules, and IPv4/IPv6
+blackhole defaults until an authenticated client clears them). An observed Xray
+exit sends the typed `CoreFailed` transition without dropping the owner
+connection. Lease expiry is the backstop when disconnect cannot be observed,
+including a helper restart.
 Minimal recovery state — never credentials — is written to `/run/xraytui/state/`
 (0700, root) with atomic rename, so a netd restart can reconcile. `xraytui doctor
 --repair` and `xraytui-netd --recover` do the same reconciliation manually.

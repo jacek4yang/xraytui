@@ -52,6 +52,45 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: EmbarkStudios/cargo-deny-action@v2
 
+  combined-network:
+    name: Combined TUN + resolved (${{ matrix.channel }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - channel: stable
+            tag: v26.3.27
+            sha256: 23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+          - channel: preview
+            tag: v26.7.28
+            sha256: 8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler unzip
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Download and verify official Xray
+        env:
+          XRAY_TAG: ${{ matrix.tag }}
+          XRAY_SHA256: ${{ matrix.sha256 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/xray"
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/Xray-linux-64.zip" \
+            "https://github.com/XTLS/Xray-core/releases/download/${XRAY_TAG}/Xray-linux-64.zip"
+          echo "${XRAY_SHA256}  $RUNNER_TEMP/Xray-linux-64.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/Xray-linux-64.zip" -d "$RUNNER_TEMP/xray"
+          "$RUNNER_TEMP/xray/xray" version
+      - name: Exercise combined dual-stack and failure path
+        env:
+          XRAYTUI_CONTAINER_RUNTIME: docker
+          XRAYTUI_TEST_XRAY: ${{ runner.temp }}/xray/xray
+        run: scripts/combined-netns-test.sh
+
   arch-package:
     name: Clean Arch package build
     runs-on: ubuntu-latest

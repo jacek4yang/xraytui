@@ -11,9 +11,11 @@
   `2f13f4144516b27f4a9745ee701eb91af24df84e`
 * Merged real-Xray IPv6 and DNS branch: PR #6, commit
   `cb8ba42628964795bfd7c9d0393ccd8ba07b9c05`
-* Hostname-bootstrap implementation: PR
-  [#8](https://github.com/jacek4yang/xraytui/pull/8), branch
-  `feat/dns-bootstrap-safety`
+* Merged hostname-bootstrap implementation: PR
+  [#8](https://github.com/jacek4yang/xraytui/pull/8), commit
+  `92a9142c290d452a224dc8341d6b28fb85aabefe`
+* Current combined-network candidate: branch
+  `feature/combined-tun-resolved-dns`
 * Official Xray stable under test: `v26.3.27`
 * Explicit preview under test: `v26.7.28`
 
@@ -31,24 +33,38 @@ are implemented. `docs/SHARING.md` is the behavioral specification.
 channels and tag commits, Xray source snapshots, the vendored protobuf closure,
 and current v2rayN/v2rayNG serializer paths against `upstream-compat.toml`.
 
-## Unreleased hostname-bootstrap increment
+## Unreleased combined-network increment
 
-`feat/dns-bootstrap-safety` adds explicit `dns.bootstrap_servers` and schema 3.
-The compiler resolves every possible hostname-based first hop through exact,
-direct, IP-hosted bootstrap resolvers and converts only that locally dialled
-outbound copy to the matching Xray `ForceIP*` strategy. Nodes, chain hop 1,
-group candidates, WireGuard peer endpoints, and permitted profile/group
-fallbacks are covered; later `dialerProxy` hops retain remote DNS semantics.
-Missing, hostname-valued, unsupported-scheme, self-listening, and unavailable
-bootstrap routes fail closed.
+`feature/combined-tun-resolved-dns` fixes the cross-layer TUN lifecycle and adds
+one deterministic acceptance scenario spanning the real CLI/daemon/helper/Xray,
+dual-stack UID marking, nftables, policy routing, a real systemd-resolved on
+private D-Bus, proxied IPv6 DNS and direct leak sentinels. It proves structural
+and explicit restart, immediate fail-closed behavior after SIGKILL, backoff
+recovery, DNS recovery, orderly teardown and block-policy retention after daemon
+SIGKILL against official stable v26.3.27 and preview v26.7.28.
 
-Stable v26.3.27 and preview v26.7.28 each pass 852 ordinary workspace tests,
-five doctests, 15 real-Xray controller cases, the isolated privileged TUN/DNS
-validator, and 21+1 disposable-namespace scenarios. The real fixtures observe
-direct bootstrap DNS followed by proxied DNS, then separately prove that failed
-bootstrap makes zero ordinary-direct, proxy, and proxied-resolver connections.
-`cargo xtask ci`, live 55-snapshot upstream checking, dependency policy,
-RustSec audit, release build, and stable release smoke all pass.
+The implementation prepares the persistent TUN before Xray validation, drops
+netd's non-multiqueue creation descriptor, and activates routes/firewall/DNS only
+after Xray health. `CoreFailed` applies the recorded policy immediately; block
+mode retains UID and standard DNS-port marking plus IPv4/IPv6 blackhole routes.
+The authenticated helper connection remains open across core recovery, while an
+unexpected final disconnect applies the same recorded policy immediately. The
+nft guard is postrouting because output-route marks trigger route lookup only
+after output hooks. systemd-resolved learned state/cache is reset on recovery.
+
+Local candidate evidence is complete: stable and preview each pass 858 ordinary
+workspace tests (zero failed, one separately exercised privilege-gated ignore),
+the 21-scenario namespace suite plus exact-instance acceptance, and the combined
+test. The latter explicitly observes both retained blackhole defaults after core
+and daemon SIGKILL. `cargo xtask ci`, `cargo deny check`, the optimized workspace
+build, live upstream compatibility check and the full stable-Xray release smoke
+also pass. `STATUS.md` records the exact commands and caveats.
+
+Do not promote TUN or IPv6 based on this test. It runs root in a network-less
+container. Current official Linux Xray still calls privileged `LinkSetMTU` and
+`LinkSetUp`, and a resolved-facing listener on port 53 requires
+`CAP_NET_BIND_SERVICE`; the packaged user service grants neither. Doctor now
+reports both limitations and no privileged core-launch fallback exists.
 
 ## Final release evidence executed
 
@@ -92,10 +108,9 @@ These results include the merged commit and retrieved public artifact.
 
 ## Required next steps
 
-1. Keep IPv6 experimental until IPv6 group selection, combined TUN +
-   systemd-resolved + proxied-upstream DNS, and broader failure injection execute
-   deterministically. Hostname bootstrap dependency detection is implemented by
-   PR #8 with stable/preview real-Xray evidence.
+1. Design and audit a narrowly privileged official-Xray TUN launch that preserves
+   the current daemon/netd credential boundary; until then keep TUN and IPv6
+   experimental. Also execute IPv6 group selection and broader failure injection.
 2. Add an automatic redacted diagnostic-bundle exporter without including
    policy, generated Xray JSON, share links, QR images or subscription secrets.
 

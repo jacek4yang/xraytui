@@ -99,7 +99,7 @@ compiler must produce canonically ordered, byte-stable output — enforced by te
 ## D-007 — Only `xraytui-netd` is privileged, and it takes typed operations only
 
 **Decision.** A system service with `CapabilityBoundingSet=CAP_NET_ADMIN
-CAP_NET_RAW CAP_NET_BIND_SERVICE` and no shell. Its IPC is a closed enum of
+CAP_NET_RAW CAP_DAC_OVERRIDE` and no shell. Its IPC is a closed enum of
 operations over a Unix socket, authenticated with `SO_PEERCRED`. No setuid binary
 is installed.
 
@@ -117,18 +117,20 @@ consume an inherited FD (verified in `proxy/tun/tun_linux.go`).
 
 **Decision.** `xraytui-netd` creates a **persistent** TUN device with
 `TUNSETPERSIST`, assigns `TUNSETOWNER` to the requesting UID, configures
-addresses/MTU/link over netlink, and returns the FD over `SCM_RIGHTS` for
-`xraytuid` to hold as a liveness handle. Xray then attaches to the pre-existing
-device unprivileged.
+addresses/MTU/link over netlink, then closes its creation descriptor before
+replying. Xray attaches to the pre-existing device by name. The authenticated
+helper connection plus bounded lease, not a competing TUN descriptor, is the
+liveness signal. Routes, firewall and DNS are installed only after Xray passes
+its health gate.
 
-**Consequences.** Xray needs no `CAP_NET_ADMIN` for the common case *if* the kernel
-permits an owner to attach and Xray's `LinkSetMTU`/`LinkSetUp` calls succeed
-(they are no-ops on an already-configured link only if the kernel skips the
-permission check — this is verified at runtime, not assumed). When the attach path
-fails, `xraytui doctor` reports it and TUN mode is refused rather than silently
-escalating privileges. The alternative — netd exec'ing the core with ambient
-`CAP_NET_ADMIN` under the caller's UID — is specified in `docs/NETWORKING.md`
-as `CoreLaunchTun` and is **opt-in**, because it widens netd's mandate.
+**Consequences.** Non-multiqueue Linux TUN rejects a second attached descriptor,
+so returning one as a daemon liveness handle prevents Xray from attaching.
+Closing it fixes ownership/order but does not remove upstream's privilege
+requirement: official Xray still executes `LinkSetMTU` and `LinkSetUp`, which the
+kernel protects with `CAP_NET_ADMIN`. No privileged core-launch operation is
+implemented. The packaged unprivileged service therefore reports this as a
+doctor finding and TUN remains experimental; profile SOCKS/HTTP listeners remain
+the supported unprivileged path.
 
 ---
 

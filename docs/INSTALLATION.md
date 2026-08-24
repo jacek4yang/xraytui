@@ -36,6 +36,14 @@ sudo systemctl enable --now xraytui-netd.service
 sudo usermod -aG xraytui "$USER"     # log out and back in
 ```
 
+The helper setup alone does not currently make official Xray's Linux TUN usable
+from the packaged user service. Upstream Xray itself performs
+`LinkSetMTU`/`LinkSetUp`, and a systemd-resolved-facing listener binds port 53;
+the hardened user unit intentionally has neither required capability. Run
+`xraytui doctor` and treat `xray-tun-privilege` or
+`xray-dns-listen-privilege` as blocking findings. Do not grant broad capabilities
+manually; per-profile SOCKS/HTTP listeners are the supported installed path.
+
 ## Arch
 
 Xray-core is available from the AUR. Install one package that provides `xray`
