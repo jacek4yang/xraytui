@@ -11,13 +11,14 @@
 //!   firewall mark are derived by the helper from the connecting credential.
 //!   `[tun] name`, `route_table`, `fwmark` and `rule_priority` in the
 //!   configuration are advisory; when they disagree with what the helper
-//!   derives, the helper wins and the daemon says so once. That is what stops
-//!   one user from writing another user's identifiers into their own config.
+//!   derives, the helper wins, the daemon logs the difference, and `tun plan`
+//!   shows the effective resources. That is what stops one user from writing
+//!   another user's identifiers into their own config.
 //! * **It does not fall back.** If the helper is absent, a mode that needs a
 //!   system tunnel is refused with a reason. Starting a core whose TUN inbound
 //!   nothing routes to would look like it worked and carry no traffic.
 
-use std::os::fd::OwnedFd;
+use std::os::fd::AsFd as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -57,11 +58,11 @@ pub enum NetdError {
 #[derive(Debug)]
 struct Session {
     client: NetdClient,
-    /// The TUN descriptor. Never read from or written to: holding it is what
-    /// makes this daemon's death visible to the helper immediately, rather than
-    /// only when the lease lapses.
-    _liveness: Option<OwnedFd>,
     interface: String,
+    /// `false` after fail-closed teardown removed the device. The authenticated
+    /// connection stays open so reporting a dead core is not mistaken for the
+    /// daemon itself disappearing.
+    prepared: bool,
 }
 
 /// The daemon's connection to the privileged helper.
@@ -97,6 +98,16 @@ impl Netd {
 
     /// Whether a tunnel is currently held.
     pub async fn is_active(&self) -> bool {
+        self.session
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|session| session.prepared)
+    }
+
+    /// Whether the daemon still owns an authenticated helper policy session.
+    /// A fail-closed session remains owned while its TUN is deliberately absent.
+    pub async fn has_session(&self) -> bool {
         self.session.lock().await.is_some()
     }
 
@@ -106,6 +117,7 @@ impl Netd {
             .lock()
             .await
             .as_ref()
+            .filter(|session| session.prepared)
             .map(|session| session.interface.clone())
     }
 
@@ -128,17 +140,44 @@ impl Netd {
         (xraytui_linux_net::plan::render(uid, request), script, false)
     }
 
-    /// Bring the tunnel up, or explain why it cannot come up.
+    /// Create the TUN and hold its authenticated lease before Xray is started.
     ///
-    /// Idempotent: establishing while a session is held releases the old one
-    /// first, so a configuration change re-applies cleanly.
+    /// Upstream Xray opens the named interface while constructing its TUN
+    /// inbound, including during `xray run -test`. Creating the interface after
+    /// the core starts therefore cannot work on a clean machine. Routes,
+    /// firewall and DNS deliberately remain untouched until [`Self::activate`]
+    /// sees a healthy core.
     ///
     /// # Errors
-    /// See [`NetdError`]. Nothing partial is left behind: the helper rolls its
-    /// own operations back, and this function releases the lease if a later
-    /// step fails.
-    pub async fn establish(&self, request: &PlanRequest) -> Result<String, NetdError> {
-        self.release().await;
+    /// See [`NetdError`].
+    pub async fn prepare(&self, request: &PlanRequest) -> Result<String, NetdError> {
+        let mut guard = self.session.lock().await;
+        if let Some(session) = guard.as_mut()
+            && session.interface == request.tun.interface
+        {
+            if session.prepared {
+                return Ok(session.interface.clone());
+            }
+            if let Err(error) = prepare_client(&mut session.client, request).await {
+                if session.client.call(Operation::CoreFailed).await.is_err() {
+                    *guard = None;
+                }
+                return Err(error);
+            }
+            session.prepared = true;
+            tracing::info!(
+                interface = session.interface,
+                "the privileged helper re-prepared the system tunnel"
+            );
+            return Ok(session.interface.clone());
+        }
+        if let Some(session) = guard.as_ref() {
+            return Err(NetdError::Refused(format!(
+                "the helper session owns interface {}, not {}; refusing to release an active policy implicitly",
+                session.interface, request.tun.interface
+            )));
+        }
+        drop(guard);
 
         let mut client =
             NetdClient::connect(&self.socket)
@@ -148,48 +187,58 @@ impl Netd {
                     detail: error.to_string(),
                 })?;
 
-        let (outcome, descriptors) = client
-            .call_with(Operation::CreateTun(request.tun.clone()), &[])
-            .await
-            .map_err(refused)?;
-        let Outcome::TunCreated { interface, .. } = outcome else {
+        let interface = match prepare_client(&mut client, request).await {
+            Ok(interface) => interface,
+            Err(error) => {
+                let _ = client.call(Operation::Release).await;
+                return Err(error);
+            }
+        };
+
+        tracing::info!(
+            interface,
+            "the privileged helper prepared the system tunnel"
+        );
+        *self.session.lock().await = Some(Session {
+            client,
+            interface: interface.clone(),
+            prepared: true,
+        });
+        Ok(interface)
+    }
+
+    /// Install routing, core bypass, firewall and DNS after Xray is healthy.
+    ///
+    /// The core is moved into its project cgroup before the general UID mark is
+    /// installed. Otherwise the first upstream socket opened after activation
+    /// could be routed back into the TUN the core itself provides.
+    ///
+    /// # Errors
+    /// See [`NetdError`]. Any partial activation is released before returning.
+    pub async fn activate(
+        &self,
+        request: &PlanRequest,
+        core_pid: u32,
+    ) -> Result<String, NetdError> {
+        let mut guard = self.session.lock().await;
+        let Some(session) = guard.as_mut() else {
             return Err(NetdError::Refused(
-                "the helper answered create-tun with something else".into(),
+                "the system tunnel was not prepared before activation".into(),
             ));
         };
 
-        let established = async {
-            client
-                .call(Operation::ApplyRouting(request.routing.clone()))
-                .await?;
-            if !request.firewall.cgroup_marks.is_empty() || request.firewall.kill_switch {
-                client
-                    .call(Operation::ApplyFirewall(request.firewall.clone()))
-                    .await?;
-            }
-            if request.dns.backend != DnsBackend::None {
-                client
-                    .call(Operation::ApplyDns(request.dns.clone()))
-                    .await?;
-            }
-            Ok::<(), TransportError>(())
+        let activated = activate_session(session, request, core_pid).await;
+        if let Err(error) = activated {
+            let _ = session.client.call(Operation::CoreFailed).await;
+            session.prepared = false;
+            return Err(error);
         }
-        .await;
-
-        if let Err(error) = established {
-            // The device exists but the rest does not; giving it back is better
-            // than leaving a tunnel nothing routes to.
-            let _ = client.call(Operation::Release).await;
-            return Err(refused(error));
-        }
-
-        tracing::info!(interface, "the privileged helper granted a system tunnel");
-        *self.session.lock().await = Some(Session {
-            client,
-            _liveness: descriptors.into_iter().next(),
-            interface: interface.clone(),
-        });
-        Ok(interface)
+        tracing::info!(
+            interface = session.interface,
+            core_pid,
+            "the system tunnel is active"
+        );
+        Ok(session.interface.clone())
     }
 
     /// Renew the lease. Called on a timer while a tunnel is held.
@@ -203,17 +252,22 @@ impl Netd {
             .call(Operation::Heartbeat { generation })
             .await
         {
-            tracing::warn!(%error, "the helper stopped answering; releasing the tunnel");
+            tracing::warn!(%error, "the helper stopped answering; closing its owner session");
             *guard = None;
         }
     }
 
     /// Give the tunnel back. Safe to call when nothing is held.
     pub async fn release(&self) {
-        let Some(mut session) = self.session.lock().await.take() else {
-            return;
+        let held = self.session.lock().await.take();
+        let result = match held {
+            Some(mut session) => session.client.call(Operation::Release).await,
+            None => match NetdClient::connect(&self.socket).await {
+                Ok(mut client) => client.call(Operation::Release).await,
+                Err(_) => return,
+            },
         };
-        match session.client.call(Operation::Release).await {
+        match result {
             Ok(Outcome::Recovered { removed }) => {
                 for item in removed {
                     tracing::info!(item, "released");
@@ -225,6 +279,133 @@ impl Netd {
         // Dropping the client closes the connection, which is the helper's
         // primary teardown signal even if the message above never arrived.
     }
+
+    /// Apply the configured restore/block policy immediately after core loss.
+    pub async fn core_failed(&self) {
+        let mut guard = self.session.lock().await;
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        let result = session.client.call(Operation::CoreFailed).await;
+        match result {
+            Ok(Outcome::Recovered { removed }) => {
+                session.prepared = false;
+                for item in removed {
+                    tracing::warn!(item, "failure policy applied");
+                }
+            }
+            Ok(_) => session.prepared = false,
+            Err(error) => {
+                tracing::error!(%error, "the helper could not apply the failure policy");
+                // A failed transport cannot safely be reused. Closing it lets
+                // a still-running helper apply connection-loss policy; a later
+                // prepare creates a fresh authenticated session.
+                *guard = None;
+            }
+        }
+    }
+}
+
+async fn prepare_client(
+    client: &mut NetdClient,
+    request: &PlanRequest,
+) -> Result<String, NetdError> {
+    let (outcome, descriptors) = client
+        .call_with(Operation::CreateTun(request.tun.clone()), &[])
+        .await
+        .map_err(refused)?;
+    let Outcome::TunCreated { interface, .. } = outcome else {
+        return Err(NetdError::Refused(
+            "the helper answered create-tun with something else".into(),
+        ));
+    };
+    if !descriptors.is_empty() {
+        return Err(NetdError::Refused(
+            "the helper returned an unexpected descriptor for create-tun".into(),
+        ));
+    }
+
+    if request.firewall.bypass_uid {
+        client
+            .call(Operation::CreateCgroup {
+                profile: xraytui_linux_net::cgroup::CORE_PROFILE.to_owned(),
+            })
+            .await
+            .map_err(refused)?;
+        classify_process(
+            client,
+            rustix::process::getpid().as_raw_nonzero().get() as u32,
+        )
+        .await
+        .map_err(refused)?;
+    }
+    Ok(interface)
+}
+
+async fn activate_session(
+    session: &mut Session,
+    request: &PlanRequest,
+    core_pid: u32,
+) -> Result<(), NetdError> {
+    session
+        .client
+        .call(Operation::ApplyRouting(request.routing.clone()))
+        .await
+        .map_err(refused)?;
+
+    if request.firewall.bypass_uid {
+        session
+            .client
+            .call(Operation::CreateCgroup {
+                profile: xraytui_linux_net::cgroup::CORE_PROFILE.to_owned(),
+            })
+            .await
+            .map_err(refused)?;
+        classify_process(&mut session.client, core_pid)
+            .await
+            .map_err(refused)?;
+    }
+
+    if request.firewall.mark_all
+        || !request.firewall.cgroup_marks.is_empty()
+        || request.firewall.kill_switch
+    {
+        session
+            .client
+            .call(Operation::ApplyFirewall(request.firewall.clone()))
+            .await
+            .map_err(refused)?;
+    }
+    if request.dns.backend != DnsBackend::None {
+        session
+            .client
+            .call(Operation::ApplyDns(request.dns.clone()))
+            .await
+            .map_err(refused)?;
+    }
+    Ok(())
+}
+
+async fn classify_process(client: &mut NetdClient, process_pid: u32) -> Result<(), TransportError> {
+    let raw_pid = i32::try_from(process_pid).map_err(|_| {
+        TransportError::Encode(format!(
+            "process pid {process_pid} does not fit Linux pid_t"
+        ))
+    })?;
+    let pid = rustix::process::Pid::from_raw(raw_pid).ok_or_else(|| {
+        TransportError::Encode(format!("process reported invalid pid {process_pid}"))
+    })?;
+    let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
+        .map_err(std::io::Error::from)?;
+    client
+        .call_with(
+            Operation::ClassifyProcess {
+                profile: xraytui_linux_net::cgroup::CORE_PROFILE.to_owned(),
+            },
+            &[pidfd.as_fd()],
+        )
+        .await
+        .map(|_| ())
 }
 
 fn refused(error: TransportError) -> NetdError {
@@ -249,12 +430,36 @@ pub fn plan_request(
         .map_err(|error| NetdError::Invalid(error.to_string()))?;
     let uid = rustix::process::getuid().as_raw();
     let interface = xraytui_netd_protocol::interface_for_uid(uid);
-    if config.tun.name != interface {
+    if config.tun.name != "xraytui0" && config.tun.name != interface {
         tracing::info!(
             configured = config.tun.name,
             derived = interface,
             "the helper derives the interface name from your credential; \
              [tun] name is advisory"
+        );
+    }
+    let table = xraytui_netd_protocol::table_for_uid(uid);
+    if config.tun.route_table != 0x7261 && config.tun.route_table != table {
+        tracing::info!(
+            configured = config.tun.route_table,
+            derived = table,
+            "the helper derives the routing table from your credential; [tun] route_table is advisory"
+        );
+    }
+    let fwmark = xraytui_netd_protocol::fwmark_for_uid(uid);
+    if config.tun.fwmark != 0x7261 && config.tun.fwmark != fwmark {
+        tracing::info!(
+            configured = config.tun.fwmark,
+            derived = fwmark,
+            "the helper derives the firewall mark from your credential; [tun] fwmark is advisory"
+        );
+    }
+    let priority = xraytui_linux_net::routing::rule_priority(uid);
+    if config.tun.rule_priority != 17_000 && config.tun.rule_priority != priority {
+        tracing::info!(
+            configured = config.tun.rule_priority,
+            derived = priority,
+            "the helper derives the policy-rule priority from your credential; [tun] rule_priority is advisory"
         );
     }
 
@@ -318,6 +523,7 @@ pub fn plan_request(
                 && config.tun.disabled_family_policy == DisabledFamilyPolicy::Block,
         },
         firewall: FirewallRequest {
+            mark_all: state.mode.needs_tun(),
             cgroup_marks,
             kill_switch: failure_policy(config.runtime.failure_policy)
                 == xraytui_netd_protocol::FailurePolicy::Block,
@@ -710,6 +916,25 @@ mod tests {
     }
 
     #[test]
+    fn every_tun_mode_marks_the_calling_users_ordinary_traffic() {
+        for mode in [
+            xraytui_domain::SystemMode::Direct,
+            xraytui_domain::SystemMode::Global,
+            xraytui_domain::SystemMode::Rule,
+        ] {
+            let state = DesiredState {
+                mode,
+                ..DesiredState::default()
+            };
+            let request = plan_request(&config(), &state, Vec::new()).expect("request");
+            assert!(request.firewall.mark_all, "{mode} did not mark all traffic");
+        }
+        let request =
+            plan_request(&config(), &DesiredState::default(), Vec::new()).expect("request");
+        assert!(!request.firewall.mark_all, "off mode must remain inert");
+    }
+
+    #[test]
     fn the_two_failure_policies_mean_the_same_thing() {
         assert_eq!(
             failure_policy(xraytui_config::FailurePolicy::Restore),
@@ -736,7 +961,7 @@ mod tests {
         assert!(!netd.is_active().await);
         let request =
             plan_request(&config(), &DesiredState::default(), Vec::new()).expect("request");
-        let error = netd.establish(&request).await.expect_err("must fail");
+        let error = netd.prepare(&request).await.expect_err("must fail");
         let text = error.to_string();
         assert!(text.contains("systemctl enable"), "{text}");
         assert!(text.contains("SOCKS"), "{text}");

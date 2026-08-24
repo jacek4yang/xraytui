@@ -322,7 +322,7 @@ pub struct TunSection {
     /// Desired system mode at startup.
     #[serde(default)]
     pub mode: SystemMode,
-    /// Interface name. Must start with `xraytui`.
+    /// Legacy/advisory interface name. Netd derives the live name from the uid.
     #[serde(default = "default_tun_name")]
     pub name: String,
     /// MTU.
@@ -352,13 +352,13 @@ pub struct TunSection {
     /// Destination prefixes never routed into the tunnel.
     #[serde(default)]
     pub exclude_cidrs: Vec<String>,
-    /// Routing table id. Probed for conflicts before use.
+    /// Legacy/advisory routing table id; netd derives the live id from the uid.
     #[serde(default = "default_table")]
     pub route_table: u32,
-    /// Firewall mark. Probed for conflicts before use.
+    /// Legacy/advisory mark; netd derives the live mark from the uid.
     #[serde(default = "default_fwmark")]
     pub fwmark: u32,
-    /// Rule priority for the policy-routing rule.
+    /// Legacy/advisory priority; netd derives the live priority from the uid.
     #[serde(default = "default_rule_priority")]
     pub rule_priority: u32,
 }

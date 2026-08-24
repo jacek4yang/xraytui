@@ -17,9 +17,11 @@
 //! `TUNSETPERSIST`, hands ownership to the calling user with `TUNSETOWNER`, and
 //! lets the unprivileged core open it by name. See `DECISIONS.md` D-008.
 //!
-//! The descriptor the helper keeps is a **liveness handle**, not a data path: it
-//! is returned to the daemon over `SCM_RIGHTS` so that a daemon crash closes it,
-//! and it is never read from or written to.
+//! A non-multiqueue TUN permits only one attached file descriptor. The helper
+//! therefore closes its creation descriptor after configuring the persistent
+//! link, before Xray opens the interface by name. Daemon liveness is tracked by
+//! the authenticated helper connection and its bounded lease, not by keeping a
+//! competing TUN data-path descriptor open.
 
 #![allow(
     unsafe_code,
@@ -66,14 +68,14 @@ pub enum TunError {
     Conflict(String),
 }
 
-/// A TUN device the helper created and still holds a descriptor for.
+/// A TUN device and its temporary creation descriptor.
 #[derive(Debug)]
 pub struct PersistentTun {
     /// Interface name.
     pub interface: String,
-    /// The liveness descriptor. Dropping it does **not** delete the device,
-    /// because `TUNSETPERSIST` was set; it is held so that the owning process
-    /// closing it is observable.
+    /// The descriptor attached while the persistent device is configured.
+    /// Drop it before another process, including Xray, attaches by name.
+    /// Dropping it does **not** delete the device because `TUNSETPERSIST` is set.
     pub handle: OwnedFd,
 }
 

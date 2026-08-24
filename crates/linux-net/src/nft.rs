@@ -244,7 +244,13 @@ pub fn user_ruleset(
 
     for (chain, kind, hook, priority) in [
         (&mark, "route", "output", PRIORITY_MANGLE),
-        (&guard, "filter", "output", PRIORITY_FILTER),
+        // A route-chain mark triggers a fresh route lookup only after the
+        // output hooks finish. Inspecting `oifname` in another output chain
+        // therefore sees the stale, pre-mark interface and drops traffic that
+        // is about to be routed correctly. Postrouting observes the selected
+        // TUN (or a direct fallback when its route vanished), which is exactly
+        // where the kill switch decision belongs.
+        (&guard, "filter", "postrouting", PRIORITY_FILTER),
         (&redirect, "filter", "prerouting", PRIORITY_PREROUTING),
     ] {
         script.push_literal("add chain ");
@@ -290,6 +296,38 @@ pub fn user_ruleset(
         rule_prologue(&mut script, &mark)?;
         script.push_literal(match_expression);
         script.push_literal(" accept").newline();
+    }
+    // A listener may deliberately bind the TUN address (the system DNS
+    // listener does) or another host address. Decide this from the kernel FIB,
+    // before any mark changes the lookup, so local services stay local.
+    rule_prologue(&mut script, &mark)?;
+    script.push_literal("fib daddr type local accept").newline();
+
+    // systemd-resolved normally runs under its own service uid, so marking
+    // only the xraytui caller cannot protect its upstream DNS packets. Under a
+    // fail-closed policy, carry every non-loopback DNS, DNS-over-TLS and
+    // DNS-over-QUIC query on the standard ports through the TUN. The
+    // core-cgroup accept above deliberately preserves Xray's explicitly
+    // configured direct/bootstrap DNS path. During a core outage the retained
+    // mark and blackhole route also stop resolved's public fallback servers
+    // from becoming a direct leak.
+    if request.kill_switch {
+        rule_prologue(&mut script, &mark)?;
+        script.push_literal("meta l4proto { tcp, udp } th dport { 53, 853 } meta mark set ");
+        script.push_hex(fwmark).newline();
+    }
+
+    // System modes are system-wide for this user, not merely cgroup-wide.
+    // Mark every remaining socket owned by the authenticated uid so the policy
+    // rule sends it to the shared TUN. The core-cgroup and loopback accepts
+    // above are deliberately earlier; per-profile cgroup rules below are later
+    // and may replace this mark with a transparent-listener mark.
+    if request.mark_all {
+        rule_prologue(&mut script, &mark)?;
+        script.push_literal("meta skuid ");
+        script.push_literal(&uid.to_string());
+        script.push_literal(" meta mark set ");
+        script.push_hex(fwmark).newline();
     }
 
     // A profile with a transparent listener of its own gets its own mark,
@@ -624,6 +662,7 @@ mod tests {
 
     fn request() -> FirewallRequest {
         FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "work".into(),
                 tproxy_port: Some(19001),
@@ -712,6 +751,7 @@ mod tests {
         // The caller cannot choose a mark, so the assertion is that the one the
         // protocol derives is the one that reaches the ruleset.
         let spec = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![
                 CgroupMark {
                     profile: "media".into(),
@@ -746,6 +786,7 @@ mod tests {
     #[test]
     fn a_profile_with_a_listener_gets_a_tproxy_rule_and_one_without_does_not() {
         let spec = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![
                 CgroupMark {
                     profile: "media".into(),
@@ -776,6 +817,7 @@ mod tests {
         // quietly stop working the moment scenario M arrived.
         let fwmark = xraytui_netd_protocol::fwmark_for_uid(42);
         let spec = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "tunnelled".into(),
                 tproxy_port: None,
@@ -795,12 +837,81 @@ mod tests {
     }
 
     #[test]
+    fn a_system_mode_marks_the_authenticated_uid_after_safety_exceptions() {
+        let fwmark = xraytui_netd_protocol::fwmark_for_uid(42);
+        let spec = FirewallRequest {
+            mark_all: true,
+            cgroup_marks: Vec::new(),
+            kill_switch: false,
+            bypass_uid: true,
+        };
+        let text = user_ruleset(42, "xraytui42", fwmark, &spec)
+            .expect("ruleset")
+            .as_str()
+            .to_owned();
+        let core = text.find("xraytui.slice/u42/core").expect("core bypass");
+        let loopback = text.find("ip daddr 127.0.0.0/8").expect("loopback bypass");
+        let general = text.find("meta skuid 42").expect("uid mark");
+        assert!(core < loopback && loopback < general, "{text}");
+        assert!(
+            text[general..].starts_with(&format!("meta skuid 42 meta mark set {fwmark:#x}")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_kill_switch_observes_the_post_reroute_interface() {
+        let spec = FirewallRequest {
+            mark_all: true,
+            cgroup_marks: Vec::new(),
+            kill_switch: true,
+            bypass_uid: true,
+        };
+        let text = user_ruleset(
+            42,
+            "xraytui42",
+            xraytui_netd_protocol::fwmark_for_uid(42),
+            &spec,
+        )
+        .expect("ruleset")
+        .as_str()
+        .to_owned();
+        assert!(
+            text.contains("u42-guard { type filter hook postrouting"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_fail_closed_mode_marks_dns_from_service_uids_too() {
+        let fwmark = xraytui_netd_protocol::fwmark_for_uid(42);
+        let spec = FirewallRequest {
+            mark_all: false,
+            cgroup_marks: Vec::new(),
+            kill_switch: true,
+            bypass_uid: true,
+        };
+        let text = user_ruleset(42, "xraytui42", fwmark, &spec)
+            .expect("ruleset")
+            .as_str()
+            .to_owned();
+        let core = text.find("xraytui.slice/u42/core").expect("core bypass");
+        let dns = text.find("th dport { 53, 853 }").expect("DNS protection");
+        assert!(core < dns, "{text}");
+        assert!(
+            text[dns..].starts_with(&format!("th dport {{ 53, 853 }} meta mark set {fwmark:#x}")),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_redirect_names_loopback_and_its_family() {
         // Both were established against a running kernel: nftables refuses
         // `tproxy to <address>` in an `inet` table without a family, and naming
         // 127.0.0.1 is what lets the listener bind loopback instead of every
         // address on the machine.
         let spec = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "media".into(),
                 tproxy_port: Some(19_007),
@@ -823,6 +934,7 @@ mod tests {
     #[test]
     fn traffic_to_this_machine_is_never_marked_so_the_listener_cannot_dial_itself() {
         let spec = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "media".into(),
                 tproxy_port: Some(19_007),
@@ -863,6 +975,7 @@ mod tests {
         // Without `meta l4proto` nftables refuses the rule outright:
         // "Transparent proxy support requires transport protocol match".
         let spec = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "media".into(),
                 tproxy_port: Some(19_007),
@@ -911,6 +1024,7 @@ mod tests {
             "work`id`",
         ] {
             let spec = FirewallRequest {
+                mark_all: false,
                 cgroup_marks: vec![CgroupMark {
                     profile: hostile.into(),
                     tproxy_port: Some(19000),
@@ -968,6 +1082,7 @@ mod tests {
                 continue;
             }
             let spec = FirewallRequest {
+                mark_all: false,
                 cgroup_marks: vec![CgroupMark {
                     profile: profile.to_owned(),
                     tproxy_port: Some(19000),

@@ -255,8 +255,12 @@ impl Engine {
                 let removed = self.teardown(uid, TeardownReason::Requested)?;
                 Ok(Response::plain(Outcome::Recovered { removed }))
             }
+            Operation::CoreFailed => {
+                let removed = self.teardown(uid, TeardownReason::Failed)?;
+                Ok(Response::plain(Outcome::Recovered { removed }))
+            }
             Operation::Recover => {
-                let removed = self.recover(crate::lease::now());
+                let removed = self.recover_locked(crate::lease::now());
                 Ok(Response::plain(Outcome::Recovered { removed }))
             }
         }
@@ -339,16 +343,16 @@ impl Engine {
             });
         }
 
-        Ok(Response {
-            outcome: Outcome::TunCreated {
-                interface: request.interface.clone(),
-                index,
-                table,
-                fwmark,
-                fd_attached: true,
-            },
-            descriptor: Some(device.handle),
-        })
+        // A non-multiqueue TUN accepts only one attached descriptor. Xray opens
+        // this persistent interface by name, so release the helper's creation
+        // descriptor before replying and before the daemon starts Xray.
+        drop(device);
+        Ok(Response::plain(Outcome::TunCreated {
+            interface: request.interface.clone(),
+            index,
+            table,
+            fwmark,
+        }))
     }
 
     fn remove_device(&self, interface: &str) {
@@ -651,8 +655,22 @@ impl Engine {
         self.teardown(uid, TeardownReason::Requested)
     }
 
+    /// Apply the configured failure policy when the daemon's authenticated
+    /// helper connection disappears without an explicit release.
+    ///
+    /// # Errors
+    /// See [`Self::release`].
+    pub fn connection_lost(&self, uid: u32) -> Result<Vec<String>, NetdError> {
+        let _held = self
+            .guard
+            .lock()
+            .map_err(|_| internal("the helper's internal lock was poisoned"))?;
+        self.teardown(uid, TeardownReason::Failed)
+    }
+
     fn teardown(&self, uid: u32, reason: TeardownReason) -> Result<Vec<String>, NetdError> {
         let mut removed = Vec::new();
+        let mut safety_failures = Vec::new();
         let lease = self.leases.get(uid);
         let policy = lease
             .as_ref()
@@ -663,6 +681,8 @@ impl Engine {
         );
         let table = xraytui_netd_protocol::table_for_uid(uid);
         let priority = routing::rule_priority(uid);
+        let keep_blocking =
+            !matches!(reason, TeardownReason::Requested) && policy == FailurePolicy::Block;
 
         // DNS first: it is the only change that is visible to programs that are
         // not routed through us at all.
@@ -674,7 +694,35 @@ impl Engine {
             removed.push(format!("dns configuration for {interface}"));
         }
 
-        if self.options.nft.available()
+        if keep_blocking {
+            if self.options.nft.available() {
+                let blocking = FirewallRequest {
+                    mark_all: true,
+                    cgroup_marks: Vec::new(),
+                    kill_switch: true,
+                    bypass_uid: false,
+                };
+                match crate::nft::user_ruleset(
+                    uid,
+                    &interface,
+                    xraytui_netd_protocol::fwmark_for_uid(uid),
+                    &blocking,
+                ) {
+                    Ok(script) => match self.options.nft.apply(&script) {
+                        Ok(()) => removed.push(format!(
+                            "nftables reduced to a fail-closed uid guard for uid {uid}"
+                        )),
+                        Err(error) => safety_failures
+                            .push(format!("cannot retain the nftables uid guard: {error}")),
+                    },
+                    Err(error) => safety_failures.push(format!(
+                        "cannot build the fail-closed nftables guard: {error}"
+                    )),
+                }
+            } else {
+                safety_failures.push("nftables is unavailable for the retained uid guard".into());
+            }
+        } else if self.options.nft.available()
             && let Ok(existing) = self.options.nft.chains()
             && let Ok(script) = crate::nft::clear_user(uid, &existing)
             && !script.is_empty()
@@ -683,57 +731,73 @@ impl Engine {
             removed.push(format!("nftables chains for uid {uid}"));
         }
 
-        if let Ok(netlink) = Netlink::open() {
-            let keep_blocking =
-                matches!(reason, TeardownReason::LeaseExpired) && policy == FailurePolicy::Block;
-
-            if let Ok(count) = netlink.flush_owned_routes(table)
-                && count > 0
-            {
-                removed.push(format!("{count} routes in table {table}"));
-            }
-
-            // The transparent table and its rules go whatever the failure
-            // policy is: a local-delivery route with no listener behind it
-            // would black-hole traffic in a way nobody could diagnose.
-            let transparent_table = xraytui_netd_protocol::transparent_table_for_uid(uid);
-            let transparent_priority = routing::transparent_rule_priority(uid);
-            if let Ok(count) = netlink.flush_owned_routes(transparent_table)
-                && count > 0
-            {
-                removed.push(format!("{count} routes in table {transparent_table}"));
-            }
-            if let Ok(count) = netlink.flush_rules(&[transparent_priority])
-                && count > 0
-            {
-                removed.push(format!(
-                    "{count} transparent policy rules at priority {transparent_priority}"
-                ));
-            }
-
-            if keep_blocking {
-                // The user asked not to fall back to direct. Leave the rule in
-                // place and make the table discard everything, so traffic stops
-                // rather than silently leaving unprotected.
-                let _ = netlink.route_add_blackhole(table, routing::default_v4(), true);
-                if ipv6_supported() {
-                    let _ = netlink.route_add_blackhole(table, routing::default_v6(), true);
+        match Netlink::open() {
+            Ok(netlink) => {
+                if let Ok(count) = netlink.flush_owned_routes(table)
+                    && count > 0
+                {
+                    removed.push(format!("{count} routes in table {table}"));
                 }
-                removed.push(format!(
-                    "table {table} left blackholed by the kill-switch policy"
-                ));
-            } else if let Ok(count) = netlink.flush_rules(&[priority])
-                && count > 0
-            {
-                removed.push(format!("{count} policy rules at priority {priority}"));
-            }
 
-            if let Ok(index) = netlink.link_index(&interface) {
-                let _ = netlink.link_down(index);
-                if netlink.link_delete(index).is_ok() {
-                    removed.push(format!("interface {interface}"));
+                // The transparent table and its rules go whatever the failure
+                // policy is: a local-delivery route with no listener behind it
+                // would black-hole traffic in a way nobody could diagnose.
+                let transparent_table = xraytui_netd_protocol::transparent_table_for_uid(uid);
+                let transparent_priority = routing::transparent_rule_priority(uid);
+                if let Ok(count) = netlink.flush_owned_routes(transparent_table)
+                    && count > 0
+                {
+                    removed.push(format!("{count} routes in table {transparent_table}"));
+                }
+                if let Ok(count) = netlink.flush_rules(&[transparent_priority])
+                    && count > 0
+                {
+                    removed.push(format!(
+                        "{count} transparent policy rules at priority {transparent_priority}"
+                    ));
+                }
+
+                if keep_blocking {
+                    // The user asked not to fall back to direct. Leave the rule in
+                    // place and make the table discard everything, so traffic stops
+                    // rather than silently leaving unprotected.
+                    if let Err(error) =
+                        netlink.route_add_blackhole(table, routing::default_v4(), true)
+                    {
+                        safety_failures.push(format!(
+                            "cannot install the retained IPv4 blackhole in table {table}: {error}"
+                        ));
+                    }
+                    if ipv6_supported()
+                        && let Err(error) =
+                            netlink.route_add_blackhole(table, routing::default_v6(), true)
+                    {
+                        safety_failures.push(format!(
+                            "cannot install the retained IPv6 blackhole in table {table}: {error}"
+                        ));
+                    }
+                    if safety_failures.is_empty() {
+                        removed.push(format!(
+                            "table {table} left blackholed by the kill-switch policy"
+                        ));
+                    }
+                } else if let Ok(count) = netlink.flush_rules(&[priority])
+                    && count > 0
+                {
+                    removed.push(format!("{count} policy rules at priority {priority}"));
+                }
+
+                if let Ok(index) = netlink.link_index(&interface) {
+                    let _ = netlink.link_down(index);
+                    if netlink.link_delete(index).is_ok() {
+                        removed.push(format!("interface {interface}"));
+                    }
                 }
             }
+            Err(error) if keep_blocking => safety_failures.push(format!(
+                "cannot open netlink to retain the policy-table blackholes: {error}"
+            )),
+            Err(_) => {}
         }
         let _ = tun::clear_persist(&interface);
 
@@ -741,7 +805,31 @@ impl Engine {
             removed.extend(groups.into_iter().map(|path| format!("cgroup {path}")));
         }
 
-        self.leases.remove(uid).map_err(internal)?;
+        if keep_blocking {
+            // Retain the policy after the device is gone. This lets a live
+            // daemon re-create the TUN on the same authenticated connection,
+            // and lets a later connection-loss event preserve block policy
+            // instead of defaulting to restore because the record vanished.
+            // Once an expired owner has been handled, park the record so the
+            // periodic reaper does not repeat the same teardown forever.
+            if let Some(mut blocked) = lease {
+                blocked.routing = true;
+                blocked.firewall = true;
+                blocked.dns = DnsBackend::None;
+                if reason == TeardownReason::LeaseExpired {
+                    blocked.expires_at = u64::MAX;
+                }
+                self.leases.put(&blocked).map_err(internal)?;
+            }
+        } else {
+            self.leases.remove(uid).map_err(internal)?;
+        }
+        if !safety_failures.is_empty() {
+            return Err(internal(format!(
+                "failure policy could not be made fail-closed: {}",
+                safety_failures.join("; ")
+            )));
+        }
         Ok(removed)
     }
 
@@ -752,6 +840,16 @@ impl Engine {
     /// residue of a helper that was killed before it could tidy up.
     #[must_use]
     pub fn recover(&self, now: u64) -> Vec<String> {
+        let Ok(_held) = self.guard.lock() else {
+            return vec![
+                "recovery skipped because the helper mutation lock is poisoned".to_owned(),
+            ];
+        };
+        self.recover_locked(now)
+    }
+
+    /// Recovery while the caller holds `guard` (as every typed operation does).
+    fn recover_locked(&self, now: u64) -> Vec<String> {
         let mut removed = Vec::new();
         for lease in self.leases.expired(now) {
             if let Ok(mut cleaned) = self.teardown(lease.uid, TeardownReason::LeaseExpired) {
@@ -779,6 +877,13 @@ impl Engine {
                 let _ = tun::clear_persist(&name);
             }
         }
+        if let Ok(groups) = self.cgroups().remove_empty_owned() {
+            removed.extend(
+                groups
+                    .into_iter()
+                    .map(|path| format!("empty cgroup {path}")),
+            );
+        }
         removed
     }
 }
@@ -790,6 +895,8 @@ enum TeardownReason {
     Requested,
     /// The owner stopped answering.
     LeaseExpired,
+    /// The live owner reported that its core or activation path failed.
+    Failed,
 }
 
 fn add_address_idempotently(
@@ -880,6 +987,7 @@ mod tests {
                 blackhole_ipv6: false,
             }),
             Operation::ApplyFirewall(FirewallRequest {
+                mark_all: false,
                 cgroup_marks: Vec::new(),
                 kill_switch: false,
                 bypass_uid: false,
@@ -916,6 +1024,7 @@ mod tests {
                 blackhole_ipv6: false,
             },
             firewall: FirewallRequest {
+                mark_all: false,
                 cgroup_marks: Vec::new(),
                 kill_switch: false,
                 bypass_uid: true,

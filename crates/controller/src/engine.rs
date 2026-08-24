@@ -208,6 +208,17 @@ impl Engine {
         self.compiled.as_ref()
     }
 
+    /// Process id of the currently supervised Xray generation.
+    ///
+    /// The daemon uses this only to place the core in the privileged helper's
+    /// project cgroup before system-wide traffic marking is enabled.
+    #[must_use]
+    pub fn core_pid(&self) -> Option<u32> {
+        self.running
+            .as_ref()
+            .and_then(crate::core::RunningCore::pid)
+    }
+
     /// Decide how to get from the current desired state to `next`.
     ///
     /// A change is API-applicable only when *nothing but* profile targets and

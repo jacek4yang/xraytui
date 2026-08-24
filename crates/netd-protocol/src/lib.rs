@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol version for the helper socket, versioned separately from the user
 /// control protocol because it changes for different reasons.
-pub const NETD_PROTOCOL_VERSION: u32 = 2;
+pub const NETD_PROTOCOL_VERSION: u32 = 3;
 
 /// Default socket path.
 pub const DEFAULT_SOCKET: &str = "/run/xraytui/netd.sock";
@@ -206,10 +206,10 @@ pub enum Operation {
     /// Create a persistent TUN device owned by the calling UID and configure it.
     ///
     /// The device is created with `TUNSETPERSIST` and `TUNSETOWNER` so that the
-    /// unprivileged Xray process can attach to it afterwards. The file
-    /// descriptor is returned over `SCM_RIGHTS` for the daemon to hold as a
-    /// liveness handle. See `DECISIONS.md` D-008 for why the FD is not simply
-    /// passed to Xray.
+    /// Xray process can attach to it afterwards. The helper closes its creation
+    /// descriptor before replying because upstream Xray opens the non-multiqueue
+    /// interface by name. The authenticated connection and lease track daemon
+    /// liveness. See `DECISIONS.md` D-008.
     CreateTun(TunRequest),
 
     /// Delete the calling UID's TUN device and everything attached to it.
@@ -268,6 +268,11 @@ pub enum Operation {
     /// Release the lease and tear down everything this UID owns.
     Release,
 
+    /// The core or activation path failed unexpectedly; apply the lease's
+    /// configured restore/block policy immediately instead of waiting for the
+    /// heartbeat timeout.
+    CoreFailed,
+
     /// Report what would be changed, without changing anything.
     Plan(Box<PlanRequest>),
 
@@ -319,6 +324,12 @@ pub struct RoutingRequest {
 /// Structural description of the firewall state to install.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FirewallRequest {
+    /// Mark every non-loopback socket owned by the calling UID for the shared
+    /// system TUN. Direct, rule and global modes all need this; per-application
+    /// entries below may then replace the mark with a dedicated transparent
+    /// listener mark.
+    #[serde(default)]
+    pub mark_all: bool,
     /// Mark traffic from these cgroups, one entry per transparent profile.
     pub cgroup_marks: Vec<CgroupMark>,
     /// Install the kill switch, dropping traffic that would otherwise escape.
@@ -396,8 +407,6 @@ pub enum Outcome {
         table: u32,
         /// Firewall mark assigned to this UID.
         fwmark: u32,
-        /// Whether a file descriptor accompanies this reply over `SCM_RIGHTS`.
-        fd_attached: bool,
     },
     /// A plan, as a list of human-readable steps. Nothing was changed.
     Plan {
@@ -510,6 +519,7 @@ impl Operation {
             | Self::ClearFirewall
             | Self::ClearDns
             | Self::Release
+            | Self::CoreFailed
             | Self::Recover => Ok(()),
 
             Self::Heartbeat { .. } => Ok(()),
@@ -555,6 +565,7 @@ impl Operation {
             Self::RemoveCgroup { .. } => "remove-cgroup",
             Self::Heartbeat { .. } => "heartbeat",
             Self::Release => "release",
+            Self::CoreFailed => "core-failed",
             Self::Plan(_) => "plan",
             Self::Recover => "recover",
         }
@@ -935,6 +946,7 @@ mod tests {
             tun: tun(uid),
             routing: routing.clone(),
             firewall: FirewallRequest {
+                mark_all: false,
                 cgroup_marks: Vec::new(),
                 kill_switch: false,
                 bypass_uid: true,
@@ -992,6 +1004,7 @@ mod tests {
     #[test]
     fn more_profiles_than_fit_in_one_allocation_are_refused() {
         let request = FirewallRequest {
+            mark_all: false,
             cgroup_marks: (0..=MAX_TRANSPARENT_PROFILES)
                 .map(|index| CgroupMark {
                     profile: format!("p{index}"),
@@ -1012,6 +1025,7 @@ mod tests {
         // Both would be redirected to whichever profile owns that inbound, so
         // one profile's traffic would leave by the other's egress — silently.
         let request = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![
                 CgroupMark {
                     profile: "web".into(),
@@ -1034,6 +1048,7 @@ mod tests {
     #[test]
     fn a_profile_without_a_listener_does_not_collide_with_another_one() {
         let request = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![
                 CgroupMark {
                     profile: "web".into(),
@@ -1081,6 +1096,7 @@ mod tests {
     #[test]
     fn a_profile_named_twice_is_refused_rather_than_given_two_marks() {
         let request = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![
                 CgroupMark {
                     profile: "web".into(),
@@ -1103,6 +1119,7 @@ mod tests {
     #[test]
     fn a_transparent_listener_on_port_zero_is_refused() {
         let request = FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "web".into(),
                 tproxy_port: Some(0),
@@ -1223,6 +1240,7 @@ mod tests {
             },
             Operation::Heartbeat { generation: 1 },
             Operation::Release,
+            Operation::CoreFailed,
             Operation::Recover,
         ];
         let mut seen = std::collections::BTreeSet::new();

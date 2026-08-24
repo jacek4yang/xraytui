@@ -192,11 +192,7 @@ fn a_tunnel_comes_up_with_its_addresses_and_routes() {
             index,
             table,
             fwmark,
-            fd_attached,
-        } => {
-            assert!(fd_attached, "the liveness descriptor must be returned");
-            (interface, index, table, fwmark)
-        }
+        } => (interface, index, table, fwmark),
         other => panic!("unexpected outcome {other:?}"),
     };
     assert_eq!(interface, fixture.interface());
@@ -627,6 +623,7 @@ fn a_broken_tun_cannot_leak_either_family_past_the_kill_switch() {
         .expect("route both families");
     fixture
         .apply(Operation::ApplyFirewall(FirewallRequest {
+            mark_all: false,
             cgroup_marks: Vec::new(),
             kill_switch: true,
             bypass_uid: false,
@@ -785,6 +782,12 @@ fn a_block_policy_leaves_the_table_blackholed() {
         return;
     }
     let fixture = Fixture::new();
+    let _direct = DirectEgress::start();
+    let nft = Nft::new("nft");
+    if !nft.available() {
+        eprintln!("skipping: nft is not installed");
+        return;
+    }
     let mut request = tun_request();
     request.lease_ttl_secs = 1;
     request.failure_policy = FailurePolicy::Block;
@@ -794,10 +797,29 @@ fn a_block_policy_leaves_the_table_blackholed() {
     fixture
         .apply(Operation::ApplyRouting(routing_request()))
         .expect("apply routing");
+    fixture
+        .apply(Operation::ApplyFirewall(FirewallRequest {
+            mark_all: true,
+            cgroup_marks: Vec::new(),
+            kill_switch: true,
+            bypass_uid: false,
+        }))
+        .expect("mark this uid and install the guard");
 
     let _ = fixture
         .engine
         .recover(xraytui_linux_net::lease::now() + 3_600);
+    let blocked_lease = fixture
+        .engine
+        .leases()
+        .get(UID)
+        .expect("block policy record must survive teardown");
+    assert_eq!(blocked_lease.failure_policy, FailurePolicy::Block);
+    assert_eq!(
+        blocked_lease.expires_at,
+        u64::MAX,
+        "an already-handled expired block lease must not be reaped repeatedly"
+    );
 
     let netlink = Netlink::open().expect("netlink");
     assert!(
@@ -819,6 +841,13 @@ fn a_block_policy_leaves_the_table_blackholed() {
         rules.iter().any(|rule| rule.priority == priority),
         "the rule must stay, or the blackhole would never be consulted"
     );
+    let ruleset = nft_ruleset();
+    assert!(
+        ruleset.contains(&format!("meta skuid {UID} meta mark set")),
+        "new sockets would bypass the retained blackhole without a uid mark: {ruleset}"
+    );
+    assert_unmarked_udp_blocked("198.51.100.9");
+    assert_unmarked_udp_blocked("2001:db8:ffff::9");
 
     // Tidy up: this is the one path that deliberately leaves state behind.
     let _ = ip_allow_failure(&["rule", "del", "priority", &priority.to_string()]);
@@ -848,6 +877,7 @@ fn repeated_enable_and_disable_leaves_no_residue() {
         if has_cgroups && nft.available() {
             fixture
                 .apply(Operation::ApplyFirewall(FirewallRequest {
+                    mark_all: false,
                     cgroup_marks: vec![CgroupMark {
                         profile: "work".into(),
                         tproxy_port: Some(19001),
@@ -1059,6 +1089,7 @@ fn the_firewall_marks_only_the_named_cgroup() {
 
     fixture
         .apply(Operation::ApplyFirewall(FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "work".into(),
                 tproxy_port: Some(19007),
@@ -1091,6 +1122,7 @@ fn the_firewall_marks_only_the_named_cgroup() {
     // Applying the same request again must be a no-op, not a second copy.
     fixture
         .apply(Operation::ApplyFirewall(FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "work".into(),
                 tproxy_port: Some(19007),
@@ -1159,6 +1191,7 @@ fn two_instances_of_one_program_reach_two_different_listeners() {
     let media_port = 19_002u16;
     fixture
         .apply(Operation::ApplyFirewall(FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![
                 CgroupMark {
                     profile: "work".into(),
@@ -1221,6 +1254,7 @@ fn a_classified_application_still_reaches_its_own_machine() {
         .expect("create tun");
     fixture
         .apply(Operation::ApplyFirewall(FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "work".into(),
                 tproxy_port: Some(19_020),
@@ -1265,6 +1299,7 @@ fn the_cgroup_match_really_matches_and_is_not_merely_installed() {
         .expect("create tun");
     fixture
         .apply(Operation::ApplyFirewall(FirewallRequest {
+            mark_all: false,
             cgroup_marks: vec![CgroupMark {
                 profile: "work".into(),
                 tproxy_port: Some(19_010),
@@ -1453,6 +1488,37 @@ fn assert_marked_udp_blocked(destination: &str) {
     assert!(
         answer.trim().starts_with("blocked:"),
         "kill switch allowed marked UDP to {destination}: {answer}"
+    );
+}
+
+fn assert_unmarked_udp_blocked(destination: &str) {
+    let program = concat!(
+        "import socket,sys\n",
+        "host=sys.argv[1]\n",
+        "family=socket.AF_INET6 if ':' in host else socket.AF_INET\n",
+        "target=(host,9,0,0) if family==socket.AF_INET6 else (host,9)\n",
+        "s=socket.socket(family,socket.SOCK_DGRAM)\n",
+        "try:\n",
+        "    s.sendto(b'xraytui-unmarked-kill-switch-probe',target)\n",
+        "    print('sent')\n",
+        "except OSError as error:\n",
+        "    print('blocked:%d'%error.errno)\n",
+    );
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(program)
+        .arg(destination)
+        .output()
+        .expect("send ordinary UDP probe");
+    assert!(
+        output.status.success(),
+        "ordinary UDP probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answer = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        answer.trim().starts_with("blocked:"),
+        "kill switch allowed ordinary uid traffic to {destination}: {answer}"
     );
 }
 
@@ -1704,6 +1770,19 @@ fn ip_allow_failure(args: &[&str]) -> String {
             text
         })
         .unwrap_or_default()
+}
+
+fn nft_ruleset() -> String {
+    let output = Command::new("nft")
+        .args(["list", "ruleset"])
+        .output()
+        .expect("list nftables ruleset");
+    assert!(
+        output.status.success(),
+        "nft list ruleset failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn nft_list() -> String {

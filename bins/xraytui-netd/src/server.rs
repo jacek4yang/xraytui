@@ -11,8 +11,9 @@
 //! # What happens when a caller goes away
 //!
 //! The kernel closes the socket. That is the *primary* teardown signal, and it
-//! is immediate. The lease deadline is the backstop for the other failure —
-//! this helper being killed — and is swept on a timer.
+//! is immediate: the recorded restore/block policy is applied. The lease
+//! deadline is the backstop for the other failure — this helper being killed —
+//! and is swept on a timer.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -239,20 +240,25 @@ async fn handle(
     let result = converse(&stream, uid, &engine).await;
 
     if connections.close(uid) {
-        // The owner is gone. Release now rather than waiting for the lease: a
-        // machine that has lost its proxy should not keep a tunnel that nothing
-        // is feeding.
+        // The owner is gone. Apply its recorded restore/block policy now rather
+        // than waiting for the lease. An orderly daemon sent `Release` first,
+        // so this is idempotent; a crashed daemon must not silently turn a
+        // configured block policy into direct traffic.
         let engine = Arc::clone(&engine);
-        let released = tokio::task::spawn_blocking(move || engine.release(uid)).await;
+        let released = tokio::task::spawn_blocking(move || engine.connection_lost(uid)).await;
         match released {
             Ok(Ok(removed)) if !removed.is_empty() => {
                 for item in removed {
-                    tracing::info!(uid, item, "released after the last connection closed");
+                    tracing::info!(
+                        uid,
+                        item,
+                        "failure policy applied after the owner disconnected"
+                    );
                 }
             }
             Ok(Ok(_)) => {}
-            Ok(Err(error)) => tracing::error!(uid, %error, "release failed"),
-            Err(error) => tracing::error!(uid, %error, "the release task panicked"),
+            Ok(Err(error)) => tracing::error!(uid, %error, "disconnect failure policy failed"),
+            Err(error) => tracing::error!(uid, %error, "the disconnect policy task panicked"),
         }
     }
     result
@@ -348,15 +354,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_last_connection_closing_is_the_one_that_triggers_release() {
+    fn the_last_connection_closing_is_the_one_that_triggers_policy() {
         let connections = Connections::default();
         connections.open(1000);
         connections.open(1000);
-        assert!(!connections.close(1000), "the first close must not release");
-        assert!(connections.close(1000), "the last close must release");
         assert!(
             !connections.close(1000),
-            "closing again must not release twice"
+            "the first close must not apply policy"
+        );
+        assert!(connections.close(1000), "the last close must apply policy");
+        assert!(
+            !connections.close(1000),
+            "closing again must not apply policy twice"
         );
     }
 

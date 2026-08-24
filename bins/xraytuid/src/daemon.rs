@@ -151,9 +151,8 @@ impl Daemon {
         tracing::info!(socket = %socket.display(), "control socket ready");
 
         if start_core && self.config.runtime.start_core_on_launch {
-            let mut engine = self.engine.lock().await;
-            match engine.rebuild_and_start().await {
-                Ok(generation) => tracing::info!(%generation, "core started"),
+            match self.start_core_and_network().await {
+                Ok((generation, _)) => tracing::info!(%generation, "core started"),
                 Err(error) => tracing::error!(%error, "core did not start; continuing idle"),
             }
         }
@@ -202,7 +201,7 @@ impl Daemon {
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     interval.tick().await;
-                    if !netd.is_active().await {
+                    if !netd.has_session().await {
                         continue;
                     }
                     let generation = engine.lock().await.runtime().generation.0;
@@ -280,6 +279,12 @@ impl Daemon {
             };
             tracing::warn!(%reason, "the core exited on its own");
 
+            // Apply restore/block immediately. Waiting for the lease timeout
+            // after observing the dead core would leave a known-bad route in
+            // service, and block policy must retain marking as well as a
+            // blackhole route to remain genuinely fail-closed.
+            self.netd.core_failed().await;
+
             let Some(delay) = self.engine.lock().await.note_core_exit(reason) else {
                 tracing::error!(
                     "not restarting the core again; run `xraytui logs`, then \
@@ -294,18 +299,46 @@ impl Daemon {
             // asking for status during a restart storm should get an answer.
             tokio::time::sleep(delay).await;
 
-            let mut engine = self.engine.lock().await;
-            match engine.restart_after_exit().await {
-                Ok(generation) => {
-                    tracing::info!(%generation, "the core was restarted after it exited");
-                    if let Some(store) = &self.store {
-                        let _ = store
-                            .record_last_known_good(generation, xraytui_linux_net::lease::now());
-                    }
-                }
-                Err(error) => tracing::warn!(%error, "the core did not come back"),
+            let desired = self.engine.lock().await.desired().clone();
+            if let Err(error) = self.prepare_tunnel(&desired).await {
+                tracing::warn!(%error, "the tunnel could not be prepared for core restart");
+                self.announce().await;
+                continue;
             }
+            let mut engine = self.engine.lock().await;
+            let restarted = match engine.restart_after_exit().await {
+                Ok(generation) => Some(generation),
+                Err(error) => {
+                    tracing::warn!(%error, "the core did not come back");
+                    None
+                }
+            };
             drop(engine);
+            match restarted {
+                Some(generation) => match self.reconcile_tunnel(&desired).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            %generation,
+                            "the core and its system tunnel recovered after the core exited"
+                        );
+                        if let Some(store) = &self.store
+                            && let Err(error) = store
+                                .record_last_known_good(generation, xraytui_linux_net::lease::now())
+                        {
+                            tracing::warn!(%error, "cannot record the recovered generation");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            "the restarted core could not regain the system tunnel"
+                        );
+                        self.engine.lock().await.stop_core().await;
+                        self.netd.core_failed().await;
+                    }
+                },
+                None => self.netd.core_failed().await,
+            }
             self.announce().await;
         }
     }
@@ -366,24 +399,172 @@ impl Daemon {
             )));
         }
 
+        let (previous, disruptive) = {
+            let engine = self.engine.lock().await;
+            (
+                engine.desired().clone(),
+                engine.plan(&state).is_disruptive(),
+            )
+        };
+
+        // A non-multiqueue Linux TUN can only be opened by one Xray process.
+        // Static validation opens it too, so a structural update cannot keep
+        // the old core attached while validating the candidate. Stop first and
+        // immediately apply the configured failure policy; `block` retains the
+        // mark plus blackhole routes throughout the handover.
+        if disruptive && previous.mode.needs_tun() {
+            self.engine.lock().await.stop_core().await;
+            self.netd.core_failed().await;
+        }
+        if let Err(error) = self.prepare_tunnel(&state).await {
+            if disruptive && previous.mode.needs_tun() {
+                let preparation_error = error.to_string();
+                self.restore_after_network_failure(&previous)
+                    .await
+                    .map_err(|rollback| {
+                        IpcError::Internal(format!(
+                            "the candidate tunnel could not be prepared: {preparation_error}; \
+                             restoring the previous state also failed: {rollback}"
+                        ))
+                    })?;
+                return Err(IpcError::Invalid(format!(
+                    "the candidate tunnel could not be prepared: {preparation_error}; \
+                     the previous state was restored"
+                )));
+            }
+            return Err(error);
+        }
+
         let mut engine = self.engine.lock().await;
-        let outcome = engine
-            .apply(state)
-            .await
-            .map_err(|error| IpcError::Internal(error.to_string()))?;
+        let outcome = match engine.apply(state).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let core_is_gone = engine.core_pid().is_none();
+                drop(engine);
+                if core_is_gone {
+                    self.netd.core_failed().await;
+                }
+                return Err(IpcError::Internal(error.to_string()));
+            }
+        };
         let warnings = engine
             .compiled()
             .map(|c| c.warnings.clone())
             .unwrap_or_default();
         let desired = engine.desired().clone();
         drop(engine);
+        if let Err(error) = self.reconcile_tunnel(&desired).await {
+            let activation_error = error.to_string();
+            self.restore_after_network_failure(&previous)
+                .await
+                .map_err(|rollback| {
+                    IpcError::Internal(format!(
+                        "the candidate core started but its network activation failed: \
+                     {activation_error}; restoring the previous state also failed: {rollback}"
+                    ))
+                })?;
+            return Err(IpcError::Invalid(format!(
+                "the candidate core started but its network activation failed: \
+                 {activation_error}; the previous state was restored"
+            )));
+        }
         self.persist().await?;
         self.remember(&desired).await;
         self.sweeper
             .reconcile(&self.config, &desired, xraytui_linux_net::lease::now())
             .await;
-        self.reconcile_tunnel(&desired).await?;
         Ok(response_for(outcome, warnings))
+    }
+
+    /// Start the core with the TUN lifecycle in the only safe order.
+    async fn start_core_and_network(
+        &self,
+    ) -> Result<(xraytui_domain::GenerationId, Vec<String>), IpcError> {
+        let (desired, running, generation, warnings) = {
+            let engine = self.engine.lock().await;
+            (
+                engine.desired().clone(),
+                engine.core_pid().is_some(),
+                engine.runtime().generation,
+                engine
+                    .compiled()
+                    .map(|compiled| compiled.warnings.clone())
+                    .unwrap_or_default(),
+            )
+        };
+        if running {
+            if desired.mode.needs_tun() && self.netd.interface().await.is_none() {
+                return Err(IpcError::Invalid(
+                    "Xray is running without its managed system tunnel; use `xraytui restart` \
+                     to rebuild the core and network path together"
+                        .into(),
+                ));
+            }
+            return Ok((generation, warnings));
+        }
+        self.prepare_tunnel(&desired).await?;
+
+        let mut engine = self.engine.lock().await;
+        let generation = match engine.rebuild_and_start().await {
+            Ok(generation) => generation,
+            Err(error) => {
+                drop(engine);
+                self.netd.core_failed().await;
+                return Err(IpcError::Internal(error.to_string()));
+            }
+        };
+        let warnings = engine
+            .compiled()
+            .map(|compiled| compiled.warnings.clone())
+            .unwrap_or_default();
+        drop(engine);
+
+        if let Err(error) = self.reconcile_tunnel(&desired).await {
+            self.engine.lock().await.stop_core().await;
+            self.netd.core_failed().await;
+            return Err(error);
+        }
+        Ok((generation, warnings))
+    }
+
+    /// Create the named device before Xray validates or opens its TUN inbound.
+    async fn prepare_tunnel(&self, state: &DesiredState) -> Result<(), IpcError> {
+        if !state.mode.needs_tun() {
+            return Ok(());
+        }
+        let request = crate::netd::plan_request(&self.config, state, self.proxy_endpoints(state))
+            .map_err(|error| IpcError::Invalid(error.to_string()))?;
+        self.netd
+            .prepare(&request)
+            .await
+            .map(|_| ())
+            .map_err(|error| IpcError::Invalid(error.to_string()))
+    }
+
+    /// Rebuild the previous desired/core/network state after late activation
+    /// failed. This is deliberately a full rebuild: a half-applied firewall or
+    /// DNS update is not a state from which selector hot-switching is safe.
+    async fn restore_after_network_failure(&self, previous: &DesiredState) -> Result<(), IpcError> {
+        self.engine.lock().await.stop_core().await;
+        // Keep block policy installed throughout rollback. `CoreFailed`
+        // removes the unusable TUN but retains the authenticated session, mark
+        // and blackhole until the previous healthy generation is active again.
+        self.netd.core_failed().await;
+
+        {
+            let mut engine = self.engine.lock().await;
+            engine
+                .seed(previous.clone())
+                .map_err(|error| IpcError::Internal(error.to_string()))?;
+        }
+        self.prepare_tunnel(previous).await?;
+        let mut engine = self.engine.lock().await;
+        engine
+            .rebuild_and_start()
+            .await
+            .map_err(|error| IpcError::Internal(error.to_string()))?;
+        drop(engine);
+        self.reconcile_tunnel(previous).await
     }
 
     /// Make the machine's networking match the mode that was just applied.
@@ -399,7 +580,16 @@ impl Daemon {
         }
         let request = crate::netd::plan_request(&self.config, state, self.proxy_endpoints(state))
             .map_err(|error| IpcError::Invalid(error.to_string()))?;
-        match self.netd.establish(&request).await {
+        self.netd
+            .prepare(&request)
+            .await
+            .map_err(|error| IpcError::Invalid(error.to_string()))?;
+        let core_pid = self.engine.lock().await.core_pid().ok_or_else(|| {
+            IpcError::Invalid(
+                "the system tunnel cannot be activated because Xray is not running".into(),
+            )
+        })?;
+        match self.netd.activate(&request, core_pid).await {
             Ok(interface) => {
                 tracing::info!(interface, mode = state.mode.as_str(), "system tunnel is up");
                 Ok(())
@@ -624,6 +814,8 @@ impl Daemon {
         let engine = self.engine.lock().await;
         let info = engine.core_info().clone();
         let runtime = engine.runtime().clone();
+        let desired_mode = engine.desired().mode;
+        let core_pid = engine.core_pid();
         drop(engine);
 
         checks.push(DoctorCheck {
@@ -694,6 +886,83 @@ impl Daemon {
             remedy: (tun_status != CheckStatus::Pass).then(|| {
                 "load the `tun` module (modprobe tun) and make sure /dev/net/tun is mode 0666, \
                  which is the systemd default"
+                    .to_owned()
+            }),
+        });
+
+        // Official Linux Xray opens the prepared TUN and then performs
+        // LinkSetMTU/LinkSetUp itself. TUNSETOWNER permits the open, but it does
+        // not grant those netlink operations. Until a narrowly privileged core
+        // launch path exists, say that explicitly instead of presenting an
+        // open /dev/net/tun as sufficient evidence.
+        let root_launch_has_net_admin =
+            rustix::process::getuid().is_root() && xraytui_linux_net::capabilities::has_net_admin();
+        let core_tun_privilege = core_pid.map_or(root_launch_has_net_admin, |pid| {
+            xraytui_linux_net::capabilities::process_has_net_admin(pid)
+        });
+        checks.push(DoctorCheck {
+            name: "xray-tun-privilege".into(),
+            status: if core_tun_privilege {
+                CheckStatus::Pass
+            } else if desired_mode.needs_tun() {
+                CheckStatus::Fail
+            } else {
+                CheckStatus::Warn
+            },
+            detail: if let Some(pid) = core_pid
+                && core_tun_privilege
+            {
+                format!("running Xray pid {pid} has effective CAP_NET_ADMIN")
+            } else if core_tun_privilege {
+                "the root daemon can launch Xray with CAP_NET_ADMIN; the real attach remains the final check".into()
+            } else {
+                "official Linux Xray performs privileged LinkSetMTU and LinkSetUp calls; \
+                 the packaged unprivileged daemon cannot start its TUN inbound"
+                    .into()
+            },
+            remedy: (!core_tun_privilege).then(|| {
+                "keep system mode off and use profile SOCKS/HTTP listeners; do not add broad \
+                 capabilities to xraytuid or xray manually"
+                    .to_owned()
+            }),
+        });
+
+        let privileged_dns_listener = self
+            .config
+            .dns
+            .enabled
+            .then_some(self.config.dns.listen)
+            .flatten()
+            .filter(|listen| listen.port() < 1024);
+        let root_launch_has_bind_service = rustix::process::getuid().is_root()
+            && xraytui_linux_net::capabilities::has_net_bind_service();
+        let dns_bind_privilege = core_pid.map_or(root_launch_has_bind_service, |pid| {
+            xraytui_linux_net::capabilities::process_has_net_bind_service(pid)
+        });
+        checks.push(DoctorCheck {
+            name: "xray-dns-listen-privilege".into(),
+            status: if privileged_dns_listener.is_none() || dns_bind_privilege {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Fail
+            },
+            detail: match (privileged_dns_listener, dns_bind_privilege) {
+                (Some(listen), true) => match core_pid {
+                    Some(pid) => format!(
+                        "running Xray pid {pid} has effective CAP_NET_BIND_SERVICE for {listen}"
+                    ),
+                    None => format!(
+                        "the root daemon can launch Xray with CAP_NET_BIND_SERVICE for {listen}"
+                    ),
+                },
+                (Some(listen), false) => format!(
+                    "Xray cannot bind configured DNS listener {listen}: the packaged daemon has no CAP_NET_BIND_SERVICE"
+                ),
+                (None, _) => "no privileged Xray DNS listener is configured".into(),
+            },
+            remedy: (privileged_dns_listener.is_some() && !dns_bind_privilege).then(|| {
+                "keep system DNS management disabled; a systemd-resolved link server requires \
+                 port 53 and no narrowly privileged Xray launch path exists yet"
                     .to_owned()
             }),
         });
@@ -843,7 +1112,11 @@ pub(crate) fn build_engine_config(
     };
 
     let tun = state.mode.needs_tun().then(|| TunOptions {
-        name: config.tun.name.clone(),
+        // The privileged helper derives the kernel resource name from the
+        // authenticated uid. Compile the exact same name into Xray; using the
+        // advisory configuration value here would make every non-root default
+        // attach to a different interface than the helper created.
+        name: effective_tun_name(),
         mtu: config.tun.mtu,
     });
 
@@ -892,6 +1165,10 @@ pub(crate) fn build_engine_config(
     }
 }
 
+fn effective_tun_name() -> String {
+    xraytui_netd_protocol::interface_for_uid(rustix::process::getuid().as_raw())
+}
+
 // The explicit `impl Future + Send` return is what makes the future spawnable;
 // `async fn` in a trait does not promise `Send`.
 #[allow(clippy::manual_async_fn)]
@@ -936,40 +1213,31 @@ impl ServerHandler for Daemon {
                 }
 
                 Request::Up => {
-                    let mut engine = self.engine.lock().await;
-                    let generation = engine
-                        .rebuild_and_start()
-                        .await
-                        .map_err(|error| IpcError::Internal(error.to_string()))?;
+                    let (generation, warnings) = self.start_core_and_network().await?;
                     tracing::info!(%generation, "core started on request");
                     Ok(Response::Applied {
                         rolled_back: false,
                         restarted: true,
                         switched: Vec::new(),
-                        warnings: engine
-                            .compiled()
-                            .map(|c| c.warnings.clone())
-                            .unwrap_or_default(),
+                        warnings,
                     })
                 }
 
                 Request::Down => {
                     self.engine.lock().await.stop_core().await;
+                    self.netd.release().await;
                     Ok(Response::Ack)
                 }
 
                 Request::Restart => {
-                    let mut engine = self.engine.lock().await;
-                    engine.stop_core().await;
-                    engine
-                        .rebuild_and_start()
-                        .await
-                        .map_err(|error| IpcError::Internal(error.to_string()))?;
+                    self.engine.lock().await.stop_core().await;
+                    self.netd.core_failed().await;
+                    let (_, warnings) = self.start_core_and_network().await?;
                     Ok(Response::Applied {
                         rolled_back: false,
                         restarted: true,
                         switched: Vec::new(),
-                        warnings: Vec::new(),
+                        warnings,
                     })
                 }
 
@@ -998,14 +1266,15 @@ impl ServerHandler for Daemon {
                 }
 
                 Request::SetGroupSelection { group, target } => {
-                    let mut engine = self.engine.lock().await;
-                    let outcome = engine
-                        .set_group_selection(&group, target)
-                        .await
-                        .map_err(map_controller_error)?;
-                    drop(engine);
-                    self.persist().await?;
-                    Ok(response_for(outcome, Vec::new()))
+                    let mut state = self.engine.lock().await.desired().clone();
+                    let Some(entry) = state.groups.get_mut(&group) else {
+                        return Err(IpcError::NotFound {
+                            kind: "group".into(),
+                            id: group.to_string(),
+                        });
+                    };
+                    entry.manual_selection = Some(target);
+                    self.apply(state).await
                 }
 
                 Request::Import { text, origin } => self.import(&text, origin).await,
@@ -1146,14 +1415,15 @@ impl Daemon {
         profile: xraytui_domain::ProfileId,
         target: Target,
     ) -> Result<Response, IpcError> {
-        let mut engine = self.engine.lock().await;
-        let outcome = engine
-            .set_profile_target(&profile, target)
-            .await
-            .map_err(map_controller_error)?;
-        drop(engine);
-        self.persist().await?;
-        Ok(response_for(outcome, Vec::new()))
+        let mut state = self.engine.lock().await.desired().clone();
+        let Some(entry) = state.profiles.get_mut(&profile) else {
+            return Err(IpcError::NotFound {
+                kind: "profile".into(),
+                id: profile.to_string(),
+            });
+        };
+        entry.target = target;
+        self.apply(state).await
     }
 
     async fn import(&self, text: &str, origin: ImportOrigin) -> Result<Response, IpcError> {
@@ -1290,19 +1560,6 @@ fn origin_kind(source: &xraytui_domain::NodeSource) -> OriginKind {
     match source {
         xraytui_domain::NodeSource::XrayJson => OriginKind::XrayJson,
         _ => OriginKind::Links,
-    }
-}
-
-fn map_controller_error(error: xraytui_controller::ControllerError) -> IpcError {
-    use xraytui_controller::ControllerError;
-    match error {
-        ControllerError::NotFound(message) => IpcError::NotFound {
-            kind: "entity".into(),
-            id: message,
-        },
-        ControllerError::Invalid(message) => IpcError::Invalid(message),
-        ControllerError::CoreNotRunning => IpcError::CoreNotRunning,
-        other => IpcError::Internal(other.to_string()),
     }
 }
 
